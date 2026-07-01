@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "interlens"
+version = "0.1.0"
+description = "A framework for efficiently scaffolding and interpreting multi-agent conversations (activation capture, steering, patching)."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Siddharth M. Bhatia" }]
+keywords = ["llm", "interpretability", "multi-agent", "transformers", "activation-steering"]
+
+# torch is intentionally an unpinned, build-agnostic dependency: the right wheel depends on the consumer's
+# CUDA/CPU/MPS platform, so let them choose it (see the CUDA note in the README) rather than pinning a
+# machine-specific index here. transformers is minor-locked (it breaks across minors).
+dependencies = [
+    "torch",
+    "transformers>=4.57,<5",
+]
+
+[project.optional-dependencies]
+api = ["anthropic>=0.112,<1"]   # only needed for APIParticipant (Claude-backed participants)
+dev = ["pytest>=9"]
+
+[project.urls]
+Homepage = "https://github.com/Sid-MB/interlens"
+Repository = "https://github.com/Sid-MB/interlens"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/interlens"]
+
+[tool.pytest.ini_options]
+# `src` first so `import interlens` resolves to the working tree (no install needed for dev); `.` so the
+# top-level `tests` package is importable (e.g. `python -m tests.profile_pipeline`).
+pythonpath = ["src", "."]
+markers = ["slow: needs model weights / a GPU; deselected by default (run with -m slow)"]
+addopts = "-m 'not slow'"
