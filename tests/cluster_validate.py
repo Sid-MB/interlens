@@ -27,12 +27,12 @@ from interlens import (
 )
 from interlens.runner.worker_init import register_worker_init
 
-SMALL = "qwen2.5-0.5b"
+SMALL = "Qwen/Qwen2.5-0.5B-Instruct"
 
 
 def opinion(conv):
-    """Top-level analyzer (picklable → survives spawn). Samples each participant off-transcript."""
-    return {p.name: conv.sample(p.name, "In one sentence, your view now?").content for p in conv.participants}
+    """Top-level analyzer (picklable → survives spawn). Samples every participant off-transcript via sample_all."""
+    return {name: msg.content for name, msg in conv.sample_all("In one sentence, your view now?").items()}
 
 
 register_analyzer("opinion", opinion)
@@ -59,18 +59,18 @@ def check_flash_attn():
     return resolved
 
 
-def check_shared_tokenizer():
-    # PLAN test 4b: different sizes of one family share ONE tokenizer object but load distinct weights.
-    log("=== shared tokenizer cache (gemma2-2b <-> gemma2-9b) ===")
+def check_family_size_pair():
+    # Different sizes of one family load DISTINCT weights and render without the chat template raising. (Tokenizer
+    # caching is per-HF-id now, so the two also get distinct tokenizer objects — cross-size sharing was dropped
+    # with the generation concept.)
+    log("=== same-family size pair (gemma-2-2b <-> gemma-2-9b): distinct weights, chat template renders ===")
     tmpl = ConversationTemplate(
-        participants=[ModelParticipantConfig(name="a", model="gemma2-2b", max_new_tokens=8, temperature=0.0),
-                      ModelParticipantConfig(name="b", model="gemma2-9b", max_new_tokens=8, temperature=0.0)],
+        participants=[ModelParticipantConfig(name="a", model="google/gemma-2-2b-it", max_new_tokens=8, temperature=0.0),
+                      ModelParticipantConfig(name="b", model="google/gemma-2-9b-it", max_new_tokens=8, temperature=0.0)],
         shared_context="Say hello in one word.", turns=2)
     conv = tmpl.build(devices="cuda")
     a, b = conv.participant("a"), conv.participant("b")
-    assert a.tokenizer is b.tokenizer, "same-family sizes must share ONE tokenizer object"
     assert a.model is not b.model, "different sizes must be distinct model objects"
-    log("tokenizer identity shared, models distinct OK")
     conv.run(turns=2)
     log(f"gemma size pair produced {len(conv.transcript)} messages (chat template did not raise)")
 
@@ -80,7 +80,7 @@ def check_two_families():
     tmpl = ConversationTemplate(
         participants=[ModelParticipantConfig(name="q", model=SMALL, max_new_tokens=16, temperature=0.0,
                                              system_prompt="Argue social media HELPS teens."),
-                      ModelParticipantConfig(name="g", model="gemma2-2b", max_new_tokens=16, temperature=0.0,
+                      ModelParticipantConfig(name="g", model="google/gemma-2-2b-it", max_new_tokens=16, temperature=0.0,
                                              system_prompt="Argue social media HARMS teens.")],
         shared_context="Debate: is social media net positive or harmful for teenagers?", turns=4)
     conv = tmpl.build(devices="cuda")
@@ -130,9 +130,9 @@ def check_closure_fails():
 def check_rollout(out_dir):
     log(f"=== rollout + analyze + resume + isolation → {out_dir} ===")
     tmpl = ConversationTemplate(
-        participants=[ModelParticipantConfig(name="alice", model="qwen2.5-1.5b", max_new_tokens=48, temperature=0.7,
+        participants=[ModelParticipantConfig(name="alice", model="Qwen/Qwen2.5-1.5B-Instruct", max_new_tokens=48, temperature=0.7,
                                              system_prompt="Argue social media HARMS teens."),
-                      ModelParticipantConfig(name="bob", model="qwen2.5-1.5b", max_new_tokens=48, temperature=0.7,
+                      ModelParticipantConfig(name="bob", model="Qwen/Qwen2.5-1.5B-Instruct", max_new_tokens=48, temperature=0.7,
                                              system_prompt="Argue social media HELPS teens.")],
         shared_context="Debate: is social media net positive or harmful for teenagers?", turns=6)
     report = rollout(tmpl, n=6, analyze="opinion", out_dir=out_dir, resume=True, seed=0)
@@ -166,9 +166,9 @@ def check_batched(out_dir):
     import time
     log("=== batched co-stepping + shared-prefill vs unbatched (throughput mode) ===")
     tmpl = ConversationTemplate(
-        participants=[ModelParticipantConfig(name="alice", model="qwen2.5-1.5b", max_new_tokens=48, temperature=0.9,
+        participants=[ModelParticipantConfig(name="alice", model="Qwen/Qwen2.5-1.5B-Instruct", max_new_tokens=48, temperature=0.9,
                                              system_prompt="Argue social media HARMS teens. Be brief."),
-                      ModelParticipantConfig(name="bob", model="qwen2.5-1.5b", max_new_tokens=48, temperature=0.9,
+                      ModelParticipantConfig(name="bob", model="Qwen/Qwen2.5-1.5B-Instruct", max_new_tokens=48, temperature=0.9,
                                              system_prompt="Argue social media HELPS teens. Be brief.")],
         shared_context="Debate: is social media net positive or harmful for teenagers?", turns=6)
     n = 8
@@ -199,7 +199,7 @@ def main():
 
     check_flash_attn()
     check_two_families()
-    check_shared_tokenizer()
+    check_family_size_pair()
     check_isolation()
     check_rollout(out_dir)
     check_batched(out_dir)

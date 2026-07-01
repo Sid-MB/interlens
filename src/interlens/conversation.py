@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 import torch
 
@@ -349,28 +349,46 @@ class Conversation:
 			message_hooks=list(self.message_hooks),
 		)
 
-	def sample(self, speaker: Participant | str, message: str | None = None, *,
-	           as_author: str | None = None, steering=None, capture=None, patch=None,
-	           return_logprobs: bool = False, max_new_tokens: int | None = None) -> Message:
-		"""Ephemerally sample ``speaker``'s response to an optional temporary ``message`` **without mutating the
-		transcript**. Pure read of current state: safe to call repeatedly / in a loop. ``message`` is attributed
-		to ``as_author`` (default: the other participant), so it reads as a normal incoming turn. The same interp
-		options as ``step`` are honored on the ephemeral generation."""
+	@overload
+	def sample(self, speaker: ParticipantLike, message: str | None = None, *, as_author: str | None = None,
+	           steering=None, capture=None, patch=None, return_logprobs: bool = False,
+	           max_new_tokens: int | None = None) -> Message: ...
+	@overload
+	def sample(self, speaker: "list[ParticipantLike] | tuple[ParticipantLike, ...]", message: str | None = None, *,
+	           as_author: str | None = None, steering=None, capture=None, patch=None, return_logprobs: bool = False,
+	           max_new_tokens: int | None = None) -> "dict[str, Message]": ...
+
+	def sample(self, speaker, message=None, *, as_author=None, steering=None, capture=None, patch=None,
+	           return_logprobs: bool = False, max_new_tokens: int | None = None):
+		"""Ephemerally sample a response **without mutating the transcript** — a pure read of current state, safe to
+		call repeatedly / in a loop. ``speaker`` is a ``ParticipantLike`` (name / index / ``Participant``); pass a
+		**list or tuple** of them to sample each and get back ``{name: Message}`` instead of a single ``Message``
+		(see also ``sample_all``). ``message`` is an optional temporary incoming turn; it defaults to being
+		attributed to the **moderator** (a neutral, external voice — so "What do you think of Bob?" reads as an
+		interviewer asking, NOT as Bob speaking). Pass ``as_author="bob"`` to make it read as that participant's
+		turn instead (e.g. "what would you say if Bob had just said X?"). The same interp options as ``step`` are
+		honored on each ephemeral generation."""
+		if isinstance(speaker, (list, tuple)):
+			return {self.participant(s).name: self.sample(s, message, as_author=as_author, steering=steering,
+			                                              capture=capture, patch=patch, return_logprobs=return_logprobs,
+			                                              max_new_tokens=max_new_tokens) for s in speaker}
 		speaker = self.participant(speaker)
 		extra = []
 		if message is not None:
-			author = as_author or self._default_other(speaker)
-			extra = [Message(author=author, content=message)]
+			extra = [Message(author=as_author or self.moderator_name, content=message)]
 		return speaker.generate(self._view(speaker, extra=extra), steering=steering, capture=capture,
 		                        patch=patch, return_logprobs=return_logprobs, turn=len(self.transcript),
 		                        max_new_tokens=max_new_tokens)
 
-	def _default_other(self, speaker: Participant) -> str:
-		"""The natural author for an injected sample message: some other participant, else the moderator."""
-		for p in self.participants:
-			if p.name != speaker.name:
-				return p.name
-		return self.moderator_name
+	def sample_all(self, message: str | None = None, *, as_author: str | None = None, steering=None,
+	               capture=None, patch=None, return_logprobs: bool = False,
+	               max_new_tokens: int | None = None) -> "dict[str, Message]":
+		"""Ephemerally sample **every** participant's response — a convenience for
+		``sample(list(self.participants), ...)``. Returns ``{name: Message}``; the transcript is untouched. Handy
+		for "what does each model say to this right now?"."""
+		return self.sample(list(self.participants), message, as_author=as_author, steering=steering,
+		                   capture=capture, patch=patch, return_logprobs=return_logprobs, max_new_tokens=max_new_tokens)
+
 
 	# --- serialization (levels 2 & 3) ----------------------------------------------------------------------
 

@@ -17,15 +17,11 @@ conv = Conversation.from_models(
 )
 conv.run(turns=4, first="alice")
 
-for message in conv.transcript:
-    print(f"{message.author}: {message.content}\n")
-
-# ...or, for quick debugging, dump the whole transcript at once:
-print(conv.transcript)                       # [i] author: content  (also conv.transcript.pretty())
-print(conv.transcript.pretty(metadata=True)) # include per-turn metadata (reasoning, tool trail, token counts)
+print(conv.transcript)  # [i] author: content  (also conv.transcript.pretty())
+print(conv.transcript.pretty(metadata=True))    # include per-turn metadata (reasoning, tool trail, token counts)
 
 # See exactly what one model is conditioned on — role-swapped to its POV, WITH chat-template special tokens:
-print(conv.render_templated(pov="alice"))   # pov takes a name/index/participant; tokenize=True returns ids
+print(conv.render_templated(pov="alice", tokenize=False))   # `pov=` takes a name/index/Participant
 ```
 
 ## What just happened
@@ -39,18 +35,18 @@ print(conv.render_templated(pov="alice"))   # pov takes a name/index/participant
 ## Two *different* models
 
 ```python
-conv = Conversation.from_models(("Qwen/Qwen2.5-3B-Instruct", "google/gemma-2-2b-it"), names=("q", "g"), device="cuda")
+conv = Conversation.from_models(("Qwen/Qwen2.5-3B-Instruct", "google/gemma-2-2b-it"), names=("qwen", "gemma"), device="cuda")
 ```
 
 Each id resolves to its family-correct participant class automatically (Qwen vs Gemma chat templates, tool formats, system-role handling) from its `config.model_type` — see [03](03_participants_and_models.md).
 
 ## One-off generation without committing
 
-To sample a reply **without** mutating the transcript (safe to call in a loop):
+To sample a reply **without** mutating the transcript:
 
 ```python
-msg = conv.sample("alice", "Quick — name a color.")   # returns a Message; transcript unchanged
-print(msg.content)
+message = conv.sample("alice", "Quick: name a color.")
+print(message.content)
 ```
 
 Next: [building conversations by hand](02_conversations.md) for per-speaker system prompts, moderators, and stop conditions.
