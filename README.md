@@ -1,4 +1,4 @@
-# Interlens: Framework for Multi-Agent Conversation and Interpretability
+# Interlens: Framework for Multi-Agent Interaction and Interpretability
 
 This library provides a harness, optimized utilities, and interpretability hooks for multi-agent conversation rollouts. 
 
