@@ -8,10 +8,12 @@ on:
     paths:
       - '**/*.py'
       - 'pyproject.toml'
+      - 'uv.lock'
   pull_request:
     paths:
       - '**/*.py'
       - 'pyproject.toml'
+      - 'uv.lock'
 
 concurrency:
   group: tests-${{ github.ref }}
