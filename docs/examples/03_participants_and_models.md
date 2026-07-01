@@ -3,11 +3,11 @@
 
 ## The model registry
 
-All model-keyed data lives in one place: [`chat/loading/registry.py`](../../chat/loading/registry.py). Short names resolve to an HF id + a **generation** (the behavior + tokenizer group); a raw HF id passes through unchanged.
+All model-keyed data lives in one place: [`src/interlens/loading/registry.py`](../../src/interlens/loading/registry.py). Short names resolve to an HF id + a **generation** (the behavior + tokenizer group); a raw HF id passes through unchanged.
 
 ```python
-from experiments.core.chat import AutoModelParticipant
-from experiments.core.chat.loading import MODELS, resolve, tokenizer_id
+from interlens import AutoModelParticipant
+from interlens.loading import MODELS, resolve, tokenizer_id
 
 list(MODELS)                              # ['qwen2.5-0.5b', ..., 'gemma2-2b', 'gemma3-4b']
 resolve("gemma3-4b")                      # ('google/gemma-3-4b-it', 'gemma3')
@@ -17,13 +17,13 @@ AutoModelParticipant.class_for("gemma2-2b")   # <class 'GemmaModelParticipant'> 
 
 (`AutoModelParticipant.class_for` is the public class resolver; `loading.participant_class` is the low-level primitive it delegates to.)
 
-**Generation, not vendor, selects behavior.** `gemma2` and `gemma3` have *different* chat templates (Gemma 3 accepts a system role, Gemma 2 folds it into the first user turn), so each generation maps to its own participant class. Adding a model is one line in `MODELS`; adding a generation is one line in `GENERATIONS`. A slow test ([`tests/test_family_flags.py`](../../chat/tests/test_family_flags.py)) verifies the declared chat-template flags against each real tokenizer.
+**Generation, not vendor, selects behavior.** `gemma2` and `gemma3` have *different* chat templates (Gemma 3 accepts a system role, Gemma 2 folds it into the first user turn), so each generation maps to its own participant class. Adding a model is one line in `MODELS`; adding a generation is one line in `GENERATIONS`. A slow test ([`tests/test_family_flags.py`](../../tests/test_family_flags.py)) verifies the declared chat-template flags against each real tokenizer.
 
 ### Load weights directly
 
 ```python
 import torch
-from experiments.core.chat.loading import load_model
+from interlens.loading import load_model
 model, tok = load_model("qwen3-8b", device="cuda", dtype=torch.bfloat16, attn="flash_attention_2")
 ```
 
@@ -32,7 +32,7 @@ model, tok = load_model("qwen3-8b", device="cuda", dtype=torch.bfloat16, attn="f
 ## `ModelParticipant` knobs
 
 ```python
-from experiments.core.chat import AutoModelParticipant
+from interlens import AutoModelParticipant
 p = AutoModelParticipant.from_pretrained(
     "qwen3-4b", name="p", device="cuda",
     load_kwargs={"attn": "sdpa"},   # optional: forwarded to load_model (dtype/attn/quant/revision)
@@ -47,7 +47,7 @@ p = AutoModelParticipant.from_pretrained(
 Already hold weights (e.g. sharing them, or an externally-loaded checkpoint)? Wrap them with `from_model`:
 
 ```python
-from experiments.core.chat.loading import load_model
+from interlens.loading import load_model
 model, tok = load_model("qwen3-4b")
 p = AutoModelParticipant.from_model(model, tok, name="p", id_or_name="qwen3-4b", temperature=0.8)
 ```
@@ -74,7 +74,7 @@ import logging; logging.basicConfig(level=logging.INFO)
 `APIParticipant` is a full conversational participant with **no local model** — use it as an opponent, moderator, or judge. Interp requests (`capture`/`steering`/`patch`/`return_logprobs`) **raise** rather than silently no-op (a steering sweep that quietly did nothing would fabricate a "no effect" result).
 
 ```python
-from experiments.core.chat import Conversation, APIParticipant, AutoModelParticipant
+from interlens import Conversation, APIParticipant, AutoModelParticipant
 
 local = AutoModelParticipant.from_pretrained("qwen2.5-3b", name="student")
 judge = APIParticipant(name="tutor", model_id="claude-sonnet-5", provider="anthropic",

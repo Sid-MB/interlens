@@ -9,7 +9,7 @@ Find a direction that separates two conditions, then verify it's *causal* by ste
 
 ```python
 import torch
-from experiments.core.chat import Conversation, SteeringSpec
+from interlens import Conversation, SteeringSpec
 
 conv = Conversation.from_models(("qwen2.5-3b", "qwen2.5-3b"), names=("a", "b"))
 conv.transcript.append("a", "Tell me your honest opinion of pineapple pizza.")
@@ -38,7 +38,7 @@ for coef in (0.0, 4.0, 8.0):
 Localize *where* a piece of context matters by transplanting clean activations into a corrupted run, layer by layer.
 
 ```python
-from experiments.core.chat import Patch
+from interlens import Patch
 
 base = conv.branch()
 base.transcript.append("a", "The secret code is FALCON. What is the secret code?")
@@ -64,7 +64,7 @@ for L in range(0, 28, 4):
 Collect an activation-based measurement over many rollouts. The probe read happens **inside the worker** while models are resident; only the scalar crosses back.
 
 ```python
-from experiments.core.chat import ConversationTemplate, ModelParticipantConfig, rollout, register_analyzer
+from interlens import ConversationTemplate, ModelParticipantConfig, rollout, register_analyzer
 import torch
 
 PROBE = torch.load("stance_probe_layer14.pt")   # a [d_model] direction you fit earlier

@@ -45,7 +45,7 @@ direction = direction / direction.norm()
 `SteeringSpec` registers forward hooks that either **add** `coef * direction` to the residual at `layers`, or **ablate** (project out) that direction.
 
 ```python
-from experiments.core.chat import SteeringSpec
+from interlens import SteeringSpec
 
 steer = SteeringSpec(direction=direction, layers=(8, 12), coef=6.0, mode="add")
 msg = conv.sample("bob", "How do you feel about the proposal?", steering=steer)  # ephemeral, steered
@@ -61,7 +61,7 @@ conv.step(conv.by_name["bob"], steering=ablate)                                 
 `Patch` overwrites a decoder layer's residual at specific token `positions` with activations captured elsewhere (e.g. from another branch). This is the causal-tracing primitive: capture at turn N in one branch, inject at the aligned positions of another branch's forward.
 
 ```python
-from experiments.core.chat import Patch
+from interlens import Patch
 
 # 1) capture bob's layer-12 residual in the clean branch
 clean = conv.branch()

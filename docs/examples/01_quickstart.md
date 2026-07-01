@@ -1,10 +1,10 @@
 <!-- [interp-refactor] session f80ef917 -->
 # 01 · Quickstart
 
-The fastest path: `Conversation.from_models` scaffolds a two-party conversation from a tuple of models — each a short name from the [registry](../../chat/loading/registry.py), a raw HF id, or an already-loaded model (`ModelLike`). If two ids are identical, the weights are loaded **once** and shared between the two speakers.
+The fastest path: `Conversation.from_models` scaffolds a two-party conversation from a tuple of models — each a short name from the [registry](../../src/interlens/loading/registry.py), a raw HF id, or an already-loaded model (`ModelLike`). If two ids are identical, the weights are loaded **once** and shared between the two speakers.
 
 ```python
-from experiments.core.chat import Conversation
+from interlens import Conversation
 
 # Two speakers backed by the same 0.5B model (one weight load, shared).
 conv = Conversation.from_models(

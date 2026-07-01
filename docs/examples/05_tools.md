@@ -6,7 +6,7 @@ A `Tool` is a capability a participant can invoke mid-turn. The harness runs a u
 ## Define and register a tool
 
 ```python
-from experiments.core.chat import Tool, DEFAULT_REGISTRY
+from interlens import Tool, DEFAULT_REGISTRY
 
 class Calculator(Tool):
     name = "calculator"
@@ -39,7 +39,7 @@ The `schema` is passed straight to `apply_chat_template(tools=...)`, so use the 
 ### Live participant
 
 ```python
-from experiments.core.chat import AutoModelParticipant
+from interlens import AutoModelParticipant
 solver = AutoModelParticipant.from_pretrained(
     "qwen2.5-7b", name="solver",
     tools=(Calculator(),),     # the tool objects
@@ -50,7 +50,7 @@ solver = AutoModelParticipant.from_pretrained(
 ### Via a template (by name)
 
 ```python
-from experiments.core.chat import ConversationTemplate, ModelParticipantConfig
+from interlens import ConversationTemplate, ModelParticipantConfig
 tmpl = ConversationTemplate(
     participants=[ModelParticipantConfig(name="solver", model="qwen2.5-7b",
                                          tool_names=("calculator",), max_tool_iters=4)],

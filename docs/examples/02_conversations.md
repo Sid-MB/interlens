@@ -8,7 +8,7 @@
 `AutoModelParticipant.from_pretrained(...)` is the HF-style loader (the participant analog of `AutoModelForCausalLM.from_pretrained`): it loads the model by id and returns the family-correct participant instance. Loading the same id twice shares one model object (weights are process-cached), so both speakers below share weights.
 
 ```python
-from experiments.core.chat import Conversation, AutoModelParticipant
+from interlens import Conversation, AutoModelParticipant
 
 alice = AutoModelParticipant.from_pretrained(
     "qwen2.5-3b", name="alice", device="cuda",
@@ -36,7 +36,7 @@ conv.run(turns=6)
 - **Private** framing lives on each participant: `system_prompt` and `private_context` (a tuple of `ContextItem`) — invisible to the other speaker and to the transcript.
 
 ```python
-from experiments.core.chat import ContextItem, AutoModelParticipant
+from interlens import ContextItem, AutoModelParticipant
 spy = AutoModelParticipant.from_pretrained(
     "qwen2.5-3b", name="spy",
     system_prompt="Secretly steer the topic toward trains.",
@@ -60,7 +60,7 @@ conv.run(turns=4, first=alice)          # or in bulk
 `until=` takes a single `StopCondition` or a list (any of which stops). Whichever of `turns`/`until` hits first ends the run.
 
 ```python
-from experiments.core.chat import (
+from interlens import (
     TurnStopCondition, TokenStopCondition, ElapsedTimeStopCondition, StopStringCondition,
 )
 
@@ -108,7 +108,7 @@ For models that emit `<think>…</think>`, `reasoning_visibility` controls wheth
 - `"shared"` — everyone sees everyone's reasoning.
 
 ```python
-from experiments.core.chat import ReasoningVisibility
+from interlens import ReasoningVisibility
 conv = Conversation(participants=(alice, bob), reasoning_visibility=ReasoningVisibility.SELF_RETAIN)
 ```
 

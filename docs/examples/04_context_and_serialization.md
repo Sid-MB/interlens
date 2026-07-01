@@ -6,7 +6,7 @@
 Long conversations overflow the model's context. A `ContextPolicy` decides what to keep. Crucially it runs on the **typed segments** (system / moderator / private_context / turns) *before* the family flatten, so framing is preserved reliably.
 
 ```python
-from experiments.core.chat import (
+from interlens import (
     Conversation, ErrorPolicy, DropOldestPolicy, SlidingWindowPolicy, SummarizePolicy,
 )
 
@@ -35,7 +35,7 @@ conv = Conversation(
 A serializable spec: participant configs + scenario framing + policies. This is what rollouts expand and workers rebuild.
 
 ```python
-from experiments.core.chat import ConversationTemplate, ModelParticipantConfig, APIParticipantConfig, SlidingWindowPolicy
+from interlens import ConversationTemplate, ModelParticipantConfig, APIParticipantConfig, SlidingWindowPolicy
 
 tmpl = ConversationTemplate(
     participants=[

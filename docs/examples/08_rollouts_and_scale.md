@@ -6,7 +6,7 @@ Run one scenario many times, across many GPUs, checkpointed and resumable — wi
 ## `rollout` — N runs of one scenario
 
 ```python
-from experiments.core.chat import ConversationTemplate, ModelParticipantConfig, rollout
+from interlens import ConversationTemplate, ModelParticipantConfig, rollout
 
 tmpl = ConversationTemplate(
     participants=[
@@ -38,7 +38,7 @@ print("failed:", report.failed, "skipped(resumed):", report.skipped)
 When the specs differ (different scenarios/models), build them yourself:
 
 ```python
-from experiments.core.chat import ConversationSpec, run_conversations, available_devices
+from interlens import ConversationSpec, run_conversations, available_devices
 
 specs = [
     ConversationSpec(template=tmpl_a, job_id="a_debate", turns=6),
@@ -79,7 +79,7 @@ report = rollout(tmpl, n=32, turns=6, out_dir="runs/x", analyze=summarize)   # i
 Spawned workers inherit no parent state, so an analyzer that must run in the pool has to be **registered by name at import time** (a lambda/closure over parent locals can't cross the process boundary):
 
 ```python
-from experiments.core.chat import register_analyzer
+from interlens import register_analyzer
 
 def stance_probe(conv):
     return {"a": conv.sample("a", "One word stance?").content.strip()}

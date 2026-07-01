@@ -6,7 +6,7 @@ A `MessageHook` is middleware that inspects every freshly generated message **be
 ## Interface
 
 ```python
-from experiments.core.chat import MessageHook, MessageHookResult
+from interlens import MessageHook, MessageHookResult
 
 class NoProfanity(MessageHook):
     BANNED = {"heck", "darn"}
@@ -18,7 +18,7 @@ class NoProfanity(MessageHook):
 class EnforceBrevity(MessageHook):
     def review(self, message, conversation):
         if len(message.content) > 500:
-            from experiments.core.chat import Message
+            from interlens import Message
             trimmed = Message(author=message.author, content=message.content[:500] + " …",
                               metadata={**message.metadata, "trimmed": True})
             return MessageHookResult.edit(trimmed)          # substitute a replacement
@@ -41,7 +41,7 @@ Hooks run inside both `step` and `run`. A denied turn commits nothing and `step`
 Because `review` receives the live `conversation`, a hook can call an API model (or a local one via `conv.sample`) to score the turn:
 
 ```python
-from experiments.core.chat import MessageHook, MessageHookResult, APIParticipant
+from interlens import MessageHook, MessageHookResult, APIParticipant
 
 class JudgeHook(MessageHook):
     def __init__(self):
