@@ -1,26 +1,51 @@
 name: publish
 
-# Publishes to PyPI via Trusted Publishing (OIDC) — no API token / password stored.
-# Fires when a GitHub Release is published (create a release off a version tag, e.g. v0.1.0).
+# Every push to main cuts a new release: bump the patch version, create+push a `vX.Y.Z` tag (the version is
+# derived from it via hatch-vcs), build, publish to PyPI via Trusted Publishing (OIDC — no token), and cut a
+# GitHub Release. The tag is the source of truth; nothing is committed back, so there's no bump-loop.
 #
-# One-time PyPI setup (https://pypi.org/manage/account/publishing/): add a "pending publisher" for
+# One-time PyPI setup (https://pypi.org/manage/account/publishing/): add a pending publisher for
 #   project: interlens · owner: Sid-MB · repo: interlens · workflow: publish.yml · environment: pypi
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+
+# Serialize releases so two quick pushes can't race to claim the same version.
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 jobs:
-  build-and-publish:
+  release:
     runs-on: ubuntu-latest
-    environment: pypi          # scope the OIDC identity to a protected env (recommended)
+    environment: pypi
     permissions:
-      id-token: write          # required for Trusted Publishing (OIDC)
+      contents: write   # create + push the tag and the GitHub Release
+      id-token: write   # PyPI Trusted Publishing (OIDC)
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags so hatch-vcs / the bump can see the latest tag
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Compute next version and tag it
+        id: bump
+        run: |
+          git fetch --tags --force
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$latest" ]; then
+            next="0.1.0"
+          else
+            v=${latest#v}; IFS=. read -r a b c <<<"$v"; next="$a.$b.$((c + 1))"
+          fi
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "v$next"
+          git push origin "v$next"
 
       - name: Build sdist + wheel
         run: |
@@ -29,3 +54,8 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ steps.bump.outputs.version }}" dist/* --generate-notes

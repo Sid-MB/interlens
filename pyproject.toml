@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "interlens"
-version = "0.1.0"
+dynamic = ["version"]   # version is derived from the latest git tag (hatch-vcs); CI tags each push to main
 description = "A framework for efficiently scaffolding and interpreting multi-agent conversations (activation capture, steering, patching)."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -27,6 +27,9 @@ dev = ["pytest>=9"]
 [project.urls]
 Homepage = "https://github.com/Sid-MB/interlens"
 Repository = "https://github.com/Sid-MB/interlens"
+
+[tool.hatch.version]
+source = "vcs"   # version = latest `vX.Y.Z` git tag (+ dev suffix for untagged working trees)
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/interlens"]

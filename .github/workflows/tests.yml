@@ -18,6 +18,8 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # tags available so hatch-vcs can resolve a version during the editable install
 
       - uses: actions/setup-python@v5
         with:
