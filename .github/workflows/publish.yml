@@ -9,6 +9,11 @@ name: publish
 on:
   push:
     branches: [main]
+    # Only cut a release when the shipped package actually changes — code under src/ or packaging metadata.
+    # Docs/CI/test-only pushes don't bump the version or republish.
+    paths:
+      - 'src/**'
+      - 'pyproject.toml'
 
 # Serialize releases so two quick pushes can't race to claim the same version.
 concurrency:

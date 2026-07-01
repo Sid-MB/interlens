@@ -1,9 +1,17 @@
 name: tests
 
 on:
+  # Only run when something that can affect test outcomes changes: Python sources/tests or packaging metadata.
+  # Docs/CI-only changes skip the suite. Keep the same filter on both triggers so pushes and PRs behave alike.
   push:
     branches: [main]
+    paths:
+      - '**/*.py'
+      - 'pyproject.toml'
   pull_request:
+    paths:
+      - '**/*.py'
+      - 'pyproject.toml'
 
 concurrency:
   group: tests-${{ github.ref }}
