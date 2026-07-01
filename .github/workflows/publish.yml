@@ -20,14 +20,15 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      contents: write   # create + push the tag and the GitHub Release
-      id-token: write   # PyPI Trusted Publishing (OIDC)
+      contents: write      # create + push the tag and the GitHub Release
+      id-token: write      # PyPI Trusted Publishing (OIDC) + provenance signing
+      attestations: write  # actions/attest-build-provenance
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # full history + tags so hatch-vcs / the bump can see the latest tag
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -52,8 +53,16 @@ jobs:
           python -m pip install --upgrade build
           python -m build
 
+      # GitHub-native SLSA provenance for the built artifacts (verify later with `gh attestation verify <file>`).
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "dist/*"
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true   # upload PEP 740 attestations to PyPI (default under Trusted Publishing; explicit here)
 
       - name: Create GitHub Release
         env:
