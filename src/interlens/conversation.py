@@ -47,7 +47,7 @@ PromptLike = Message | str | None
 class Conversation:
 	"""Orchestrates turn-taking between ``Participant``s over a shared, perspective-neutral ``Transcript``.
 
-	``Conversation`` owns *who speaks when* and the **ordered view pipeline**: for each speaker it assembles a
+	``Conversation`` owns *who speaks when* and the **ordered view pipeline**. For each speaker it assembles a
 	structured, typed view (system block → private context → transcript turns), fits it to the context window on
 	those typed segments, then lets the participant flatten it (family fold/merge) and generate. Keeping the
 	pipeline ordered — fit *before* the lossy family flatten — is what lets the context policy preserve the
@@ -56,6 +56,8 @@ class Conversation:
 	Scenario framing is split by ownership: *shared* framing (``shared_context`` as a moderator seed turn,
 	``shared_system_prompt``) lives here; *private* framing (``system_prompt``, ``private_context``) lives on
 	each participant, so it is naturally invisible to the others and to the transcript.
+
+	``Conversation``s also support branching through ``branch()``, ephemeral sampling through ``sample()`` / ``sample_all()``, activation capture through ``capture()``, and loading to/from disk with ``save()`` / ``load()``.
 	"""
 
 	participants: tuple[Participant, ...]
@@ -310,18 +312,28 @@ class Conversation:
 		(str), or its index (int). Raises (via ``_resolve_participant``) if it isn't in this conversation."""
 		return self.participants[self._resolve_participant(which)]
 
-	def render_roles(self, pov: ParticipantLike, extra=()) -> list[dict]:
-		"""Convenience wrapper for ``transcript.render_roles`` that resolves ``pov`` (name / index / participant)
-		to the participant object — so you can pass ``"alice"`` instead of the object."""
-		return self.transcript.render_roles(pov=self.participant(pov), extra=extra)
+	def view(self, pov: ParticipantLike, extra=()) -> list[dict]:
+		"""The full ``[{role, content}]`` view ``pov``'s model is conditioned on — the **real generation input**:
+		system block (its private ``system_prompt`` + ``shared_system_prompt``) → ``private_context`` → the
+		transcript role-swapped to ``pov``, then **context-fit** and **family-flattened**. This is exactly what
+		``step`` / ``sample`` feed to ``generate``. Unlike ``transcript.render_roles`` (transcript turns only, no
+		framing or fitting), it reflects everything the model actually sees. ``pov`` is a ``ParticipantLike`` (name
+		/ index / participant); ``extra`` renders temporary, uncommitted messages (as ``sample`` does)."""
+		return self._view(self.participant(pov), extra=extra)
 
 	def render_templated(self, pov: ParticipantLike, *, extra=(), add_generation_prompt: bool = False,
 	                     tokenize: bool = False):
-		"""Convenience wrapper for ``transcript.render_templated`` that resolves ``pov`` (name / index / participant)
-		to the participant object. Returns the templated prompt (str, or token ids with ``tokenize=True``) that
-		``pov``'s model actually sees. Requires a local ``ModelParticipant`` (needs a tokenizer)."""
-		return self.transcript.render_templated(pov=self.participant(pov), extra=extra,
-		                                        add_generation_prompt=add_generation_prompt, tokenize=tokenize)
+		"""The full ``view`` run through ``pov``'s tokenizer chat template — the **exact prompt its model sees**,
+		special/control tokens and all (a str, or token ids with ``tokenize=True``). This is the truthful
+		counterpart to ``transcript.render_templated``, which templates the transcript turns ONLY (no system /
+		private framing, no context-fit). Requires a local ``ModelParticipant`` (needs a tokenizer)."""
+		participant = self.participant(pov)
+		tokenizer = getattr(participant, "tokenizer", None)
+		if tokenizer is None:
+			raise TypeError(f"{type(participant).__name__} {participant.name!r} has no tokenizer; "
+			                f"render_templated needs a local ModelParticipant")
+		return tokenizer.apply_chat_template(self.view(pov, extra=extra), tokenize=tokenize,
+		                                     add_generation_prompt=add_generation_prompt)
 
 	@staticmethod
 	def _as_stop(until) -> StopCondition | None:

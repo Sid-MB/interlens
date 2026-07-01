@@ -109,10 +109,17 @@ class Transcript:
 		return Transcript(_ConcatMessages(self.messages, extra))
 
 	def render_roles(self, *, pov: "Participant") -> list[dict]:
-		"""Render the transcript as ``[{"role", "content"}]`` from ``pov``'s perspective (``pov`` is keyword-only:
-		call ``render_roles(pov=alice)``). Its own turns become ``self_role`` (normally ``assistant``), everyone
-		else's become ``others_role`` (normally ``user``). For a "what if X had just been said" render, extend
-		first with ``with_extra`` and render the result."""
+		"""Render **the transcript turns only** as ``[{"role", "content"}]`` from ``pov``'s perspective (``pov`` is
+		keyword-only: ``render_roles(pov=alice)``). Its own turns become ``self_role`` (normally ``assistant``),
+		everyone else's become ``others_role`` (normally ``user``). For a "what if X had just been said" render,
+		extend first with ``with_extra`` and render the result.
+
+		**Limitation — this is NOT what the model actually sees.** The ``Transcript`` is the perspective-neutral
+		record; it knows nothing about a participant's ``system_prompt`` / ``private_context``, the conversation's
+		``shared_system_prompt`` / ``shared_context`` framing, the ``context_policy`` fitting, or the family-specific
+		flatten (Gemma system-folding etc.). Those are added by the ``Conversation`` pipeline. For the **real**
+		generation input use ``Conversation.view(pov)`` (or ``Conversation.render_templated(pov)`` for the templated
+		string); use this method for lower-level inspection of the record itself."""
 		rendered = []
 		for message in self.messages:
 			role = pov.self_role if message.author == pov.name else pov.others_role
@@ -121,18 +128,18 @@ class Transcript:
 
 	def render_templated(self, *, pov: "ModelParticipant",
 	                     add_generation_prompt: bool = False, tokenize: bool = False):
-		"""Render the transcript from ``pov``'s point of view as the **templated prompt its model actually sees** —
-		i.e. ``render_roles`` role-swapped, then run through ``pov``'s tokenizer chat template so the special /
-		control tokens (``<|im_start|>assistant`` etc.) are included. ``pov`` is keyword-only: call
-		``render_templated(pov=alice)``. Returns a str (``tokenize=False``, default) or token ids
-		(``tokenize=True``); ``add_generation_prompt`` appends the assistant open tag.
+		"""Template **the transcript turns only** from ``pov``'s point of view — i.e. ``render_roles`` role-swapped,
+		then run through ``pov``'s tokenizer chat template so the special / control tokens (``<|im_start|>assistant``
+		etc.) are included. ``pov`` is keyword-only: call ``render_templated(pov=alice)``. Returns a str
+		(``tokenize=False``, default) or token ids (``tokenize=True``); ``add_generation_prompt`` appends the
+		assistant open tag.
 
-		Scope: this is the **transcript turns only** — the system prompt, private context, and context-fitting that
-		a real turn also sees are added by the ``Conversation`` view pipeline, not here. It also renders the raw
-		role-swapped turns as-is, so for families that require strict role alternation / system-folding (e.g.
-		Gemma) prefer building the view via ``Conversation`` when you need the exact, family-correct prompt. Great
-		for debugging what a specific model is conditioned on. Requires a local model participant (with a
-		tokenizer); an API participant has none and raises."""
+		**Limitation — NOT the exact model input.** This omits the system prompt, private context, context-fitting,
+		and the family-specific flatten that a real turn also gets (see ``render_roles``); it also renders the raw
+		role-swapped turns as-is, which can even *raise* for families needing strict alternation / system-folding
+		(e.g. Gemma) since the merge isn't applied. For the **exact, family-correct prompt the model actually sees**,
+		use ``Conversation.render_templated(pov)``. This method is a lower-level inspection of the record. Requires a
+		local model participant (with a tokenizer); an API participant has none and raises."""
 		tokenizer = getattr(pov, "tokenizer", None)
 		if tokenizer is None:
 			raise TypeError(f"{type(pov).__name__} {getattr(pov, 'name', '')!r} has no tokenizer; "
