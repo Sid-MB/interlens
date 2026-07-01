@@ -82,6 +82,16 @@ conv.run(turns=6)
 
 Requires `ANTHROPIC_API_KEY` (or `ANTHROPIC_API_KEY_FILE`) and outbound network. For tests, inject a fake `client=callable(system, messages, model, max_tokens, temperature) -> str`.
 
+**OpenRouter** (`provider="openrouter"`) reaches any model behind [openrouter.ai](https://openrouter.ai) through one OpenAI-compatible endpoint — needs `OPENROUTER_API_KEY` and the `[api]` extra (`pip install "interlens[api]"`, which pulls `openai`):
+
+```python
+judge = APIParticipant(name="judge", provider="openrouter",
+                       model_id="meta-llama/llama-3.1-70b-instruct",   # or openai/gpt-5, anthropic/claude-sonnet-5, …
+                       max_tokens=400)
+```
+
+Both providers share one retry/backoff + max-in-flight client, built lazily per provider.
+
 ## Per-turn `max_new_tokens`
 
 `temperature`/`top_p`/`seed` are set once per participant, but generation *length* often varies per turn (a one-word verdict vs a paragraph). `step`/`sample` take an optional `max_new_tokens` override for exactly that:

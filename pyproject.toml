@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-api = ["anthropic>=0.112,<1"]   # only needed for APIParticipant (Claude-backed participants)
+api = ["anthropic>=0.112,<1", "openai>=1.40"]   # APIParticipant: anthropic (Claude) and/or openai SDK (OpenRouter)
 dev = ["pytest>=9"]
 
 [project.urls]

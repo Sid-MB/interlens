@@ -15,32 +15,36 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 
 from ..participant import Participant
 from ...message import Message
 
+# provider name -> client class in api_client. Each provider gets ONE process-wide shared client (retry/backoff +
+# a global max-in-flight cap), so the concurrency cap holds across every API participant in a rollout.
+_CLIENT_CLASSES = {"anthropic": "AnthropicClient", "openrouter": "OpenRouterClient"}
+_SHARED_CLIENTS: dict[str, object] = {}
+_SHARED_LOCK = threading.Lock()
 
-_SHARED_CLIENT = None
-_SHARED_LOCK = __import__("threading").Lock()
 
-
-def _anthropic_client(system, messages, model, max_tokens, temperature):
-	"""Default Claude client: a process-wide shared :class:`AnthropicClient` (retry/backoff + max-in-flight cap),
-	built lazily so the harness never requires ``anthropic`` unless an ``APIParticipant`` actually runs. Sharing
-	one instance is what makes the concurrency cap global across every API participant in a rollout."""
-	global _SHARED_CLIENT
-	if _SHARED_CLIENT is None:
+def _default_client(provider: str):
+	"""The process-wide shared client for ``provider`` (built lazily so the harness never imports a provider SDK
+	unless that provider actually runs). Raises on an unknown provider rather than silently defaulting."""
+	if provider not in _SHARED_CLIENTS:
 		with _SHARED_LOCK:
-			if _SHARED_CLIENT is None:
-				from .api_client import AnthropicClient
-				_SHARED_CLIENT = AnthropicClient()
-	return _SHARED_CLIENT(system, messages, model, max_tokens, temperature)
+			if provider not in _SHARED_CLIENTS:
+				if provider not in _CLIENT_CLASSES:
+					raise ValueError(f"unknown API provider {provider!r}; expected one of {sorted(_CLIENT_CLASSES)}")
+				from . import api_client
+				_SHARED_CLIENTS[provider] = getattr(api_client, _CLIENT_CLASSES[provider])()
+	return _SHARED_CLIENTS[provider]
 
 
 @dataclass
 class APIParticipant(Participant):
-	"""A participant backed by a hosted API (Claude via ``anthropic`` by default), for use as a debate opponent,
+	"""A participant backed by a hosted API — Claude via ``anthropic`` (``provider="anthropic"``, the default) or
+	any model behind OpenRouter (``provider="openrouter"``, OpenAI-compatible) — for use as a debate opponent,
 	moderator, or the classifier inside an ``analyze`` callback.
 
 	It is a full participant for *conversation* purposes but has **no local model** — so there is no device,
@@ -77,7 +81,7 @@ class APIParticipant(Participant):
 		# Split the flattened view into the provider's separate system param + user/assistant turns.
 		system = "\n\n".join(m["content"] for m in view if m["role"] == "system") or None
 		messages = [{"role": m["role"], "content": m["content"]} for m in view if m["role"] != "system"]
-		client = self.client or _anthropic_client
+		client = self.client or _default_client(self.provider)
 		max_tokens = max_new_tokens if max_new_tokens is not None else self.max_tokens
 		text = client(system=system, messages=messages, model=self.model_id,
 		              max_tokens=max_tokens, temperature=self.temperature)
