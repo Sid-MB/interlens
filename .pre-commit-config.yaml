@@ -1,0 +1,14 @@
+# Local developer hooks. Install once with `pre-commit install` (or run on demand with
+# `pre-commit run --all-files`). The insert-license hook adds/updates the AGPLv3 header on every
+# tracked Python file; in a pre-commit run it auto-fixes missing headers (and fails so you can
+# re-stage). CI re-checks the same headers with skywalking-eyes (.licenserc.yaml) before publishing.
+repos:
+  - repo: https://github.com/Lucas-C/pre-commit-hooks
+    rev: v1.5.6
+    hooks:
+      - id: insert-license
+        name: Insert AGPLv3 license header
+        files: \.py$
+        args:
+          - --license-filepath=.license-header.txt
+          - --comment-style=#

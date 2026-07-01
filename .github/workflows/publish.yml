@@ -32,6 +32,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Gate the release on the AGPLv3 file headers: no tag, build, or publish happens unless every source
+      # file carries the header (same check devs run locally via the insert-license pre-commit hook).
+      # Config lives in .licenserc.yaml; runs here rather than in a separate workflow to save machine time.
+      - name: Check AGPLv3 license headers
+        uses: apache/skywalking-eyes/header@v0.8.0
+        with:
+          mode: check
+
       - name: Compute next version and tag it
         id: bump
         run: |

@@ -1,3 +1,19 @@
+# interlens: a framework for scaffolding and interpreting multi-agent conversations
+# Copyright (C) 2026 Siddharth M. Bhatia
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 # [complete-chat-harness]: shared Anthropic client with retry/backoff + a max-in-flight cap (PLAN P4).
 # API-heavy rollouts (e.g. 50 Claude-vs-Claude conversations) must not hammer the endpoint: a shared client
 # bounds concurrency with a semaphore and retries transient failures (429 / overloaded / connection) with

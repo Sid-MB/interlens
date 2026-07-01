@@ -52,4 +52,4 @@ pytest                      # fast tests; real-model tests are opt-in: pytest -m
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GNU AGPLv3 — see [LICENSE](LICENSE).

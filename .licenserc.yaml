@@ -1,0 +1,30 @@
+# skywalking-eyes (License-Eye) config — CI-side enforcement of the AGPLv3 file header.
+# The `content` below MUST stay byte-for-byte in sync with .license-header.txt (the template the local
+# pre-commit `insert-license` hook writes). License-Eye strips comment markers and normalizes whitespace
+# before matching, so the `# ` prefixes added on insertion are ignored here.
+header:
+  license:
+    spdx-id: AGPL-3.0-or-later
+    copyright-owner: Siddharth M. Bhatia
+    content: |
+      interlens: a framework for scaffolding and interpreting multi-agent conversations
+      Copyright (C) 2026 Siddharth M. Bhatia
+
+      This program is free software: you can redistribute it and/or modify
+      it under the terms of the GNU Affero General Public License as published
+      by the Free Software Foundation, either version 3 of the License, or
+      (at your option) any later version.
+
+      This program is distributed in the hope that it will be useful,
+      but WITHOUT ANY WARRANTY; without even the implied warranty of
+      MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+      GNU Affero General Public License for more details.
+
+      You should have received a copy of the GNU Affero General Public License
+      along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+  paths:
+    - 'src/**/*.py'
+    - 'tests/**/*.py'
+
+  comment: never
