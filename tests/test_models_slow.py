@@ -47,7 +47,7 @@ def _conv(device, **kw):
 
 def test_two_models_talk_and_share_weights(device):
 	conv = _conv(device)
-	assert conv.by_name["alice"].model is conv.by_name["bob"].model   # same id -> one load
+	assert conv.participant("alice").model is conv.participant("bob").model   # same id -> one load
 	conv.transcript.append("bob", "Name one color.")
 	conv.run(turns=2, first="alice")   # first-by-name
 	assert [m.author for m in conv.transcript] == ["bob", "alice", "bob"]
@@ -78,9 +78,9 @@ def test_shared_scenario_pipeline_and_save_load(device, tmp_path):
 		shared_context="Is the moon larger than Australia's width?",
 	)
 	conv = tmpl.build(devices=device)
-	view = conv._view(conv.by_name["a"])
+	view = conv._view(conv.participant("a"))
 	assert view[0]["role"] == "system" and "terse" in view[0]["content"].lower()
-	conv.run(turns=2, first=conv.by_name["a"])
+	conv.run(turns=2, first=conv.participant("a"))
 	conv.save(tmp_path / "run")
 	loaded = Conversation.load(tmp_path / "run", devices=device)
 	assert [m.content for m in loaded.transcript] == [m.content for m in conv.transcript]
@@ -91,11 +91,11 @@ def test_interp_capture_and_steering(device):
 	from interlens.interp import decoder_layers
 	conv = _conv(device)
 	conv.transcript.append("bob", "Say one short sentence about the sky.")
-	model = conv.by_name["alice"].model
+	model = conv.participant("alice").model
 	d_model = model.config.hidden_size
 
 	with conv.capture(sites=["residual"], layers=[4]) as cache:
-		conv.step(conv.by_name["alice"])
+		conv.step(conv.participant("alice"))
 	rec = cache.query(participant="alice", layer=4)[0]
 	assert rec.tensor.ndim == 2 and rec.tensor.shape[1] == d_model
 	assert "answer" in rec.phases
@@ -114,7 +114,7 @@ def test_generate_batch_shapes_and_shared_prefill(device):
 	conv = Conversation.from_models((MODEL, MODEL), names=("alice", "bob"), device=device,
 	                                dtype=torch.float32, temperature=0.8, max_new_tokens=12)
 	conv.transcript.append("bob", "Say one word about the weather.")
-	alice = conv.by_name["alice"]
+	alice = conv.participant("alice")
 	same_view = conv._view(alice)
 	msgs = alice.generate_batch([same_view, same_view, same_view], group_seed=0)
 	assert len(msgs) == 3
@@ -122,7 +122,7 @@ def test_generate_batch_shapes_and_shared_prefill(device):
 	assert all(m.metadata["shared_prefill"] for m in msgs)   # identical prompts -> one prefill, N samples
 
 	# Differing prompts -> left-padded batch path (no shared prefill), still one Message per view.
-	v2 = conv._view(conv.by_name["bob"])
+	v2 = conv._view(conv.participant("bob"))
 	mixed = alice.generate_batch([same_view, v2], group_seed=1)
 	assert len(mixed) == 2 and not any(m.metadata["shared_prefill"] for m in mixed)
 
@@ -149,6 +149,6 @@ def test_kv_reuse_output_equivalence(device):
 	def run(kv):
 		conv = _conv(device, kv_reuse=kv)
 		conv.transcript.append("b", "Name one color.")
-		conv.run(turns=3, first=conv.by_name["alice"])
+		conv.run(turns=3, first=conv.participant("alice"))
 		return [m.content for m in conv.transcript]
 	assert run(False) == run(True)   # guarded reuse must not change greedy output

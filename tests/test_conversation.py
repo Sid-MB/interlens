@@ -94,7 +94,7 @@ def test_branch_isolation_shares_participants():
 	branch = base.branch()
 	branch.run(turns=2)
 	assert len(base.transcript) == 2 and len(branch.transcript) == 4  # base frozen, branch diverged
-	assert branch.by_name["a"] is base.by_name["a"]                   # participants shared, no reload
+	assert branch.participant("a") is base.participant("a")                   # participants shared, no reload
 
 
 def test_sample_is_ephemeral():

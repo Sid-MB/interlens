@@ -45,7 +45,7 @@ base.transcript.append("a", "The secret code is FALCON. What is the secret code?
 
 # clean: capture residuals everywhere we might patch
 with base.capture(sites=["residual"], layers=list(range(0, 28, 4))) as clean_cache:
-    base.step(base.by_name["b"])
+    base.step(base.participant("b"))
 
 # corrupt: overwrite the code, then patch one layer's residual back from the clean run
 def patched_answer(layer, positions):
@@ -94,7 +94,7 @@ print("mean stance projection:", sum(projs) / len(projs))
 Because `sample` is ephemeral and `branch` is free, a full coefficient × layer sweep is a couple of loops — pin `seed` so each cell is comparable.
 
 ```python
-conv.by_name["b"].seed = 0                          # fix RNG so only the intervention varies
+conv.participant("b").seed = 0                          # fix RNG so only the intervention varies
 results = {}
 for layer in (8, 12, 16, 20):
     for coef in (2.0, 4.0, 8.0):

@@ -9,8 +9,8 @@ All four tools hook into the **same** generation path as real turns, `sample`, a
 
 ```python
 with conv.capture(sites=["residual"], layers=[8, 12, 16], offload="cpu") as cache:
-    conv.step(conv.by_name["bob"])
-    conv.step(conv.by_name["alice"])
+    conv.step(conv.participant("bob"))
+    conv.step(conv.participant("alice"))
 
 # Query the cache by structure:
 act = cache.at(participant="bob", layer=12, site="residual")   # exactly one tensor, [seq, d_model]
@@ -51,7 +51,7 @@ steer = SteeringSpec(direction=direction, layers=(8, 12), coef=6.0, mode="add")
 msg = conv.sample("bob", "How do you feel about the proposal?", steering=steer)  # ephemeral, steered
 
 ablate = SteeringSpec(direction=direction, layers=(12,), mode="ablate")          # remove the component
-conv.step(conv.by_name["bob"], steering=ablate)                                  # committed, ablated turn
+conv.step(conv.participant("bob"), steering=ablate)                                  # committed, ablated turn
 ```
 
 `direction` is a `[d_model]` tensor on any device (moved to match). A summary (mode, layers, coef, direction norm) is recorded in `msg.metadata["steering"]` so a steered turn is reproducible. Steering **disables KV reuse** automatically (the intervention wasn't in the cached KV).
@@ -66,7 +66,7 @@ from interlens import Patch
 # 1) capture bob's layer-12 residual in the clean branch
 clean = conv.branch()
 with clean.capture(sites=["residual"], layers=[12]) as cache:
-    clean.step(clean.by_name["bob"])
+    clean.step(clean.participant("bob"))
 donor = cache.at(participant="bob", layer=12)          # [seq, d_model]
 
 # 2) inject those activations at chosen positions in a corrupted branch's next forward

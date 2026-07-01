@@ -85,7 +85,7 @@ for _ in range(3):
 # `conv` and `base` are untouched; only each `b` advanced.
 ```
 
-> Because branches **share the participant objects**, mutating a participant (e.g. `b.by_name["alice"].temperature = 0.3`) changes it for *every* branch and the original. To vary generation settings per branch, set them right before you run, or pin `seed` and vary only the prompt/intervention — see [09](09_advanced_interp_pipelines.md).
+> Because branches **share the participant objects**, mutating a participant (e.g. `b.participant("alice").temperature = 0.3`) changes it for *every* branch and the original. To vary generation settings per branch, set them right before you run, or pin `seed` and vary only the prompt/intervention — see [09](09_advanced_interp_pipelines.md).
 
 ## Ephemeral sampling — read state without mutating it
 

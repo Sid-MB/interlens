@@ -98,7 +98,7 @@ Both providers share one retry/backoff + max-in-flight client, built lazily per 
 
 ```python
 conv.sample("a", "Answer in one word.", max_new_tokens=8)     # short
-conv.step(conv.by_name["a"], max_new_tokens=400)              # long
+conv.step(conv.participant("a"), max_new_tokens=400)              # long
 ```
 
 Next: [context management & serialization](04_context_and_serialization.md).

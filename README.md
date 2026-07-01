@@ -2,13 +2,13 @@
 
 This library provides a harness, optimized utilities, and interpretability hooks for multi-agent conversation rollouts. 
 
-A harness for **multi-agent (model↔model) conversations** with **first-class interpretability** — activation capture, steering, activation patching, and token logprobs, all hooked into the *same* generation path as real turns and tagged to conversation structure. Scales from one interactive dialogue to thousands of checkpointed, multi-GPU rollouts.
+A harness for **multi-agent (model-to-model) conversations** with **first-class interpretability**—activation capture, steering, activation patching, and token logprobs—all hooked into the *same* generation path as real turns and tagged to conversation structure. Scales from one interactive dialogue to thousands of checkpointed, multi-GPU rollouts.
 
 ```python
 from interlens import Conversation
 
 conv = Conversation.from_models(
-    ("qwen2.5-0.5b", "qwen2.5-0.5b"), names=("alice", "bob"),
+    ("Qwen/Qwen2.5-0.5B-Instruct", "Qwen/Qwen2.5-0.5B-Instruct"), names=("alice", "bob"),
     shared_context="Let's debate: is cereal a soup?",
 )
 conv.run(turns=4, first="alice")
@@ -20,9 +20,9 @@ See [`docs/examples`](docs/examples) for sample code.
 ## Install
 
 ```bash
-pip install "git+https://github.com/Sid-MB/interlens"
-# with the Claude-backed APIParticipant:
-pip install "interlens[api] @ git+https://github.com/Sid-MB/interlens"
+pip install interlens
+# with hosted-API participants (APIParticipant):
+pip install "interlens[api]"
 ```
 
 ### PyTorch / CUDA note
@@ -47,7 +47,8 @@ See [`docs/examples/`](docs/examples/) for a simple→advanced walkthrough of th
 ```bash
 git clone https://github.com/Sid-MB/interlens && cd interlens
 pip install -e ".[dev]"
-pytest                      # fast tests; real-model tests are opt-in: pytest -m slow
+pytest                      
+# fast tests; opt-in to thorough tests requiring downloading models + a GPU with: pytest -m slow
 ```
 
 ## License

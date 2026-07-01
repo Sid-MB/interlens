@@ -17,15 +17,15 @@ conv = Conversation.from_models(
 )
 conv.run(turns=4, first="alice")
 
-for m in conv.transcript:
-    print(f"{m.author}: {m.content}\n")
+for message in conv.transcript:
+    print(f"{message.author}: {message.content}\n")
 
 # ...or, for quick debugging, dump the whole transcript at once:
 print(conv.transcript)                       # [i] author: content  (also conv.transcript.pretty())
 print(conv.transcript.pretty(metadata=True)) # include per-turn metadata (reasoning, tool trail, token counts)
 
 # See exactly what one model is conditioned on — role-swapped to its POV, WITH chat-template special tokens:
-print(conv.transcript.render_templated(pov=conv.by_name["alice"]))   # tokenize=True returns ids instead
+print(conv.render_templated(pov="alice"))   # pov takes a name/index/participant; tokenize=True returns ids
 ```
 
 ## What just happened
@@ -34,7 +34,7 @@ print(conv.transcript.render_templated(pov=conv.by_name["alice"]))   # tokenize=
 - **`prompt=...`** (on `from_models` and `run`) is the alternative when the opener should read as something a *speaker* said: a `str` is attributed to the **last** participant (so the `first` speaker replies to it), a `Message` sets the author explicitly. Use `shared_context` for neutral framing, `prompt` for a participant-voiced line.
 - **`conv.run(turns=4, first="alice")`** alternates speakers for 4 turns starting with alice. `first` accepts a **name** (`"alice"`), an **index** (`0`), or a **`Participant`** object. `run` requires at least one of `turns=` or `until=` (a [stop condition](02_conversations.md#stopping)).
 - **`conv.transcript`** is the shared state — a list of `Message`s (`.author`, `.content`, `.metadata`). You can still append to it directly for finer control.
-- **`conv.by_name["alice"]`** looks a participant up by name.
+- **`conv.participant("alice")`** looks a participant up by name.
 
 ## Two *different* models
 
@@ -42,7 +42,7 @@ print(conv.transcript.render_templated(pov=conv.by_name["alice"]))   # tokenize=
 conv = Conversation.from_models(("Qwen/Qwen2.5-3B-Instruct", "google/gemma-2-2b-it"), names=("q", "g"), device="cuda")
 ```
 
-Each id resolves to its family-correct participant class automatically (Qwen vs Gemma chat templates, tool formats, system-role handling) via the registry — see [03](03_participants_and_models.md).
+Each id resolves to its family-correct participant class automatically (Qwen vs Gemma chat templates, tool formats, system-role handling) from its `config.model_type` — see [03](03_participants_and_models.md).
 
 ## One-off generation without committing
 

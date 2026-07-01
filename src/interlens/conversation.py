@@ -45,7 +45,7 @@ PromptLike = Message | str | None
 
 @dataclass
 class Conversation:
-	"""Orchestrates turn-taking between participants over a shared, perspective-neutral ``Transcript``.
+	"""Orchestrates turn-taking between ``Participant``s over a shared, perspective-neutral ``Transcript``.
 
 	``Conversation`` owns *who speaks when* and the **ordered view pipeline**: for each speaker it assembles a
 	structured, typed view (system block → private context → transcript turns), fits it to the context window on
@@ -110,7 +110,6 @@ class Conversation:
 			raise ValueError(f"participant names must be unique, got {names}")
 		if self.moderator_name in names:
 			raise ValueError(f"moderator_name {self.moderator_name!r} collides with a participant name")
-		self.by_name = {p.name: p for p in self.participants}
 		self._pending_capture: CaptureRequest | None = None
 		# Seed the shared scenario as a moderator turn — but only when starting fresh, so a branched/loaded
 		# conversation (whose transcript already contains the seed) is not re-seeded.
@@ -243,7 +242,7 @@ class Conversation:
 
 		Speakers are taken in ``participants`` order (that tuple's order IS the turn order); ``first`` sets who
 		starts (default: ``participants[0]``) and the rest follow round-robin. ``first`` may be a ``Participant``,
-		its ``name`` (str), or its index (int) — resolved via ``_parse_participant`` (raises if it isn't in this
+		its ``name`` (str), or its index (int) — resolved via ``_resolve_participant`` (raises if it isn't in this
 		conversation). ``until`` may be a single condition or a list (any of which stops the run). Stop conditions
 		are ``reset()`` at the start so a reused condition doesn't leak state across runs.
 
@@ -260,7 +259,7 @@ class Conversation:
 		if stop is not None:
 			stop.reset()
 
-		start = self._parse_participant(first) if first is not None else 0
+		start = self._resolve_participant(first) if first is not None else 0
 		n = len(self.participants)
 		i = 0
 		while turns is None or i < turns:
@@ -286,8 +285,8 @@ class Conversation:
 		else:
 			raise TypeError(f"prompt must be a str, Message, or None, got {type(prompt).__name__}")
 
-	def _parse_participant(self, participant: ParticipantLike) -> int:
-		"""Resolves a participant from a participant object, name, or index. Raises an error if that participant does not exist in this Conversation. Returns the index of the participant within self.participants."""
+	def _resolve_participant(self, participant: ParticipantLike) -> int:
+		"""Resolves a participant from a participant object, name, or index. Returns the index of the participant within self.participants. Raises an error if that participant does not exist in this Conversation."""
 		if isinstance(participant, Participant):
 			try:
 				return self.participants.index(participant)
@@ -305,6 +304,24 @@ class Conversation:
 				raise IndexError(f"Participant index {participant} is out of range for this Conversation.")
 		else:
 			raise TypeError("Participant must be a Participant object, name (str), or index (int).")
+
+	def participant(self, which: ParticipantLike) -> Participant:
+		"""Return one of this conversation's participants, resolved from a ``Participant`` object, its ``name``
+		(str), or its index (int). Raises (via ``_resolve_participant``) if it isn't in this conversation."""
+		return self.participants[self._resolve_participant(which)]
+
+	def render_roles(self, pov: ParticipantLike, extra=()) -> list[dict]:
+		"""Convenience wrapper for ``transcript.render_roles`` that resolves ``pov`` (name / index / participant)
+		to the participant object — so you can pass ``"alice"`` instead of the object."""
+		return self.transcript.render_roles(pov=self.participant(pov), extra=extra)
+
+	def render_templated(self, pov: ParticipantLike, *, extra=(), add_generation_prompt: bool = False,
+	                     tokenize: bool = False):
+		"""Convenience wrapper for ``transcript.render_templated`` that resolves ``pov`` (name / index / participant)
+		to the participant object. Returns the templated prompt (str, or token ids with ``tokenize=True``) that
+		``pov``'s model actually sees. Requires a local ``ModelParticipant`` (needs a tokenizer)."""
+		return self.transcript.render_templated(pov=self.participant(pov), extra=extra,
+		                                        add_generation_prompt=add_generation_prompt, tokenize=tokenize)
 
 	@staticmethod
 	def _as_stop(until) -> StopCondition | None:
@@ -339,7 +356,7 @@ class Conversation:
 		transcript**. Pure read of current state: safe to call repeatedly / in a loop. ``message`` is attributed
 		to ``as_author`` (default: the other participant), so it reads as a normal incoming turn. The same interp
 		options as ``step`` are honored on the ephemeral generation."""
-		speaker = self.by_name[speaker] if isinstance(speaker, str) else speaker
+		speaker = self.participant(speaker)
 		extra = []
 		if message is not None:
 			author = as_author or self._default_other(speaker)
@@ -404,7 +421,7 @@ class Conversation:
 		for message in self.transcript:
 			if message.author == self.moderator_name:
 				continue
-			speaker = fresh.by_name.get(message.author)
+			speaker = next((p for p in fresh.participants if p.name == message.author), None)
 			if speaker is not None:
 				fresh.step(speaker)
 		return fresh

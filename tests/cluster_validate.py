@@ -32,7 +32,7 @@ SMALL = "qwen2.5-0.5b"
 
 def opinion(conv):
     """Top-level analyzer (picklable → survives spawn). Samples each participant off-transcript."""
-    return {name: conv.sample(name, "In one sentence, your view now?").content for name in conv.by_name}
+    return {p.name: conv.sample(p.name, "In one sentence, your view now?").content for p in conv.participants}
 
 
 register_analyzer("opinion", opinion)
@@ -52,9 +52,9 @@ def log(msg):
 def check_flash_attn():
     log("=== flash-attn resolution ===")
     conv = conversation_from_ids((SMALL, SMALL), names=("a", "b"), device="cuda", max_new_tokens=8, temperature=0.0)
-    resolved = getattr(conv.by_name["a"].model, "_resolved_attn", "UNKNOWN")
+    resolved = getattr(conv.participant("a").model, "_resolved_attn", "UNKNOWN")
     log(f"resolved attention backend = {resolved}")
-    assert conv.by_name["a"].model is conv.by_name["b"].model, "same-id should share one model object"
+    assert conv.participant("a").model is conv.participant("b").model, "same-id should share one model object"
     log("same-id weight sharing OK")
     return resolved
 
@@ -67,7 +67,7 @@ def check_shared_tokenizer():
                       ModelParticipantConfig(name="b", model="gemma2-9b", max_new_tokens=8, temperature=0.0)],
         shared_context="Say hello in one word.", turns=2)
     conv = tmpl.build(devices="cuda")
-    a, b = conv.by_name["a"], conv.by_name["b"]
+    a, b = conv.participant("a"), conv.participant("b")
     assert a.tokenizer is b.tokenizer, "same-family sizes must share ONE tokenizer object"
     assert a.model is not b.model, "different sizes must be distinct model objects"
     log("tokenizer identity shared, models distinct OK")
@@ -85,7 +85,7 @@ def check_two_families():
         shared_context="Debate: is social media net positive or harmful for teenagers?", turns=4)
     conv = tmpl.build(devices="cuda")
     conv.run(turns=4)
-    assert conv.by_name["q"].tokenizer is not conv.by_name["g"].tokenizer
+    assert conv.participant("q").tokenizer is not conv.participant("g").tokenizer
     log(f"qwen<->gemma produced {len(conv.transcript)} messages, distinct tokenizers OK")
 
 
