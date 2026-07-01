@@ -25,7 +25,12 @@ from .conftest import FakeTokenizer
 
 
 def _gemma():
-	return GemmaModelParticipant.__new__(GemmaModelParticipant)  # exercise finalize_view without a model
+	# Exercise finalize_view without a model. Flags are now tokenizer-derived at build time, so set the
+	# Gemma-2 template semantics (no system role, strict alternation) directly on the instance under test.
+	p = GemmaModelParticipant.__new__(GemmaModelParticipant)
+	p.supports_system_role = False
+	p.requires_alternating_roles = True
+	return p
 
 
 def test_gemma_folds_system_and_merges_same_role():

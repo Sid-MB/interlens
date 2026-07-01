@@ -11,12 +11,12 @@
 from interlens import Conversation, AutoModelParticipant
 
 alice = AutoModelParticipant.from_pretrained(
-    "qwen2.5-3b", name="alice", device="cuda",
+    "Qwen/Qwen2.5-3B-Instruct", name="alice", device="cuda",
     system_prompt="You are a concise, skeptical debater. Keep replies under 3 sentences.",
     temperature=0.7, max_new_tokens=200,
 )
 bob = AutoModelParticipant.from_pretrained(
-    "qwen2.5-3b", name="bob", device="cuda",     # same id → shares alice's weights (cached)
+    "Qwen/Qwen2.5-3B-Instruct", name="bob", device="cuda",     # same id → shares alice's weights (cached)
     system_prompt="You are an enthusiastic optimist who loves analogies.",
     temperature=0.9, max_new_tokens=200,
 )
@@ -38,7 +38,7 @@ conv.run(turns=6)
 ```python
 from interlens import ContextItem, AutoModelParticipant
 spy = AutoModelParticipant.from_pretrained(
-    "qwen2.5-3b", name="spy",
+    "Qwen/Qwen2.5-3B-Instruct", name="spy",
     system_prompt="Secretly steer the topic toward trains.",
     private_context=(ContextItem("Remember: never admit you have an agenda.", role_hint="user", author="handler"),),
 )

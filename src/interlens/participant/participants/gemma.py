@@ -23,27 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 class GemmaModelParticipant(ModelParticipant):
-	"""A Gemma-family participant.
-
-	Gemma's chat template has two constraints the base flatten must respect, both expressed purely by overriding
-	capability flags (the base ``finalize_view`` does the work — no method override needed):
-
-	- It **rejects a standalone ``system`` role** — system content must be folded into the first user turn
-	  (``supports_system_role=False``).
-	- It **requires strictly alternating** user/model turns — so the moderator seed + another speaker + private
-	  context (all mapping to ``user``) must be merged, or ``apply_chat_template`` raises
-	  (``requires_alternating_roles=True``).
-
-	Gemma also renders the assistant as role ``model``, but that mapping is handled by the tokenizer's own
-	template when we pass standard ``assistant`` roles, so no override is needed here. Tool-call format
-	(```` ```tool_code ````) parsing arrives with the tools phase.
-
-	The flags are plain class attributes (not dataclass fields), so ``GemmaModelParticipant`` is just a
-	``ModelParticipant`` with two behaviors flipped — it inherits the dataclass ``__init__`` unchanged.
-	"""
-
-	supports_system_role = False
-	requires_alternating_roles = True
+	"""A Gemma-family participant. The only thing that differs from base is the tool-call format
+	(```` ```tool_code ````); the chat-template flags (Gemma 2 rejects a standalone ``system`` role and requires
+	strict user/model alternation, Gemma 3 accepts a system role) are auto-derived from the tokenizer's own
+	template, so both generations use this one class."""
 
 	def parse_tool_calls(self, text: str) -> list:
 		"""Parse Gemma's ```` ```tool_code ```` function-call blocks (best-effort).
@@ -73,11 +56,3 @@ class GemmaModelParticipant(ModelParticipant):
 				continue
 			calls.append(ToolCall(name=name.split(".")[-1], arguments=arguments, raw=block))
 		return calls
-
-
-class Gemma3ModelParticipant(GemmaModelParticipant):
-	"""Gemma 3. Shares Gemma 2's ``tool_code`` parsing and strict user/model alternation, but — unlike Gemma 2 —
-	its chat template **accepts a standalone ``system`` role**, so it must NOT fold system into the first user
-	turn. (Verified against the real template by ``tests/test_family_flags.py``.)"""
-
-	supports_system_role = True

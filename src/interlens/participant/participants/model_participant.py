@@ -129,7 +129,8 @@ class ModelParticipant(Participant):
 		return text[match.end():].strip(), match.group(1).strip()
 
 	def generate(self, view: list[dict], *, steering=None, capture=None, patch=None,
-	             return_logprobs: bool = False, turn: int | None = None) -> Message:
+	             return_logprobs: bool = False, turn: int | None = None,
+	             max_new_tokens: int | None = None) -> Message:
 		if self.seed is not None:
 			torch.manual_seed(self.seed)
 
@@ -142,7 +143,7 @@ class ModelParticipant(Participant):
 		result = None  # last _GenResult
 
 		for iteration in range(self.max_tool_iters + 1):
-			result = self._run_model(working, schemas, steering, patch, return_logprobs)
+			result = self._run_model(working, schemas, steering, patch, return_logprobs, max_new_tokens)
 			calls = self.parse_tool_calls(result.raw) if self.tools else []
 			if not calls or iteration == self.max_tool_iters:
 				if calls:
@@ -236,7 +237,7 @@ class ModelParticipant(Participant):
 			}))
 		return messages
 
-	def _run_model(self, messages, schemas, steering, patch, return_logprobs):
+	def _run_model(self, messages, schemas, steering, patch, return_logprobs, max_new_tokens=None):
 		"""One generation over ``messages`` (a flattened view), with the current model's chat template + tool
 		schemas and any steering/patch hooks. Returns a ``_GenResult`` with the decoded text and token bookkeeping.
 		Steering/patch apply to *every* generation inside the tool loop, per the interp contract."""
@@ -250,7 +251,8 @@ class ModelParticipant(Participant):
 		prompt_len = enc["input_ids"].shape[1]
 
 		do_sample = bool(self.temperature and self.temperature > 0)
-		kwargs = dict(max_new_tokens=self.max_new_tokens, do_sample=do_sample, pad_token_id=self.tokenizer.pad_token_id)
+		kwargs = dict(max_new_tokens=max_new_tokens if max_new_tokens is not None else self.max_new_tokens,
+		              do_sample=do_sample, pad_token_id=self.tokenizer.pad_token_id)
 		if do_sample:
 			kwargs.update(temperature=self.temperature, top_p=self.top_p)
 		if return_logprobs:
@@ -396,11 +398,8 @@ class ModelParticipant(Participant):
 		so a manually-constructed participant round-trips without the caller threading its id separately.
 		"""
 		from ..config.model_participant_config import ModelParticipantConfig, dtype_to_str
-		from ...loading import generation_for_hf_id, generation_for_class
 
-		# Recover the generation from the loaded HF id; fall back to the class if the model isn't in the registry.
 		hf_id = getattr(self.model.config, "_name_or_path", "")
-		generation = generation_for_hf_id(hf_id) or generation_for_class(type(self))
 		return ModelParticipantConfig(
 			name=self.name,
 			system_prompt=self.system_prompt,
@@ -415,5 +414,4 @@ class ModelParticipant(Participant):
 			tool_names=tuple(t.name for t in self.tools),
 			max_tool_iters=self.max_tool_iters,
 			kv_reuse=self.kv_reuse,
-			generation=generation,
 		)

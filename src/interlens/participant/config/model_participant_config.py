@@ -21,7 +21,6 @@ import torch
 
 from .participant_config import ParticipantConfig, register_config
 from ..participants.model_participant import ModelParticipant
-from ...loading import load_model, participant_class
 
 _DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
 
@@ -39,9 +38,9 @@ def str_to_dtype(name: str) -> torch.dtype:
 class ModelParticipantConfig(ParticipantConfig):
 	"""Serializable spec for a local-model participant.
 
-	Stores *what to build* — the model id (short-name or HF id), optional pinned ``revision``, dtype, generation
-	params, reasoning controls, and the private framing — but never weights. ``build`` loads the model onto a
-	device and returns the family-appropriate live participant.
+	Stores *what to build* — the HF model id, optional pinned ``revision``, dtype, generation params, reasoning
+	controls, and the private framing — but never weights. ``build`` loads the model onto a device and returns the
+	family-appropriate live participant (resolved from ``config.model_type``).
 	"""
 
 	kind = "model"
@@ -60,27 +59,22 @@ class ModelParticipantConfig(ParticipantConfig):
 	tool_names: tuple[str, ...] = ()
 	max_tool_iters: int = 4
 	kv_reuse: bool | str = "auto"
-	generation: str | None = None
 	weights_path: str | None = None
 
-	def participant_class(self):
-		# Explicit ``generation`` wins (needed when ``model`` is a raw HF id the registry can't resolve).
-		return participant_class(self.model, generation=self.generation)
-
 	def build(self, device, registry=None) -> ModelParticipant:
+		from ...factories import AutoModelParticipant
+
 		source = self.weights_path or self.model
-		model, tokenizer = load_model(source, device=device, dtype=str_to_dtype(self.dtype),
-		                              attn=self.attn, quant=self.quant, revision=self.revision)
-		cls = self.participant_class()
 		tools = ()
 		if self.tool_names:
 			from ...tools.registry import DEFAULT_REGISTRY
 			tools = tuple((registry or DEFAULT_REGISTRY).resolve(self.tool_names))
-		return cls(
-			model=model,
-			tokenizer=tokenizer,
+		return AutoModelParticipant.from_pretrained(
+			source,
 			name=self.name,
 			device=device,
+			load_kwargs={"dtype": str_to_dtype(self.dtype), "attn": self.attn, "quant": self.quant,
+			             "revision": self.revision},
 			max_new_tokens=self.max_new_tokens,
 			temperature=self.temperature,
 			top_p=self.top_p,
@@ -109,7 +103,6 @@ class ModelParticipantConfig(ParticipantConfig):
 			tool_names=list(self.tool_names),
 			max_tool_iters=self.max_tool_iters,
 			kv_reuse=self.kv_reuse,
-			generation=self.generation,
 			weights_path=self.weights_path,
 		)
 
@@ -132,6 +125,5 @@ class ModelParticipantConfig(ParticipantConfig):
 			tool_names=tuple(data.get("tool_names", ())),
 			max_tool_iters=data.get("max_tool_iters", 4),
 			kv_reuse=data.get("kv_reuse", "auto"),
-			generation=data.get("generation"),
 			weights_path=data.get("weights_path"),
 		)

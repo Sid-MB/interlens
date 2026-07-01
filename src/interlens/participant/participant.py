@@ -51,7 +51,8 @@ class Participant(ABC):
 
 	@abstractmethod
 	def generate(self, view: list[dict], *, steering=None, capture=None, patch=None,
-	             return_logprobs: bool = False, turn: int | None = None) -> Message:
+	             return_logprobs: bool = False, turn: int | None = None,
+	             max_new_tokens: int | None = None) -> Message:
 		"""Produce this participant's next message given ``view`` — the conversation flattened to
 		``[{"role", "content"}]`` from this participant's perspective. Returns a ``Message`` it authored.
 

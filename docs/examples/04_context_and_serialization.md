@@ -39,8 +39,8 @@ from interlens import ConversationTemplate, ModelParticipantConfig, APIParticipa
 
 tmpl = ConversationTemplate(
     participants=[
-        ModelParticipantConfig(name="alice", model="qwen2.5-3b", temperature=0.7, system_prompt="Be terse."),
-        ModelParticipantConfig(name="bob", model="gemma2-2b", temperature=0.9),
+        ModelParticipantConfig(name="alice", model="Qwen/Qwen2.5-3B-Instruct", temperature=0.7, system_prompt="Be terse."),
+        ModelParticipantConfig(name="bob", model="google/gemma-2-2b-it", temperature=0.9),
     ],
     shared_context="Debate: is a hotdog a sandwich?",
     shared_system_prompt="Stay civil.",
@@ -56,7 +56,7 @@ conv = tmpl.build(devices="cuda")                # → live Conversation (loads 
 conv.run(turns=tmpl.turns)
 ```
 
-`ModelParticipantConfig` mirrors the `ModelParticipant` knobs (`dtype`, `attn`, `quant`, `revision`, `max_new_tokens`, `temperature`, `top_p`, `seed`, `thinking`, `tool_names`, `max_tool_iters`, `kv_reuse`, `generation`, `weights_path`). `generation` is only needed to force chat behavior when `model` is a raw HF id the registry can't resolve.
+`ModelParticipantConfig` mirrors the `ModelParticipant` knobs (`dtype`, `attn`, `quant`, `revision`, `max_new_tokens`, `temperature`, `top_p`, `seed`, `thinking`, `tool_names`, `max_tool_iters`, `kv_reuse`, `weights_path`).
 
 Go from a live conversation back to a template with `conv.to_template()`.
 

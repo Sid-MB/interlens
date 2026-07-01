@@ -10,8 +10,8 @@ from interlens import ConversationTemplate, ModelParticipantConfig, rollout
 
 tmpl = ConversationTemplate(
     participants=[
-        ModelParticipantConfig(name="a", model="qwen2.5-3b", temperature=0.9),
-        ModelParticipantConfig(name="b", model="qwen2.5-3b", temperature=0.9),
+        ModelParticipantConfig(name="a", model="Qwen/Qwen2.5-3B-Instruct", temperature=0.9),
+        ModelParticipantConfig(name="b", model="Qwen/Qwen2.5-3B-Instruct", temperature=0.9),
     ],
     shared_context="Debate: tabs vs spaces.",
     turns=6,

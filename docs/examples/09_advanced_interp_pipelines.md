@@ -11,7 +11,7 @@ Find a direction that separates two conditions, then verify it's *causal* by ste
 import torch
 from interlens import Conversation, SteeringSpec
 
-conv = Conversation.from_models(("qwen2.5-3b", "qwen2.5-3b"), names=("a", "b"))
+conv = Conversation.from_models(("Qwen/Qwen2.5-3B-Instruct", "Qwen/Qwen2.5-3B-Instruct"), names=("a", "b"))
 conv.transcript.append("a", "Tell me your honest opinion of pineapple pizza.")
 
 LAYER = 14
@@ -80,8 +80,8 @@ def project_stance(conv):
 register_analyzer("project_stance", project_stance)
 
 tmpl = ConversationTemplate(
-    participants=[ModelParticipantConfig(name="a", model="qwen2.5-3b"),
-                  ModelParticipantConfig(name="b", model="qwen2.5-3b")],
+    participants=[ModelParticipantConfig(name="a", model="Qwen/Qwen2.5-3B-Instruct"),
+                  ModelParticipantConfig(name="b", model="Qwen/Qwen2.5-3B-Instruct")],
     shared_context="Debate: should we colonize Mars?", turns=6,
 )
 report = rollout(tmpl, n=128, turns=6, out_dir="runs/mars", analyze="project_stance")

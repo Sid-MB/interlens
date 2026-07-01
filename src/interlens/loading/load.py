@@ -18,7 +18,6 @@ from __future__ import annotations
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
-from .registry import resolve, tokenizer_id
 from .model_cache import cached_model, cached_tokenizer
 
 
@@ -72,13 +71,12 @@ def load_model(
 ):
 	"""Load a causal LM + tokenizer, sharing through the process-local caches.
 
-	Results: same-family/different-size pairings share the tokenizer (via ``tokenizer_id``); identical
-	(hf_id, device, dtype, attn, quant) pairings share the one model object. Flash-attention is the default
-	with automatic fallback to sdpa/eager; quantization is opt-in.
+	``id_or_name`` is the HF id (or a local path) to load directly. Identical (hf_id, device, dtype, attn, quant)
+	pairings share the one model object, and the tokenizer is cached by hf_id. Flash-attention is the default with
+	automatic fallback to sdpa/eager; quantization is opt-in.
 	"""
-	hf_id, _ = resolve(id_or_name)
-	tok_id = tokenizer_id(id_or_name)
-	tokenizer = cached_tokenizer(tok_id, lambda: load_tokenizer(hf_id, revision=revision))
+	hf_id = id_or_name
+	tokenizer = cached_tokenizer(hf_id, lambda: load_tokenizer(hf_id, revision=revision))
 	weight_key = (hf_id, str(device), str(dtype), attn, quant, revision)
 	model = cached_model(weight_key, lambda: _load_model_weights(hf_id, device, dtype, attn, quant, revision))
 	return model, tokenizer

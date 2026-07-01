@@ -78,7 +78,7 @@ class _Scripted(ModelParticipant):
 		self._i = 0
 		self.views = []
 
-	def _run_model(self, messages, schemas, steering, patch, return_logprobs):
+	def _run_model(self, messages, schemas, steering, patch, return_logprobs, max_new_tokens=None):
 		self.views.append(messages)
 		raw = self._scripted[min(self._i, len(self._scripted) - 1)]
 		self._i += 1

@@ -41,7 +41,7 @@ The `schema` is passed straight to `apply_chat_template(tools=...)`, so use the 
 ```python
 from interlens import AutoModelParticipant
 solver = AutoModelParticipant.from_pretrained(
-    "qwen2.5-7b", name="solver",
+    "Qwen/Qwen2.5-7B-Instruct", name="solver",
     tools=(Calculator(),),     # the tool objects
     max_tool_iters=4,          # bound the call→result→call loop
 )
@@ -52,7 +52,7 @@ solver = AutoModelParticipant.from_pretrained(
 ```python
 from interlens import ConversationTemplate, ModelParticipantConfig
 tmpl = ConversationTemplate(
-    participants=[ModelParticipantConfig(name="solver", model="qwen2.5-7b",
+    participants=[ModelParticipantConfig(name="solver", model="Qwen/Qwen2.5-7B-Instruct",
                                          tool_names=("calculator",), max_tool_iters=4)],
     shared_context="Compute 17 * 23 using your tool, then explain.",
     turns=2,

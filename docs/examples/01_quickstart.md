@@ -1,14 +1,14 @@
 <!-- [interp-refactor] session f80ef917 -->
 # 01 · Quickstart
 
-The fastest path: `Conversation.from_models` scaffolds a two-party conversation from a tuple of models — each a short name from the [registry](../../src/interlens/loading/registry.py), a raw HF id, or an already-loaded model (`ModelLike`). If two ids are identical, the weights are loaded **once** and shared between the two speakers.
+The fastest path: `Conversation.from_models` scaffolds a two-party conversation from a tuple of models — each an HF id or an already-loaded model (`ModelLike`). If two ids are identical, the weights are loaded **once** and shared between the two speakers.
 
 ```python
 from interlens import Conversation
 
 # Two speakers backed by the same 0.5B model (one weight load, shared).
 conv = Conversation.from_models(
-    ("qwen2.5-0.5b", "qwen2.5-0.5b"),
+    ("Qwen/Qwen2.5-0.5B-Instruct", "Qwen/Qwen2.5-0.5B-Instruct"),
     names=("alice", "bob"),
     device="cuda",          # "cpu" / "mps" also work for a smoke test
     temperature=0.8,        # **gen_kwargs are forwarded to both participants
@@ -39,7 +39,7 @@ print(conv.transcript.render_templated(pov=conv.by_name["alice"]))   # tokenize=
 ## Two *different* models
 
 ```python
-conv = Conversation.from_models(("qwen2.5-3b", "gemma2-2b"), names=("q", "g"), device="cuda")
+conv = Conversation.from_models(("Qwen/Qwen2.5-3B-Instruct", "google/gemma-2-2b-it"), names=("q", "g"), device="cuda")
 ```
 
 Each id resolves to its family-correct participant class automatically (Qwen vs Gemma chat templates, tool formats, system-role handling) via the registry — see [03](03_participants_and_models.md).

@@ -122,8 +122,8 @@ class Conversation:
 	                device: str | torch.device = "cuda", dtype: torch.dtype = torch.bfloat16,
 	                shared_context: str | None = None, shared_system_prompt: str | None = None,
 	                prompt: PromptLike = None, **gen_kwargs) -> "Conversation":
-		"""Scaffold a conversation directly from a tuple of ``models`` — each a registry short name / HF id (str)
-		or an already-loaded ``PreTrainedModel`` (see ``ModelLike``). Convenience wrapper around
+		"""Scaffold a conversation directly from a tuple of ``models`` — each an HF id or an already-loaded
+		``PreTrainedModel`` (see ``ModelLike``). Convenience wrapper around
 		``factories.conversation_from_models``; each model becomes a family-correct participant and ``names`` gives
 		them identities. **The order of ``models`` / ``names`` is the speaking order** — the first speaks first
 		unless you pass ``first=`` to ``run``. ``**gen_kwargs`` are forwarded to every participant.
@@ -194,14 +194,15 @@ class Conversation:
 	# --- turn-taking ---------------------------------------------------------------------------------------
 
 	def step(self, speaker: Participant, *, steering=None, capture=None, patch=None,
-	         return_logprobs: bool = False) -> Message:
+	         return_logprobs: bool = False, max_new_tokens: int | None = None) -> Message:
 		"""Have ``speaker`` produce and commit one turn. Interp options flow to ``generate``; if no ``capture`` is
 		passed but a ``conv.capture(...)`` block is active, its pending request is used (auto-tagged by turn)."""
 		if capture is None:
 			capture = self._pending_capture
 		turn = len(self.transcript)
 		message = speaker.generate(self._view(speaker), steering=steering, capture=capture,
-		                           patch=patch, return_logprobs=return_logprobs, turn=turn)
+		                           patch=patch, return_logprobs=return_logprobs, turn=turn,
+		                           max_new_tokens=max_new_tokens)
 		message = self._apply_hooks(message)
 		if message is None:
 			return None  # a hook denied this turn; nothing is committed
@@ -333,7 +334,7 @@ class Conversation:
 
 	def sample(self, speaker: Participant | str, message: str | None = None, *,
 	           as_author: str | None = None, steering=None, capture=None, patch=None,
-	           return_logprobs: bool = False) -> Message:
+	           return_logprobs: bool = False, max_new_tokens: int | None = None) -> Message:
 		"""Ephemerally sample ``speaker``'s response to an optional temporary ``message`` **without mutating the
 		transcript**. Pure read of current state: safe to call repeatedly / in a loop. ``message`` is attributed
 		to ``as_author`` (default: the other participant), so it reads as a normal incoming turn. The same interp
@@ -344,7 +345,8 @@ class Conversation:
 			author = as_author or self._default_other(speaker)
 			extra = [Message(author=author, content=message)]
 		return speaker.generate(self._view(speaker, extra=extra), steering=steering, capture=capture,
-		                        patch=patch, return_logprobs=return_logprobs, turn=len(self.transcript))
+		                        patch=patch, return_logprobs=return_logprobs, turn=len(self.transcript),
+		                        max_new_tokens=max_new_tokens)
 
 	def _default_other(self, speaker: Participant) -> str:
 		"""The natural author for an injected sample message: some other participant, else the moderator."""

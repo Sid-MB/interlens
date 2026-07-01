@@ -24,8 +24,8 @@ import torch
 #
 #  - weight cache: keyed by (hf_id, device, dtype, attn, quant) — weights are per-size (2b and 9b load
 #    separately; weights and KV caches are genuinely not shareable across sizes).
-#  - tokenizer cache: keyed by tokenizer_id — device-independent, so gemma2-2b and gemma2-9b talking to each
-#    other load the Gemma tokenizer ONCE and both participants reference the same object.
+#  - tokenizer cache: keyed by hf_id — device-independent, so two participants on the same model load its
+#    tokenizer ONCE and both reference the same object.
 _WEIGHTS: dict[tuple, object] = {}
 _TOKENIZERS: dict[str, object] = {}
 

@@ -66,7 +66,8 @@ class APIParticipant(Participant):
 	requires_alternating_roles: bool = True
 
 	def generate(self, view: list[dict], *, steering=None, capture=None, patch=None,
-	             return_logprobs: bool = False, turn: int | None = None) -> Message:
+	             return_logprobs: bool = False, turn: int | None = None,
+	             max_new_tokens: int | None = None) -> Message:
 		if steering is not None or capture is not None or patch is not None or return_logprobs:
 			raise NotImplementedError(
 				f"APIParticipant {self.name!r} has no local model: capture/steering/patch/logprobs are not "
@@ -77,8 +78,9 @@ class APIParticipant(Participant):
 		system = "\n\n".join(m["content"] for m in view if m["role"] == "system") or None
 		messages = [{"role": m["role"], "content": m["content"]} for m in view if m["role"] != "system"]
 		client = self.client or _anthropic_client
+		max_tokens = max_new_tokens if max_new_tokens is not None else self.max_tokens
 		text = client(system=system, messages=messages, model=self.model_id,
-		              max_tokens=self.max_tokens, temperature=self.temperature)
+		              max_tokens=max_tokens, temperature=self.temperature)
 		return Message(author=self.name, content=text, metadata={"provider": self.provider, "model": self.model_id})
 
 	def to_config(self):

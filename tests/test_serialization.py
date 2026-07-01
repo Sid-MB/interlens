@@ -61,7 +61,7 @@ def test_template_round_trip(tmp_path):
 	tmpl = ConversationTemplate(
 		participants=[
 			ModelParticipantConfig(name="alice", model="qwen2.5-0.5b"),
-			ModelParticipantConfig(name="bob", model="gemma2-2b", generation="gemma2"),
+			ModelParticipantConfig(name="bob", model="gemma2-2b"),
 		],
 		shared_context="Debate.", shared_system_prompt="Brief.",
 		context_policy=SlidingWindowPolicy(keep_last=6),
@@ -72,7 +72,6 @@ def test_template_round_trip(tmp_path):
 	tmpl.save(path)
 	loaded = ConversationTemplate.load(path)
 	assert [c.name for c in loaded.participants] == ["alice", "bob"]
-	assert loaded.participants[1].generation == "gemma2"
 	assert isinstance(loaded.context_policy, SlidingWindowPolicy) and loaded.context_policy.keep_last == 6
 	assert loaded.reasoning_visibility == ReasoningVisibility.SHARED
 	assert loaded.execution_mode == ExecutionMode.DETERMINISTIC
