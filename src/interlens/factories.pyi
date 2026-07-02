@@ -5,9 +5,9 @@
 # subclass dynamically from `config.model_type`, so their true return type is the base `ModelParticipant`. These
 # @overloads recover a *statically-known* subclass when the caller passes a KNOWN id string literal, without any
 # id->class table in the runtime code. Unknown ids (and non-literal `str`) fall through to the `str` overload ->
-# `ModelParticipant`, which is always correct. The literal groups mirror `AutoModelParticipant._BY_MODEL_TYPE`
-# (the single runtime source of the family mapping); ids here are the ones actually used in this repo — extend as
-# needed. (For a guaranteed static type regardless of the id, name the class directly:
+# `ModelParticipant`, which is always correct. The literal groups mirror the family self-registry (each subclass's
+# `MODEL_TYPES`, resolved at runtime by `ModelParticipant.for_model_type`); ids here are the ones actually used in
+# this repo — extend as needed. (For a guaranteed static type regardless of the id, name the class directly:
 # `QwenModelParticipant.from_pretrained(...)`.)
 
 from pathlib import Path
@@ -43,11 +43,6 @@ _LlamaId = Literal[
 ]
 
 class AutoModelParticipant:
-	_BY_MODEL_TYPE: dict[str, type[ModelParticipant]]
-
-	@classmethod
-	def _class_for(cls, model: PreTrainedModel) -> type[ModelParticipant]: ...
-
 	@overload
 	@staticmethod
 	def from_pretrained(id_or_path: _QwenId, *, name: str, device: str | torch.device = ..., load_kwargs: dict | None = ..., **participant_kwargs: Any) -> QwenModelParticipant: ...

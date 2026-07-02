@@ -22,40 +22,25 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from .conversation import Conversation, PromptLike
 from .participant.participants.model_participant import ModelParticipant
-from .participant.participants.gemma import GemmaModelParticipant
-from .participant.participants.llama import LlamaModelParticipant
-from .participant.participants.qwen import QwenModelParticipant
 
 # A model to build a participant from: an HF id (str), a local path (str / Path), or an already-loaded model.
 ModelLike = str | Path | PreTrainedModel
 
 
 class AutoModelParticipant:
-	"""HF-style factory for family-correct local-model participants — the participant analog of
-	``AutoModelForCausalLM``. It resolves the concrete ``ModelParticipant`` subclass from the model's
-	transformers ``config.model_type`` (``_BY_MODEL_TYPE``), then delegates the actual build to that class's
-	``from_model`` / ``from_pretrained`` — so all the loading / tokenizer-inference / chat-flag logic lives in one
-	place (on ``ModelParticipant``) and this class is *only* the family dispatcher.
+	"""
+	Resolver for creating ``Participant`` instances automatically from HuggingFace model identifiers, local model paths, or already-loaded `PreTrainedModel`s.
+	
+	HF-style factory for family-correct local-model participants — the participant analog of
+	``AutoModelForCausalLM``. It resolves the concrete ``ModelParticipant`` subclass from the model's transformers
+	``config.model_type`` via the class self-registry (``ModelParticipant.for_model_type``), then delegates the
+	actual build to that class's ``from_model`` / ``from_pretrained`` — so all the loading / tokenizer-inference /
+	chat-flag logic lives in one place (on ``ModelParticipant``) and this class is *only* the family dispatcher.
 
 	- ``from_`` dispatches on the argument type (str id → ``from_pretrained``; ``PreTrainedModel`` → ``from_model``).
 	- To get a statically-known subclass, name it directly: ``QwenModelParticipant.from_pretrained(...)``. This
 	  factory returns the (dynamically resolved) base ``ModelParticipant`` type.
 	"""
-
-	# model_type (from transformers ``config.model_type``) → participant class. Only families that need a
-	# non-base subclass appear here; everything else falls through to ``ModelParticipant``. This is the single
-	# source of the family mapping — no separate registry module.
-	_BY_MODEL_TYPE: dict[str, type[ModelParticipant]] = {
-		"gemma2": GemmaModelParticipant,
-		"gemma3": GemmaModelParticipant,
-		"llama": LlamaModelParticipant,
-		"qwen2": QwenModelParticipant,
-		"qwen3": QwenModelParticipant,
-	}
-
-	@classmethod
-	def _class_for(cls, model: PreTrainedModel) -> type[ModelParticipant]:
-		return cls._BY_MODEL_TYPE.get(getattr(model.config, "model_type", "") or "", ModelParticipant)
 
 	@staticmethod
 	def from_(model: ModelLike, *, name: str, tokenizer: PreTrainedTokenizerBase | None = None,
@@ -85,7 +70,7 @@ class AutoModelParticipant:
 		"""Build a family-correct participant from an already-loaded ``model`` — the class is resolved from
 		``config.model_type`` (unknown types fall back to base ``ModelParticipant``), then that class's
 		:meth:`ModelParticipant.from_model` does the tokenizer inference and chat-flag derivation."""
-		cls = AutoModelParticipant._class_for(model)
+		cls = ModelParticipant.for_model_type(getattr(model.config, "model_type", None))
 		return cls.from_model(model, tokenizer, name=name, device=device, **participant_kwargs)
 
 

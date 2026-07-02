@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 from .model_participant import ModelParticipant
 
@@ -27,6 +28,8 @@ class GemmaModelParticipant(ModelParticipant):
 	(```` ```tool_code ````); the chat-template flags (Gemma 2 rejects a standalone ``system`` role and requires
 	strict user/model alternation, Gemma 3 accepts a system role) are auto-derived from the tokenizer's own
 	template, so both generations use this one class."""
+
+	MODEL_TYPES: ClassVar[frozenset[str]] = frozenset({"gemma2", "gemma3"})
 
 	def parse_tool_calls(self, text: str) -> list:
 		"""Parse Gemma's ```` ```tool_code ```` function-call blocks (best-effort).

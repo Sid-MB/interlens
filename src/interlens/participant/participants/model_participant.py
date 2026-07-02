@@ -20,7 +20,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self
+from typing import ClassVar, Self
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
@@ -102,6 +102,29 @@ class ModelParticipant(Participant):
 	# full prefill, so it is never wrong-by-default — but it can perturb outputs at the FP level vs. a full prefill,
 	# so reproducibility-critical / determinism-mode experiments should pin ``kv_reuse=False``.
 	kv_reuse: bool | str = "auto"
+
+	# Family self-registration. Each subclass lists the transformers ``config.model_type`` values it handles in
+	# ``MODEL_TYPES``; ``__init_subclass__`` records them in ``_REGISTRY`` so ``AutoModelParticipant`` can resolve a
+	# loaded model to its class with NO central table — the family knowledge lives on the class that needs it (next
+	# to its ``parse_tool_calls`` override). Unlisted types fall back to base ``ModelParticipant``. ``ClassVar`` keeps
+	# both out of the dataclass field set.
+	MODEL_TYPES: ClassVar[frozenset[str]] = frozenset()
+	_REGISTRY: ClassVar[dict[str, type["ModelParticipant"]]] = {}
+
+	def __init_subclass__(cls, **kwargs):
+		super().__init_subclass__(**kwargs)
+		for model_type in cls.MODEL_TYPES:
+			prior = ModelParticipant._REGISTRY.get(model_type)
+			if prior is not None and prior is not cls:
+				raise ValueError(f"model_type {model_type!r} is already registered to {prior.__name__}; "
+				                 f"{cls.__name__} cannot also claim it")
+			ModelParticipant._REGISTRY[model_type] = cls
+
+	@classmethod
+	def for_model_type(cls, model_type: str | None) -> type["ModelParticipant"]:
+		"""The registered participant class for a transformers ``config.model_type`` (e.g. ``qwen2``, ``gemma2``),
+		falling back to base ``ModelParticipant`` for any family that declares no specialized subclass."""
+		return cls._REGISTRY.get(model_type or "", ModelParticipant)
 
 	@classmethod
 	def from_model(cls, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase | None = None, *, name: str,

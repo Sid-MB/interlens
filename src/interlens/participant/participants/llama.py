@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 from .model_participant import ModelParticipant
 
@@ -26,6 +27,8 @@ class LlamaModelParticipant(ModelParticipant):
 	"""A Llama-family participant. Chat-template flags are auto-derived from the tokenizer; only the tool-call
 	format differs from base: Llama 3 emits calls as ``<|python_tag|>{json}`` rather than Hermes/Qwen
 	``<tool_call>`` blocks."""
+
+	MODEL_TYPES: ClassVar[frozenset[str]] = frozenset({"llama"})
 
 	def parse_tool_calls(self, text: str) -> list:
 		"""Parse Llama-3's ``<|python_tag|>{json}`` function-call format (best-effort).
