@@ -15,78 +15,78 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from .conversation import Conversation, PromptLike
-from .loading import load_model, load_tokenizer, participant_class_for, derive_chat_flags
 from .participant.participants.model_participant import ModelParticipant
+from .participant.participants.gemma import GemmaModelParticipant
+from .participant.participants.llama import LlamaModelParticipant
+from .participant.participants.qwen import QwenModelParticipant
 
-# A model to build a participant from: an HF id / local path (str), or an already-loaded model.
-ModelLike = str | PreTrainedModel
-
-
-def _build(model, tokenizer, *, name, device, **participant_kwargs) -> ModelParticipant:
-	"""Construct the family-correct participant for a loaded ``model`` + ``tokenizer``: the class comes from the
-	model's ``config.model_type`` (AutoModel-style), the chat-template flags are derived from the tokenizer."""
-	cls = participant_class_for(getattr(model.config, "model_type", None))
-	supports_system, requires_alt = derive_chat_flags(tokenizer)
-	p = cls(model=model, tokenizer=tokenizer, name=name, device=device, **participant_kwargs)
-	p.supports_system_role = supports_system
-	p.requires_alternating_roles = requires_alt
-	return p
+# A model to build a participant from: an HF id (str), a local path (str / Path), or an already-loaded model.
+ModelLike = str | Path | PreTrainedModel
 
 
 class AutoModelParticipant:
 	"""HF-style factory for family-correct local-model participants — the participant analog of
-	``AutoModelForCausalLM``.
+	``AutoModelForCausalLM``. It resolves the concrete ``ModelParticipant`` subclass from the model's
+	transformers ``config.model_type`` (``_BY_MODEL_TYPE``), then delegates the actual build to that class's
+	``from_model`` / ``from_pretrained`` — so all the loading / tokenizer-inference / chat-flag logic lives in one
+	place (on ``ModelParticipant``) and this class is *only* the family dispatcher.
 
-	- ``from_`` dispatches on the argument type (str id → load; ``PreTrainedModel`` → wrap).
-	- ``from_pretrained`` loads a model by HF id / local path and returns the right ``ModelParticipant`` subclass,
-	  resolved from the model's ``config.model_type``.
-	- ``from_model`` wraps weights you already hold (e.g. to share weights between speakers); the tokenizer is
-	  optional (inferred from the model when omitted).
+	- ``from_`` dispatches on the argument type (str id → ``from_pretrained``; ``PreTrainedModel`` → ``from_model``).
+	- To get a statically-known subclass, name it directly: ``QwenModelParticipant.from_pretrained(...)``. This
+	  factory returns the (dynamically resolved) base ``ModelParticipant`` type.
 	"""
+
+	# model_type (from transformers ``config.model_type``) → participant class. Only families that need a
+	# non-base subclass appear here; everything else falls through to ``ModelParticipant``. This is the single
+	# source of the family mapping — no separate registry module.
+	_BY_MODEL_TYPE: dict[str, type[ModelParticipant]] = {
+		"gemma2": GemmaModelParticipant,
+		"gemma3": GemmaModelParticipant,
+		"llama": LlamaModelParticipant,
+		"qwen2": QwenModelParticipant,
+		"qwen3": QwenModelParticipant,
+	}
+
+	@classmethod
+	def _class_for(cls, model: PreTrainedModel) -> type[ModelParticipant]:
+		return cls._BY_MODEL_TYPE.get(getattr(model.config, "model_type", "") or "", ModelParticipant)
 
 	@staticmethod
 	def from_(model: ModelLike, *, name: str, tokenizer: PreTrainedTokenizerBase | None = None,
 	          device: str | torch.device = "cuda", load_kwargs: dict | None = None,
 	          **participant_kwargs) -> ModelParticipant:
 		"""Build a participant from either an HF id (str) or an already-loaded ``PreTrainedModel``, dispatching to
-		``from_pretrained`` / ``from_model``. ``tokenizer`` applies only to the loaded-model case (a str id loads
+		``from_pretrained`` / ``from_model``. ``tokenizer`` applies only to the loaded-model case (an id / path loads
 		its own matching tokenizer, so it is ignored there)."""
-		if isinstance(model, str):
+		if isinstance(model, (str, Path)):
 			return AutoModelParticipant.from_pretrained(model, name=name, device=device,
 			                                            load_kwargs=load_kwargs, **participant_kwargs)
 		return AutoModelParticipant.from_model(model, tokenizer, name=name, device=device, **participant_kwargs)
 
 	@staticmethod
-	def from_pretrained(id_or_name: str, *, name: str, device: str | torch.device = "cuda",
+	def from_pretrained(id_or_path: str | Path, *, name: str, device: str | torch.device = "cuda",
 	                    load_kwargs: dict | None = None, **participant_kwargs) -> ModelParticipant:
-		"""Load ``id_or_name`` (an HF id or local path) and return the family-correct participant, with its class
-		resolved from ``config.model_type`` and its chat-template flags derived from the tokenizer.
-
-		``load_kwargs`` are forwarded to ``load_model`` (``dtype`` / ``attn`` / ``quant`` / ``revision`` — their
-		defaults live there, not here); ``participant_kwargs`` (``temperature``, ``max_new_tokens``,
-		``system_prompt``, ``tools``, ``kv_reuse``, …) go to the participant. Weight loads are process-cached, so
-		calling this twice with the same id/device/dtype shares ONE model object (weight sharing is automatic).
-		"""
-		model, tokenizer = load_model(id_or_name, device=device, **(load_kwargs or {}))
-		return _build(model, tokenizer, name=name, device=device, **participant_kwargs)
+		"""Load ``id_or_path`` (an HF id or local path) and return the family-correct participant, with its class
+		resolved from ``config.model_type``. ``load_kwargs`` / ``participant_kwargs`` are forwarded through the
+		resolved class's ``from_pretrained`` (see :meth:`ModelParticipant.from_pretrained`)."""
+		from .loading import load_model  # lazy: avoids importing torch/transformers loaders at module import
+		model, tokenizer = load_model(id_or_path, device=device, **(load_kwargs or {}))
+		return AutoModelParticipant.from_model(model, tokenizer, name=name, device=device, **participant_kwargs)
 
 	@staticmethod
 	def from_model(model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase | None = None, *, name: str,
 	               device: str | torch.device | None = None, **participant_kwargs) -> ModelParticipant:
-		"""Build a family-correct participant from an already-loaded ``model``. ``tokenizer`` is optional — when
-		omitted it is inferred from ``model.config._name_or_path`` via ``load_tokenizer``. The class is resolved
-		from the model's ``config.model_type`` and the chat-template flags from the tokenizer, so an unknown model
-		falls back to the base ``ModelParticipant`` with correctly-derived flags."""
-		if tokenizer is None:
-			hf_id = getattr(model.config, "_name_or_path", None)
-			if not hf_id:
-				raise ValueError("cannot infer a tokenizer: model.config._name_or_path is empty; pass tokenizer=")
-			tokenizer = load_tokenizer(hf_id)
-		return _build(model, tokenizer, name=name, device=device, **participant_kwargs)
+		"""Build a family-correct participant from an already-loaded ``model`` — the class is resolved from
+		``config.model_type`` (unknown types fall back to base ``ModelParticipant``), then that class's
+		:meth:`ModelParticipant.from_model` does the tokenizer inference and chat-flag derivation."""
+		cls = AutoModelParticipant._class_for(model)
+		return cls.from_model(model, tokenizer, name=name, device=device, **participant_kwargs)
 
 
 def conversation_from_models(

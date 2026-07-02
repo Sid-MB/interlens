@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
@@ -29,6 +31,26 @@ def load_tokenizer(hf_id: str, revision: str | None = None) -> PreTrainedTokeniz
 	if tok.pad_token is None:
 		tok.pad_token = tok.eos_token
 	return tok
+
+
+def derive_chat_flags(tokenizer) -> tuple[bool, bool]:
+	"""Probe a tokenizer's chat template to derive ``(supports_system_role, requires_alternating_roles)``.
+
+	``supports_system_role`` is True iff the template renders a leading ``system`` turn without raising;
+	``requires_alternating_roles`` is True iff the template rejects two consecutive same-role turns. Each probe is
+	wrapped in try/except so a raising template simply reads as the corresponding boolean. This replaces per-family
+	flag declarations: an unknown model gets correct chat behavior with zero configuration."""
+
+	def _renders(messages) -> bool:
+		try:
+			tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+			return True
+		except Exception:
+			return False
+
+	supports_system_role = _renders([{"role": "system", "content": "s"}, {"role": "user", "content": "u"}])
+	requires_alternating_roles = not _renders([{"role": "user", "content": "a"}, {"role": "user", "content": "b"}])
+	return supports_system_role, requires_alternating_roles
 
 
 def _load_model_weights(hf_id, device, dtype, attn, quant, revision):
@@ -62,7 +84,7 @@ def _load_model_weights(hf_id, device, dtype, attn, quant, revision):
 
 
 def load_model(
-	id_or_name: str,
+	id_or_path: str | Path,
 	device: str | torch.device = "cuda",
 	dtype: torch.dtype = torch.bfloat16,
 	attn: str = "flash_attention_2",
@@ -71,11 +93,12 @@ def load_model(
 ):
 	"""Load a causal LM + tokenizer, sharing through the process-local caches.
 
-	``id_or_name`` is the HF id (or a local path) to load directly. Identical (hf_id, device, dtype, attn, quant)
-	pairings share the one model object, and the tokenizer is cached by hf_id. Flash-attention is the default with
-	automatic fallback to sdpa/eager; quantization is opt-in.
+	``id_or_path`` is the HF id or a local path to load directly (a ``Path`` is normalized to ``str`` so it shares
+	the same cache slot as its string form). Identical (hf_id, device, dtype, attn, quant) pairings share the one
+	model object, and the tokenizer is cached by hf_id. Flash-attention is the default with automatic fallback to
+	sdpa/eager; quantization is opt-in.
 	"""
-	hf_id = id_or_name
+	hf_id = str(id_or_path)
 	tokenizer = cached_tokenizer(hf_id, lambda: load_tokenizer(hf_id, revision=revision))
 	weight_key = (hf_id, str(device), str(dtype), attn, quant, revision)
 	model = cached_model(weight_key, lambda: _load_model_weights(hf_id, device, dtype, attn, quant, revision))

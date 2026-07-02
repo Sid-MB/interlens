@@ -19,6 +19,8 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Self
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
@@ -100,6 +102,40 @@ class ModelParticipant(Participant):
 	# full prefill, so it is never wrong-by-default — but it can perturb outputs at the FP level vs. a full prefill,
 	# so reproducibility-critical / determinism-mode experiments should pin ``kv_reuse=False``.
 	kv_reuse: bool | str = "auto"
+
+	@classmethod
+	def from_model(cls, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase | None = None, *, name: str,
+	               device: str | torch.device | None = None, **participant_kwargs) -> Self:
+		"""Build a participant of THIS class from an already-loaded ``model`` (e.g. to share weights between
+		speakers). ``tokenizer`` is optional — when omitted it is inferred from ``model.config._name_or_path``. The
+		chat-template flags (``supports_system_role`` / ``requires_alternating_roles``) are derived from the
+		tokenizer's own template, so no per-family configuration is needed. Because it constructs ``cls``, calling
+		it on a subclass (``QwenModelParticipant.from_model(...)``) returns that subclass — use
+		``AutoModelParticipant.from_model`` instead to have the family resolved from ``config.model_type``."""
+		from ...loading import load_tokenizer, derive_chat_flags  # lazy: loading imports this module
+		if tokenizer is None:
+			hf_id = getattr(model.config, "_name_or_path", None)
+			if not hf_id:
+				raise ValueError("cannot infer a tokenizer: model.config._name_or_path is empty; pass tokenizer=")
+			tokenizer = load_tokenizer(hf_id)
+		supports_system, requires_alt = derive_chat_flags(tokenizer)
+		p = cls(model=model, tokenizer=tokenizer, name=name, device=device, **participant_kwargs)
+		p.supports_system_role = supports_system
+		p.requires_alternating_roles = requires_alt
+		return p
+
+	@classmethod
+	def from_pretrained(cls, id_or_path: str | Path, *, name: str, device: str | torch.device = "cuda",
+	                    load_kwargs: dict | None = None, **participant_kwargs) -> Self:
+		"""Load ``id_or_path`` (an HF id or local path) and build a participant of THIS class. ``load_kwargs`` are
+		forwarded to ``load_model`` (``dtype`` / ``attn`` / ``quant`` / ``revision`` — their defaults live there);
+		``participant_kwargs`` (``temperature``, ``max_new_tokens``, ``system_prompt``, ``tools``, ``kv_reuse``, …)
+		go to the participant. Weight loads are process-cached, so calling this twice with the same id/device/dtype
+		shares ONE model object. As with ``from_model``, the class is ``cls`` — use ``AutoModelParticipant`` to
+		resolve the family from ``config.model_type`` instead."""
+		from ...loading import load_model  # lazy: loading imports this module
+		model, tokenizer = load_model(id_or_path, device=device, **(load_kwargs or {}))
+		return cls.from_model(model, tokenizer, name=name, device=device, **participant_kwargs)
 
 	def __post_init__(self):
 		# Default to wherever the model already lives, so callers rarely have to think about placement.
