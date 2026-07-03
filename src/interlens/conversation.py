@@ -73,7 +73,8 @@ class Conversation:
 
 	shared_context: str | None = None
 	"""Scenario framing every participant sees, injected once as a leading ``moderator_name`` turn when the
-	transcript starts empty. ``None`` = no seed turn."""
+	transcript starts empty. ``None`` = no seed turn; ``""`` still seeds a (blank) turn, so the first speaker has
+	a non-empty view."""
 
 	shared_system_prompt: str | None = None
 	"""A system prompt merged into every participant's system block (after that participant's private
@@ -114,8 +115,10 @@ class Conversation:
 			raise ValueError(f"moderator_name {self.moderator_name!r} collides with a participant name")
 		self._pending_capture: CaptureRequest | None = None
 		# Seed the shared scenario as a moderator turn — but only when starting fresh, so a branched/loaded
-		# conversation (whose transcript already contains the seed) is not re-seeded.
-		if self.shared_context and len(self.transcript) == 0:
+		# conversation (whose transcript already contains the seed) is not re-seeded. ``None`` means "no framing"
+		# and is skipped; an empty string is honoured as an explicit (blank) seed turn, so it still gives the
+		# first speaker a non-empty view rather than the opaque empty-view error.
+		if self.shared_context is not None and len(self.transcript) == 0:
 			self.transcript.append(self.moderator_name, self.shared_context)
 
 	@classmethod

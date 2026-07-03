@@ -193,6 +193,20 @@ class ModelParticipant(Participant):
 		if self.seed is not None:
 			torch.manual_seed(self.seed)
 
+		# An empty view has nothing to condition on: chat templates index conversation[0] unguarded and raise an
+		# opaque IndexError deep in transformers. This is almost always the FIRST speaker starting into an empty
+		# transcript with no framing. We can't lean on the template injecting a default system turn — newer
+		# families (e.g. Qwen-3) drop default system messages and rely on a zero-shot user turn — so any of the
+		# framing knobs (or a seeded transcript) is a valid fix, we just need at least one message present.
+		if not view:
+			raise ValueError(
+				f"Participant {self.name!r} was asked to generate with an empty view — nothing to respond to. "
+				"This happens when the first speaker starts into an empty transcript with no framing. Provide at "
+				"least one of: shared_context=/shared_system_prompt= (Conversation.from_models), a system_prompt "
+				"or private_context on the participant, a prompt= to run(), or a pre-seeded transcript. Note an "
+				"empty string \"\" counts as no framing."
+			)
+
 		schemas = [t.schema for t in self.tools] or None
 		# The tool loop runs on a *private* working copy of the view: the assistant's tool-call text and the
 		# tool results are appended here so the model can react to them, but only the FINAL natural-language
