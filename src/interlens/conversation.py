@@ -23,7 +23,7 @@ import torch
 
 from .participant import Participant
 from .message import Message
-from .transcript import Transcript
+from .transcript import Transcript, MessageRef
 from .view import ViewSegment
 from .reasoning_visibility import ReasoningVisibility
 from .execution_mode import ExecutionMode
@@ -57,7 +57,9 @@ class Conversation:
 	``shared_system_prompt``) lives here; *private* framing (``system_prompt``, ``private_context``) lives on
 	each participant, so it is naturally invisible to the others and to the transcript.
 
-	``Conversation``s also support branching through ``branch()``, ephemeral sampling through ``sample()`` / ``sample_all()``, activation capture through ``capture()``, and loading to/from disk with ``save()`` / ``load()``.
+	``Conversation``s also support branching through ``branch()`` / ``branch_from()``, in-place history editing
+	(``rewind()``, ``edit()``, ``reset()``), ephemeral sampling through ``sample()`` / ``sample_all()``, activation
+	capture through ``capture()``, and loading to/from disk with ``save()`` / ``load()``.
 	"""
 
 	participants: tuple[Participant, ...]
@@ -350,7 +352,8 @@ class Conversation:
 
 	def branch(self) -> "Conversation":
 		"""Fork into a new ``Conversation`` that **reuses the same participant objects** (shared weights, zero
-		GPU cost) with a copied transcript. The branch can diverge freely; the original is untouched."""
+		GPU cost) with a copied transcript. The branch can diverge freely; the original is untouched. To fork from a
+		specific point in the history rather than the end, use ``branch_from``."""
 		return Conversation(
 			participants=self.participants,
 			transcript=self.transcript.copy(),
@@ -363,6 +366,42 @@ class Conversation:
 			execution_mode=self.execution_mode,
 			message_hooks=list(self.message_hooks),
 		)
+
+	def branch_from(self, ref: MessageRef) -> "Conversation":
+		"""Fork a new conversation whose history is this one's turns **up to and including** the turn ``ref`` — i.e.
+		branch as if the conversation had stopped right after ``ref``, ready for a different continuation. ``ref`` is
+		a ``MessageRef``: an ``int`` index (negatives count from the end) or the ``Message`` object itself (matched
+		by identity). The original is untouched; the fork shares participants (zero GPU cost)."""
+		cut = self.transcript.resolve_index(ref)  # resolve against the original (the fork holds copies, new identities)
+		fork = self.branch()
+		fork.transcript.rewind(to=cut)
+		return fork
+
+	# --- in-place history editing (delegated to the transcript) --------------------------------------------
+
+	def rewind(self, *, to: MessageRef) -> "Conversation":
+		"""Rewind in place so the turn ``to`` becomes the new last turn, dropping everything after it (returns
+		``self`` for chaining). ``to`` is a ``MessageRef`` (int index, negatives allowed, or a ``Message`` object).
+		Mutates this conversation — use ``branch_from`` instead to keep the original. See ``Transcript.rewind``."""
+		self.transcript.rewind(to=to)
+		return self
+
+	def edit(self, ref: MessageRef, content: str | None = None, *, author: str | None = None, **metadata) -> Message:
+		"""Edit a committed past turn in place and return it (see ``Transcript.edit``): ``ref`` is a ``MessageRef``
+		(int index, negatives allowed, or a ``Message`` object matched by identity), and ``content`` / ``author`` /
+		``**metadata`` are the fields to change. Editing the returned ``Message``'s fields directly works too, since
+		the transcript holds it by reference."""
+		return self.transcript.edit(ref, content, author=author, **metadata)
+
+	def reset(self) -> "Conversation":
+		"""Return the conversation to its fresh, pre-``run`` state: empty the transcript, then **re-seed** the
+		``shared_context`` moderator turn (exactly as ``__post_init__`` does on a fresh conversation). Use this
+		rather than ``transcript.clear()`` when you want to rerun the same scenario — the raw ``transcript.clear()``
+		drops the ``shared_context`` framing too, whereas ``reset`` restores it."""
+		self.transcript.clear()
+		if self.shared_context is not None:
+			self.transcript.append(self.moderator_name, self.shared_context)
+		return self
 
 	@overload
 	def sample(self, speaker: ParticipantLike, message: str | None = None, *, as_author: str | None = None,

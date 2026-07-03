@@ -87,6 +87,46 @@ for _ in range(3):
 
 > Because branches **share the participant objects**, mutating a participant (e.g. `b.participant("alice").temperature = 0.3`) changes it for *every* branch and the original. To vary generation settings per branch, set them right before you run, or pin `seed` and vary only the prompt/intervention — see [09](09_advanced_interp_pipelines.md).
 
+### Fork from a specific turn — `branch_from`
+
+`branch_from(ref)` forks as if the conversation had stopped **right after** `ref`, ready for a different continuation. `ref` is a *message reference*: an `int` index (Python semantics — negatives count from the end) or the `Message` object itself (matched by identity). The original is untouched.
+
+```python
+alt = conv.branch_from(-3)          # continue as if the last two turns never happened
+alt.run(turns=4, first="alice")
+
+pivot = conv.transcript[2]          # a Message object
+alt2 = conv.branch_from(pivot)      # fork right after that specific turn
+```
+
+## Editing history in place — rewind, edit, reset
+
+Sometimes you want to alter the *current* conversation rather than fork. These mutate in place (and return `self`/the `Message` for chaining); `branch_from` first if you'd rather keep the original.
+
+```python
+conv.rewind(to=-2)                  # drop everything after that turn; `to` becomes the new last turn
+conv.rewind(to=some_message)        # ...or rewind to a specific Message
+
+conv.edit(3, "a corrected reply")   # replace turn 3's content
+conv.edit(-1, author="moderator")   # change who a turn is attributed to
+conv.edit(msg, note="flagged")      # merge metadata onto a turn (untouched keys survive)
+```
+
+`edit` targets are the same message references as `branch_from` (int index, negative, or `Message`). Because a `Message` is a mutable dataclass held **by reference**, editing its fields directly — `conv.transcript[i].content = "…"`, or mutating the object `step()`/`sample()` returned — does the exact same thing; `edit` is just the ergonomic wrapper.
+
+To wipe the dialogue and start the *same scenario* over, use `reset()` — it empties the transcript and re-seeds the `shared_context` framing:
+
+```python
+conv.reset()                        # back to the fresh, pre-run state (framing restored)
+conv.run(turns=6)
+```
+
+> `conv.reset()` keeps your `shared_context` / opening instructions; the lower-level `conv.transcript.clear()` does **not** — it wipes the seed turn too, leaving a genuinely empty transcript. Reach for `clear()` only when you want nothing at all left.
+
+### Editing history and the KV cache
+
+Editing or rewinding is always safe with cross-turn KV reuse. The cache is reused only when the cached tokens are an **exact prefix** of the next prompt (`ModelParticipant._maybe_reuse_cache`); an `edit` changes tokens mid-history, so the prefix check fails and the model does a clean full prefill — the cache can never serve stale keys. A `rewind`/`branch_from` leaves a genuine prefix, so reuse still engages and only the new suffix is prefilled.
+
 ## Ephemeral sampling — read state without mutating it
 
 `sample()` generates a reply to an optional temporary message **without committing anything** — ideal for probing "what would X say now?" repeatedly.

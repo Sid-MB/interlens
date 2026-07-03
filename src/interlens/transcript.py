@@ -31,6 +31,10 @@ if TYPE_CHECKING:
 # (no migrations exist yet) — the version is recorded so future readers can upgrade old files.
 SCHEMA_VERSION = 1
 
+# A reference to one turn in a transcript: an ``int`` position (Python indexing — negatives count from the end)
+# or the ``Message`` object itself (located by identity, ``is``, in ``resolve_index``).
+MessageRef = Message | int
+
 
 class _ConcatMessages(Sequence):
 	"""A read-only lazy concatenation of a base message list + a small ``extra`` tuple, backing ``with_extra``.
@@ -155,6 +159,71 @@ class Transcript:
 		"""Deep-ish copy of the message list for branching. Messages are small string records, so this is cheap;
 		the invariant that keeps it cheap is that heavy tensors never live in ``Message.metadata``."""
 		return Transcript([Message(m.author, m.content, dict(m.metadata)) for m in self.messages])
+
+	# --- in-place history editing --------------------------------------------------------------------------
+	# These mutate the record in place (and return ``self`` for chaining). Branch first (``Transcript.copy`` /
+	# ``Conversation.branch``) if you want to keep the original intact. Note ``Message`` is a mutable dataclass and
+	# the transcript stores it *by reference* — so editing a message directly (``transcript[i].content = "…"`` or
+	# holding onto the object ``append``/``sample`` returned) is already reflected everywhere; ``edit`` is just a
+	# convenience wrapper around that.
+
+	def resolve_index(self, ref: "MessageRef") -> int:
+		"""Normalize a message reference to a concrete ``[0, len)`` position. ``ref`` is either an ``int`` index
+		(Python semantics — negatives count from the end, ``-1`` = last turn) or a ``Message`` **object**, located
+		by identity (``is``, not equality — two turns with the same text are still distinct). Raises ``IndexError``
+		for an out-of-range int and ``ValueError`` for a message that isn't in this transcript."""
+		if isinstance(ref, Message):
+			for i, m in enumerate(self.messages):
+				if m is ref:
+					return i
+			raise ValueError("message is not in this transcript")
+		n = len(self.messages)
+		i = ref + n if ref < 0 else ref
+		if not 0 <= i < n:
+			raise IndexError(f"message index {ref} out of range for transcript of length {n}")
+		return i
+
+	def truncate(self, length: int) -> "Transcript":
+		"""Keep only the first ``length`` turns, dropping everything after (mutates in place, returns ``self``).
+		``length`` is a *count*, clamped to ``[0, len]``: over-long values are a no-op and negatives count from the
+		end (``-1`` keeps all but the last turn). To cut relative to a specific message, use ``resolve_index`` /
+		``rewind(to=…)`` instead."""
+		if length < 0:
+			length = max(0, len(self.messages) + length)
+		del self.messages[length:]
+		return self
+
+	def rewind(self, *, to: "MessageRef") -> "Transcript":
+		"""Rewind so the turn referenced by ``to`` becomes the new last turn — i.e. drop everything **after** it,
+		keeping ``to`` itself (mutates in place, returns ``self``). ``to`` is a ``MessageRef``: an ``int`` index
+		(negatives count from the end — ``rewind(to=-2)`` takes back the single last turn) or a ``Message`` object
+		matched by identity. To drop all turns use ``clear``."""
+		return self.truncate(self.resolve_index(to) + 1)
+
+	def clear(self) -> "Transcript":
+		"""Drop **every** turn, returning ``self``.
+
+		⚠️ This wipes the whole record, including any leading seed turn — the ``shared_context`` scenario framing and
+		any moderator/initial-instruction turns injected at construction. Nothing about the conversation's opening
+		setup survives. If you want to clear the *dialogue* but keep that framing (e.g. to rerun the same scenario),
+		call ``Conversation.reset`` instead, which empties and then re-seeds the ``shared_context`` turn."""
+		self.messages.clear()
+		return self
+
+	def edit(self, ref: "MessageRef", content: str | None = None, *, author: str | None = None, **metadata) -> Message:
+		"""Edit a committed past turn in place and return it. ``ref`` is a ``MessageRef`` (int index, negatives
+		allowed, or a ``Message`` object matched by identity). Only the arguments you pass are changed: ``content``
+		and/or ``author`` are replaced when given; ``metadata`` keys are merged over the existing metadata (pass an
+		explicit key to overwrite it — untouched keys are left alone). Editing the ``Message`` object's fields
+		directly does the same thing, since the transcript holds it by reference."""
+		message = self.messages[self.resolve_index(ref)]
+		if content is not None:
+			message.content = content
+		if author is not None:
+			message.author = author
+		if metadata:
+			message.metadata.update(metadata)
+		return message
 
 	def pretty(self, metadata: bool = False) -> str:
 		"""A human-readable dump for debugging: one ``[i] author: content`` block per turn. With ``metadata=True``,
