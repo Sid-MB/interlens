@@ -7,7 +7,7 @@ Worked examples for the multi-model conversation + interpretability harness, ord
 from interlens import Conversation, AutoModelParticipant, ModelParticipant  # etc.
 ```
 
-The import root is the repo root (`/juice2/u/siddharth/ii_mats`), i.e. run with the repo on `sys.path` — e.g. `uv run python your_script.py` or `uv run python -m ...` from the repo root. GPU examples need CUDA; a small model (`Qwen/Qwen2.5-0.5B-Instruct`) runs on CPU/MPS for smoke tests.
+Install the package first (`pip install interlens`, or `pip install -e .` from the library root for development), then run any snippet as a normal script — e.g. `python your_script.py`. GPU examples need CUDA; a small model (`Qwen/Qwen2.5-0.5B-Instruct`) runs on CPU/MPS for smoke tests.
 
 ## What this library does
 

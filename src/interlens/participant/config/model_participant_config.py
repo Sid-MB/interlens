@@ -55,7 +55,6 @@ class ModelParticipantConfig(ParticipantConfig):
 	top_p: float = 0.95
 	seed: int | None = None
 	thinking: bool | str = "auto"
-	reasoning_effort: str | None = None
 	tool_names: tuple[str, ...] = ()
 	max_tool_iters: int = 4
 	kv_reuse: bool | str = "auto"
@@ -99,7 +98,6 @@ class ModelParticipantConfig(ParticipantConfig):
 			top_p=self.top_p,
 			seed=self.seed,
 			thinking=self.thinking,
-			reasoning_effort=self.reasoning_effort,
 			tool_names=list(self.tool_names),
 			max_tool_iters=self.max_tool_iters,
 			kv_reuse=self.kv_reuse,
@@ -121,7 +119,6 @@ class ModelParticipantConfig(ParticipantConfig):
 			top_p=data.get("top_p", 0.95),
 			seed=data.get("seed"),
 			thinking=data.get("thinking", "auto"),
-			reasoning_effort=data.get("reasoning_effort"),
 			tool_names=tuple(data.get("tool_names", ())),
 			max_tool_iters=data.get("max_tool_iters", 4),
 			kv_reuse=data.get("kv_reuse", "auto"),
