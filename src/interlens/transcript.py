@@ -128,13 +128,17 @@ class Transcript:
 
 	def render_templated(self, *, pov: "ModelParticipant",
 	                     add_generation_prompt: bool = False, tokenize: bool = False):
-		"""Template **the transcript turns only** from ``pov``'s point of view — i.e. ``render_roles`` role-swapped,
+		"""
+		Template **the transcript turns only** from ``pov``'s point of view — i.e. ``render_roles`` role-swapped,
 		then run through ``pov``'s tokenizer chat template so the special / control tokens (``<|im_start|>assistant``
 		etc.) are included. ``pov`` is keyword-only: call ``render_templated(pov=alice)``. Returns a str
 		(``tokenize=False``, default) or token ids (``tokenize=True``); ``add_generation_prompt`` appends the
 		assistant open tag.
 
-		**Limitation — NOT the exact model input.** This omits the system prompt, private context, context-fitting,
+		**Prefer ``Conversation.render_templated`` if you have access to a conversation**: it adds the system prompt, private context, context-fitting, and family-specific flattening, printing the exact input models see.
+
+		### Limitations
+		**NOT the exact model input.** This omits the system prompt, private context, context-fitting,
 		and the family-specific flatten that a real turn also gets (see ``render_roles``); it also renders the raw
 		role-swapped turns as-is, which can even *raise* for families needing strict alternation / system-folding
 		(e.g. Gemma) since the merge isn't applied. For the **exact, family-correct prompt the model actually sees**,
@@ -143,7 +147,7 @@ class Transcript:
 		tokenizer = getattr(pov, "tokenizer", None)
 		if tokenizer is None:
 			raise TypeError(f"{type(pov).__name__} {getattr(pov, 'name', '')!r} has no tokenizer; "
-			                f"render_templated needs a local ModelParticipant")
+			                f"render_templated needs a local ModelParticipant. If you have a conversation, use `conversation.render_templated(pov='participant_name')` or `transcript.render_templated(pov=conversation.participant('participant_name'))` instead.")
 		view = self.render_roles(pov=pov)
 		return tokenizer.apply_chat_template(view, tokenize=tokenize, add_generation_prompt=add_generation_prompt)
 
