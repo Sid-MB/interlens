@@ -10,5 +10,6 @@ venv/
 .env
 results/
 logs/
+site/
 *.log
 .DS_Store

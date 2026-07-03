@@ -1,0 +1,91 @@
+# MkDocs site config for interlens.
+#
+# Design: the site is built from THREE sources with zero content duplication —
+#   1. `docs/index.md`      → snippet-includes the top-level README (single source of truth for the intro).
+#   2. `docs/examples/*.md` → the existing hand-written simple→advanced walkthrough, reused verbatim.
+#   3. `reference/**`       → API pages generated at build time by `docs/gen_ref_pages.py` (mkdocs-gen-files),
+#                             one page per module, navigated via a literate-nav SUMMARY.md. mkdocstrings pulls
+#                             the rendered docstrings. No manual upkeep as the public API grows.
+# `mkdocs-llmstxt` emits `llms.txt` (index) and `llms-full.txt` (concatenated bodies) at the site root.
+site_name: interlens
+site_description: A framework for scaffolding and interpreting multi-agent conversations (activation capture, steering, patching).
+site_url: https://sid-mb.github.io/interlens/
+repo_url: https://github.com/Sid-MB/interlens
+repo_name: Sid-MB/interlens
+edit_uri: edit/main/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: { icon: material/weather-night, name: Switch to dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: { icon: material/weather-sunny, name: Switch to light mode }
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - docs/gen_ref_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - section-index
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google        # Args:/Returns:/Raises: sections; plain paragraphs pass through as Markdown.
+            docstring_section_style: table
+            merge_init_into_class: true
+            show_root_heading: true
+            show_signature_annotations: true
+            separate_signature: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            filters: ["!^_"]                # hide private members (leading underscore), keep dunder-free public API.
+  - llmstxt:
+      markdown_description: >-
+        interlens is a harness for multi-agent (model-to-model) conversations with first-class
+        interpretability — activation capture, steering, activation patching, and token logprobs — all hooked
+        into the same generation path as real turns, scaling from one dialogue to thousands of checkpointed
+        multi-GPU rollouts.
+      full_output: llms-full.txt
+      sections:
+        Overview:
+          - index.md
+        Examples (simple to advanced):
+          - examples/*.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight: { anchor_linenums: true }
+  - pymdownx.snippets: { base_path: ["."], check_paths: true }
+  - toc: { permalink: true }
+
+nav:
+  - Home: index.md
+  - Examples:
+      - examples/README.md
+      - Quickstart: examples/01_quickstart.md
+      - Conversations: examples/02_conversations.md
+      - Participants & models: examples/03_participants_and_models.md
+      - Context & serialization: examples/04_context_and_serialization.md
+      - Tools: examples/05_tools.md
+      - Hooks: examples/06_hooks.md
+      - Interpretability: examples/07_interp.md
+      - Rollouts & scale: examples/08_rollouts_and_scale.md
+      - Advanced interp pipelines: examples/09_advanced_interp_pipelines.md
+  - API reference: reference/

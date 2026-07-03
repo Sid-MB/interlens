@@ -15,14 +15,14 @@ r = AutoModelParticipant.from_pretrained("mistralai/Mistral-7B-Instruct-v0.3", n
 
 The `config.model_type` → class mapping is a **class self-registry**: each participant subclass declares the model types it handles in a `MODEL_TYPES` class attribute, and `ModelParticipant.__init_subclass__` records them — there is no central table to keep in sync. Unregistered families (Mistral, OLMo, Phi, DeepSeek, …) fall back to the base `ModelParticipant` automatically, and a brand-new family/size resolves the moment it's on the Hub.
 
-**Static types when you want them.** `AutoModelParticipant.from_pretrained` is *dynamically* dispatched, so its declared return type is the base `ModelParticipant` — except for known id literals, which a type stub ([`factories.pyi`](../../src/interlens/factories.pyi)) narrows to the concrete subclass. For a guaranteed static type regardless of the id, **name the class directly** — it returns `Self`:
+**Static types when you want them.** `AutoModelParticipant.from_pretrained` is *dynamically* dispatched, so its declared return type is the base `ModelParticipant` — except for known id literals, which a type stub ([`factories.pyi`](https://github.com/Sid-MB/interlens/blob/main/src/interlens/factories.pyi)) narrows to the concrete subclass. For a guaranteed static type regardless of the id, **name the class directly** — it returns `Self`:
 
 ```python
 from interlens import QwenModelParticipant
 q = QwenModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="q")  # statically QwenModelParticipant
 ```
 
-**Family behavior is data-driven, not hand-declared.** Whether a template accepts a standalone system role or requires strictly alternating turns is **auto-derived from the tokenizer** (`interlens.loading.derive_chat_flags`), so e.g. Gemma 2 (folds system into the first user turn) and Gemma 3 (accepts a system role) are handled correctly with zero per-model config. A subclass exists only when a family needs distinct behavior — Gemma's `tool_code` and Llama's `<|python_tag|>` tool-call formats — or, for Qwen, purely so its models get a distinct statically-typed class (its `<tool_call>` JSON is already the base format). A slow test ([`tests/test_family_flags.py`](../../tests/test_family_flags.py)) checks the derivation against real tokenizers.
+**Family behavior is data-driven, not hand-declared.** Whether a template accepts a standalone system role or requires strictly alternating turns is **auto-derived from the tokenizer** (`interlens.loading.derive_chat_flags`), so e.g. Gemma 2 (folds system into the first user turn) and Gemma 3 (accepts a system role) are handled correctly with zero per-model config. A subclass exists only when a family needs distinct behavior — Gemma's `tool_code` and Llama's `<|python_tag|>` tool-call formats — or, for Qwen, purely so its models get a distinct statically-typed class (its `<tool_call>` JSON is already the base format). A slow test ([`tests/test_family_flags.py`](https://github.com/Sid-MB/interlens/blob/main/tests/test_family_flags.py)) checks the derivation against real tokenizers.
 
 ### Load weights directly
 

@@ -1,0 +1,63 @@
+name: docs
+
+# Build the MkDocs site and publish it to GitHub Pages on every push to main. Runs only when something that can
+# affect the rendered docs changes: docstrings/sources, the example pages, or the docs/build config.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**/*.py'
+      - 'docs/**'
+      - 'README.md'
+      - 'mkdocs.yml'
+      - 'pyproject.toml'
+  workflow_dispatch:   # allow manual re-publish from the Actions tab
+
+# GitHub Pages deploy needs pages:write + id-token:write; contents:read to check out the repo.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two Pages deploys at once; let an in-flight deploy finish rather than cancelling it.
+concurrency:
+  group: docs-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # tags available so hatch-vcs can resolve a version during the editable install
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install docs deps (CPU torch keeps it light; mkdocstrings imports the package to read signatures)
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[docs]"
+
+      - name: Build site
+        run: mkdocs build --strict
+        env:
+          DISABLE_MKDOCS_2_WARNING: "true"   # silence the mkdocs-material 2.0 advertising banner in CI logs
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
