@@ -37,7 +37,11 @@ from .stop import (
 	ElapsedTimeStopCondition,
 	StopStringCondition,
 )
-from .interp import ActivationCache, CaptureSpec, SteeringSpec, Patch, token_logprobs, decoder_layers
+from .interp import (
+	ActivationCache, CaptureSpec, SteeringSpec, Patch, token_logprobs, decoder_layers,
+	GradCaptureSpec, GradForwardOutput, forward_with_grad, continuation_logprob,
+	soft_embed, gumbel_softmax_tokens, LinearBridge,
+)
 from .tools import Tool, ToolCall, ToolResult, ToolRegistry, DEFAULT_REGISTRY
 from .runner import (
 	available_devices, ConversationSpec, run_conversations, RunResult, RunReport, rollout,
@@ -82,6 +86,13 @@ __all__ = [
 	"Patch",
 	"token_logprobs",
 	"decoder_layers",
+	"GradCaptureSpec",
+	"GradForwardOutput",
+	"forward_with_grad",
+	"continuation_logprob",
+	"soft_embed",
+	"gumbel_softmax_tokens",
+	"LinearBridge",
 	"Tool",
 	"ToolCall",
 	"ToolResult",

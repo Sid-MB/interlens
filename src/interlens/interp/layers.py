@@ -26,7 +26,13 @@ def decoder_layers(model: "PreTrainedModel"):
 
 	Steering/patching hooks and per-layer capture all need the ordered layer stack. Qwen and Gemma both expose
 	it at ``model.model.layers``; a few fallbacks cover other families so the interp layer isn't Qwen/Gemma-only.
+	PEFT/adapter wrappers (``PeftModelForCausalLM``) are unwrapped first so hooks land on the real decoder layers.
 	"""
+	if hasattr(model, "get_base_model"):  # peft wrapper -> underlying transformers model
+		try:
+			model = model.get_base_model()
+		except Exception:
+			pass
 	for path in ("model.layers", "transformer.h", "gpt_neox.layers", "model.decoder.layers"):
 		obj = model
 		try:

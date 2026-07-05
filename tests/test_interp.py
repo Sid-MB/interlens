@@ -62,3 +62,27 @@ def test_token_logprobs_shapes_and_signs():
 	assert len(out["logprobs"]) == len(out["surprisal"]) == len(out["entropy"]) == 4
 	assert all(s >= 0 for s in out["surprisal"])   # surprisal = -logprob >= 0
 	assert all(e >= 0 for e in out["entropy"])
+
+
+def test_decoder_layers_unwraps_peft():
+	"""decoder_layers must see through a PEFT/adapter wrapper (exposes get_base_model) to the real layer stack —
+	otherwise grad/capture on a LoRA-wrapped attacker raises (regression: multimodel-backprop rungs 3/4)."""
+	import torch.nn as nn
+	from interlens import decoder_layers
+
+	class _Base(nn.Module):
+		def __init__(self):
+			super().__init__()
+			self.model = nn.Module()
+			self.model.layers = nn.ModuleList([nn.Linear(4, 4) for _ in range(3)])
+
+	class _PeftLike(nn.Module):
+		def __init__(self, base):
+			super().__init__()
+			self._base = base
+		def get_base_model(self):
+			return self._base
+
+	base = _Base()
+	assert len(decoder_layers(base)) == 3
+	assert len(decoder_layers(_PeftLike(base))) == 3

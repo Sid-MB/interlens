@@ -26,6 +26,8 @@ from .steering import SteeringSpec
 from .logprobs import token_logprobs
 from .patching import Patch
 from .layers import decoder_layers
+from .grad import GradCaptureSpec, GradForwardOutput, forward_with_grad, continuation_logprob
+from .bridge import soft_embed, gumbel_softmax_tokens, LinearBridge
 
 __all__ = [
 	"ActivationCache",
@@ -41,4 +43,11 @@ __all__ = [
 	"token_logprobs",
 	"Patch",
 	"decoder_layers",
+	"GradCaptureSpec",
+	"GradForwardOutput",
+	"forward_with_grad",
+	"continuation_logprob",
+	"soft_embed",
+	"gumbel_softmax_tokens",
+	"LinearBridge",
 ]
