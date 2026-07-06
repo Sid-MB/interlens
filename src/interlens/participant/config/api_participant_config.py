@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .participant_config import ParticipantConfig, register_config
-from ..participants.api_participant import APIParticipant
+from ..participants.api_participant import APIParticipant, Provider
 
 
 @register_config
@@ -30,7 +30,7 @@ class APIParticipantConfig(ParticipantConfig):
 	kind = "api"
 
 	model_id: str = ""
-	provider: str = "anthropic"
+	provider: Provider = "anthropic"
 	max_tokens: int = 512
 	temperature: float = 1.0
 

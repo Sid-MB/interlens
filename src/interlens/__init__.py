@@ -25,7 +25,7 @@ from .participant.participants.model_participant import ModelParticipant
 from .participant.participants.qwen import QwenModelParticipant
 from .participant.participants.gemma import GemmaModelParticipant
 from .participant.participants.llama import LlamaModelParticipant
-from .participant.participants.api_participant import APIParticipant
+from .participant.participants.api_participant import APIParticipant, Provider
 from .participant.config import ParticipantConfig, ModelParticipantConfig, APIParticipantConfig
 from .context import ContextPolicy, ErrorPolicy, DropOldestPolicy, SlidingWindowPolicy, SummarizePolicy
 from .hooks import MessageHook, MessageHookResult, HookAction
@@ -63,6 +63,7 @@ __all__ = [
 	"GemmaModelParticipant",
 	"LlamaModelParticipant",
 	"APIParticipant",
+	"Provider",
 	"ParticipantConfig",
 	"ModelParticipantConfig",
 	"APIParticipantConfig",

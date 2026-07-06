@@ -17,9 +17,15 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
+from typing import Literal
 
 from ..participant import Participant
 from ...message import Message
+
+# The set of hosted API backends. ``anthropic`` calls Claude directly via the ``anthropic`` SDK; ``openrouter``
+# reaches any model behind openrouter.ai through one OpenAI-compatible endpoint. This is the canonical list —
+# both ``_CLIENT_CLASSES`` (runtime) and every ``provider`` field annotation derive from it.
+Provider = Literal["anthropic", "openrouter"]
 
 # provider name -> client class in api_client. Each provider gets ONE process-wide shared client (retry/backoff +
 # a global max-in-flight cap), so the concurrency cap holds across every API participant in a rollout.
@@ -59,7 +65,7 @@ class APIParticipant(Participant):
 
 	name: str = ""
 	model_id: str = ""
-	provider: str = "anthropic"
+	provider: Provider = "anthropic"
 	system_prompt: str | None = None
 	private_context: tuple = ()
 	max_tokens: int = 512
