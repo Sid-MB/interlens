@@ -24,6 +24,26 @@ from __future__ import annotations
 from ..participant.participants.model_participant import ModelParticipant
 
 
+def _participant_signature(p):
+	"""A key identifying what a participant would batch AS. Two participants share a key only when co-stepping
+	them in one batch is correct: local models must be the SAME cached weight object (``id(p.model)`` — the model
+	cache keys on hf_id/device/dtype/…, so same-id participants share the object); API participants must hit the
+	same provider+model+batch mode; anything else (tools/human/non-batch API) is per-conv so keyed by role."""
+	if isinstance(p, ModelParticipant):
+		return ("model", id(getattr(p, "model", None)))
+	if type(p).__name__ == "APIParticipant":
+		return ("api", getattr(p, "provider", None), getattr(p, "model_id", None), bool(getattr(p, "batch", False)))
+	return ("other", type(p).__name__, getattr(p, "name", None))
+
+
+def schedule_signature(conv, turns: int):
+	"""The full co-step schedule of a conversation: its turn count + the per-position participant signatures. Convs
+	that share a signature have an identical speaker/model schedule, so ``co_step`` can batch each round's
+	same-position turns across them safely. Grouping specs by this (instead of by turn count alone) makes batched
+	execution correct for ANY mix of specs — a heterogeneous lineup simply forms its own group."""
+	return (int(turns), tuple(_participant_signature(p) for p in conv.participants))
+
+
 def _chunks(items, size):
 	if not size or size <= 0 or size >= len(items):
 		return [items]
@@ -31,12 +51,13 @@ def _chunks(items, size):
 
 
 def _batchable(participant) -> bool:
-	# Plain ModelParticipant with no tools batches locally; an APIParticipant with batch=True batches through the
-	# provider's async batch API (both expose generate_batch). Tool loops / non-batch API / human speakers take
-	# the per-conv path.
+	# ANY local ModelParticipant (base or any family subclass — qwen/gemma/llama/…) always batches locally: they
+	# all inherit ``generate_batch``, so the check is capability-based (isinstance), never a per-family allowlist a
+	# new family could silently fall out of. An APIParticipant batches only with batch=True (its provider async
+	# batch API). Tool loops take the per-conv path regardless (the batched path has no tools loop).
 	if getattr(participant, "tools", ()):
 		return False
-	if type(participant).__name__ in ("ModelParticipant", "QwenModelParticipant", "GemmaModelParticipant"):
+	if isinstance(participant, ModelParticipant):
 		return True
 	return type(participant).__name__ == "APIParticipant" and getattr(participant, "batch", False)
 
@@ -57,6 +78,8 @@ def co_step(convs, turns: int, *, max_batch_size: int | None = None, group_seed:
 		batch_convs = [c for c in convs if _batchable(c.participants[spk])]
 		other_convs = [c for c in convs if not _batchable(c.participants[spk])]
 		for wave in _chunks(batch_convs, max_batch_size):
+			if not wave:  # this round has no batchable speaker (e.g. an all-API/non-batch group) — nothing to fuse
+				continue
 			rep = wave[0].participants[spk]
 			views = [c._view(c.participants[spk]) for c in wave]
 			msgs = rep.generate_batch(views, turn=i, group_seed=group_seed + i)

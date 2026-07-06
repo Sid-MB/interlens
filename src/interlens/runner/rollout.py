@@ -33,7 +33,7 @@ def _rollout_template(template: ConversationTemplate, index: int, seed: int | No
 
 def rollout(template: ConversationTemplate, n: int, turns: int | None = None, devices=None,
             analyze=None, seed: int = 0, resume: bool = False, out_dir=None, registry=None,
-            batched: bool = False, max_batch_size: int | None = None):
+            batched: bool = True, max_batch_size: int | None = None):
 	"""Run ``n`` rollouts of a shared scenario across all devices, then optionally analyze each.
 
 	Expands one ``ConversationTemplate`` into ``n`` ``ConversationSpec``s with distinct per-rollout seeds/job ids
@@ -41,11 +41,17 @@ def rollout(template: ConversationTemplate, n: int, turns: int | None = None, de
 	runs in-worker while models are resident, so it retains full per-model power — e.g. sample each debater
 	"what's your opinion now?" off-transcript, or run a classifier — with only serializable results crossing back.
 
-	With ``batched=True`` (throughput mode) the per-device rollouts are co-stepped: each round's same-position
-	turns run in one ``model.generate`` (waves of ``max_batch_size``), and turn 1 — token-identical across
-	rollouts — takes the shared-prefill fast path (prefix computed once, forked to all rollouts). This is a
-	5-20x throughput win but is **not** token-identical to the default per-rollout path (batch composition +
-	global RNG perturb rows; PLAN §Execution modes). Default ``batched=False`` runs each rollout independently.
+	**Throughput is on by default** (``batched=True``): a rollout is ``n`` clones of one template, so every round's
+	same-position turns share a schedule and are co-stepped — local ``ModelParticipant``s always run in one
+	``model.generate`` (waves of ``max_batch_size``; turn 1, token-identical across rollouts, takes the
+	shared-prefill fast path), and ``batch=True`` API participants go through their provider's async batch API.
+	This is a 5-20x throughput win. Local batching is unconditional here — there is no per-model opt-out (see
+	``batched.co_step`` / ``_batchable``).
+
+	``batched=False`` is the ``ExecutionMode.DETERMINISTIC`` escape hatch: it runs each rollout independently and
+	is **token-identical** on the same hardware, at the cost of throughput. Use it only when you need exact replay
+	or per-turn interp (capture/steering/probes), which batched generation cannot provide; the default throughput
+	path guarantees only *distributional* reproducibility (batch composition + global RNG perturb rows).
 	"""
 	specs = [
 		ConversationSpec(template=_rollout_template(template, i, seed), job_id=f"rollout_{i:04d}", turns=turns)

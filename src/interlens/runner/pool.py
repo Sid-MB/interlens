@@ -78,7 +78,7 @@ def _run_group(specs, device, analyze, out_dir, registry, max_batch_size):
 	"""Batched (throughput-mode) path: build every spec on one device (so they share the cached model), co-step
 	them in lockstep batching same-position turns, then analyze + checkpoint each. Build/analyze errors are
 	isolated per job id exactly like ``_run_one``; a per-spec build failure just drops that spec from the group."""
-	from .batched import co_step
+	from .batched import co_step, schedule_signature
 
 	fn = resolve_analyzer(analyze)
 	results, built = {}, {}
@@ -88,12 +88,19 @@ def _run_group(specs, device, analyze, out_dir, registry, max_batch_size):
 		except Exception as exc:
 			results[spec.job_id] = RunResult(spec.job_id, None, None, f"{type(exc).__name__}: {exc}", str(device))
 
-	# Group by effective turn count so a co-stepped wave shares one round schedule.
-	by_turns: dict[int, list] = {}
+	# Group by full co-step SCHEDULE SIGNATURE (turns + per-position model/participant identity), not turn count
+	# alone: only convs that share a schedule may co-step, so a heterogeneous mix of specs still batches correctly
+	# (each distinct lineup forms its own group; a one-off lineup is a singleton group = per-conv). This is what
+	# lets batching be the safe default even for arbitrary run_conversations specs.
+	by_sig: dict[tuple, list] = {}
+	turns_of: dict[tuple, int] = {}
 	for jid, (spec, conv) in built.items():
-		turns = spec.turns if spec.turns is not None else spec.template.turns
-		by_turns.setdefault(int(turns), []).append((jid, conv))
-	for turns, group in by_turns.items():
+		turns = int(spec.turns if spec.turns is not None else spec.template.turns)
+		sig = schedule_signature(conv, turns)
+		by_sig.setdefault(sig, []).append((jid, conv))
+		turns_of[sig] = turns
+	for sig, group in by_sig.items():
+		turns = turns_of[sig]
 		try:
 			co_step([conv for _, conv in group], turns, max_batch_size=max_batch_size)
 		except Exception as exc:  # a batch-level failure shouldn't lose the whole run; degrade to per-conv record
@@ -112,13 +119,19 @@ def _run_group(specs, device, analyze, out_dir, registry, max_batch_size):
 
 
 def run_conversations(specs, devices=None, analyze=None, out_dir=None, resume=False,
-                      registry=None, in_process=None, batched=False, max_batch_size=None) -> RunReport:
+                      registry=None, in_process=None, batched=True, max_batch_size=None) -> RunReport:
 	"""Run many conversation specs across devices, with checkpointing, resume, and per-spec failure isolation.
 
-	One worker per device; specs round-robined across them. With a single device (or ``in_process=True``) runs
-	sequentially in this process — the path exercised on non-multi-GPU machines. With multiple devices it spawns
-	one process per GPU (``torch.multiprocessing``, since fork+CUDA is broken). Each completed conversation is
-	saved under ``out_dir/<job_id>/`` as it finishes; ``resume=True`` skips job ids already checkpointed there.
+	Parallel by default across **two** axes: one worker **process per device** (specs round-robined; multi-GPU
+	spawns via ``torch.multiprocessing`` since fork+CUDA is broken — a single device / ``in_process=True`` runs
+	sequentially in this process), and within each device **batched co-stepping** (``batched=True``, the default).
+	Specs are grouped by their co-step schedule signature (turns + per-position model identity), so each round's
+	same-position turns batch into one ``model.generate`` — correct for ANY mix of specs, since only convs that
+	share a schedule (e.g. all problems of a benchmark eval) land in the same batch group. Each completed
+	conversation is saved under ``out_dir/<job_id>/`` as it finishes; ``resume=True`` skips already-checkpointed ids.
+
+	Pass ``batched=False`` for the ``ExecutionMode.DETERMINISTIC`` path (token-identical replay + per-turn interp),
+	which batched generation cannot provide.
 	"""
 	devices = devices or available_devices()
 	pending = [s for s in specs if not (resume and _already_done(out_dir, s.job_id))]

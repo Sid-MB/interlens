@@ -345,29 +345,36 @@ class ModelParticipant(Participant):
 			handles += steering.register(self.model)
 		if patch is not None:
 			handles += patch.register(self.model)
+		# The steering/patch hooks MUST be removed after this generation — otherwise they persist on the
+		# (process-cached) model and silently contaminate every later generation (e.g. a coef sweep would
+		# accumulate hooks and collapse). The outer finally guarantees removal on every exit path.
 		try:
-			with torch.inference_mode():
-				out = self.model.generate(**enc, **kwargs)
-		except Exception:
-			# Reuse can be version-fragile; on any failure, retry once with a clean full prefill.
-			if reused is None:
-				raise
-			kwargs.pop("past_key_values", None)
-			self._kv_cache = self._cached_tokens = None
-			with torch.inference_mode():
-				out = self.model.generate(**enc, **kwargs)
+			try:
+				with torch.inference_mode():
+					out = self.model.generate(**enc, **kwargs)
+			except Exception:
+				# Reuse can be version-fragile; on any failure, retry once with a clean full prefill.
+				if reused is None:
+					raise
+				kwargs.pop("past_key_values", None)
+				self._kv_cache = self._cached_tokens = None
+				with torch.inference_mode():
+					out = self.model.generate(**enc, **kwargs)
 
-		is_dict = return_logprobs or want_cache
-		sequences = out.sequences if is_dict else out
-		full_ids = sequences[0]
-		if want_cache:
-			self._store_cache(full_ids, getattr(out, "past_key_values", None))
-		new_tokens = full_ids[prompt_len:]
-		raw = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
-		return _GenResult(
-			raw=raw, full_ids=full_ids, prompt_len=prompt_len, new_tokens=new_tokens,
-			n_tokens=int(new_tokens.shape[0]), scores=out.scores if return_logprobs else None,
-		)
+			is_dict = return_logprobs or want_cache
+			sequences = out.sequences if is_dict else out
+			full_ids = sequences[0]
+			if want_cache:
+				self._store_cache(full_ids, getattr(out, "past_key_values", None))
+			new_tokens = full_ids[prompt_len:]
+			raw = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+			return _GenResult(
+				raw=raw, full_ids=full_ids, prompt_len=prompt_len, new_tokens=new_tokens,
+				n_tokens=int(new_tokens.shape[0]), scores=out.scores if return_logprobs else None,
+			)
+		finally:
+			for h in handles:
+				h.remove()
 
 	def _maybe_reuse_cache(self, prompt_ids):
 		"""Return a cropped KV cache to reuse iff the cached tokens are an exact prefix of ``prompt_ids`` (the
