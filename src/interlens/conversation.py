@@ -177,14 +177,27 @@ class Conversation:
 			segments.append(ViewSegment(role=item.role_hint, content=item.content,
 			                            origin="private_context", author=item.author))
 
+		multiparty = len(self.participants) > 2
 		for message in (*self.transcript, *extra):
-			role = participant.self_role if message.author == participant.name else participant.others_role
+			is_other = message.author != participant.name
+			role = participant.others_role if is_other else participant.self_role
 			origin = "moderator" if message.author == self.moderator_name else "turn"
 			content = message.content
 			reasoning = self._reasoning_for(participant, message)
 			if reasoning:
 				content = f"<reasoning>\n{reasoning}\n</reasoning>\n{content}"
-			segments.append(ViewSegment(role=role, content=content, origin=origin, author=message.author))
+			seg_author = message.author
+			if is_other and multiparty:
+				# N-party (n>2): label each other-speaker turn inline with its author so the speaker can tell
+				# its several counterparts apart. Two turns from two *different* others (B then C, before A
+				# speaks again) is a run of consecutive ``others_role`` segments; on strict-alternation families
+				# ``finalize_view``'s merge already author-prefixes such a run, but permissive templates skip the
+				# merge and would otherwise render both as anonymous same-role turns. Labelling here is
+				# template-agnostic; clearing ``author`` keeps the strict-template merge from re-prefixing an
+				# already-labelled turn. A 2-party conversation never has multi-other runs, so it is left as-is.
+				content = f"{message.author}: {content}"
+				seg_author = None
+			segments.append(ViewSegment(role=role, content=content, origin=origin, author=seg_author))
 
 		return segments
 

@@ -97,6 +97,36 @@ def test_branch_isolation_shares_participants():
 	assert branch.participant("a") is base.participant("a")                   # participants shared, no reload
 
 
+def test_multiparty_labels_other_speakers():
+	# n>2: A must be able to tell B from C. On a permissive (non-alternating) template the two other-speaker
+	# turns stay as separate same-role messages, so each is labelled inline with its author.
+	a, b, c = StubParticipant("alice"), StubParticipant("bob"), StubParticipant("carol")
+	conv = Conversation((a, b, c))
+	conv.transcript.append("bob", "vote left")
+	conv.transcript.append("carol", "vote right")
+	view = conv._view(a)
+	assert [m["content"] for m in view] == ["bob: vote left", "carol: vote right"]
+
+
+def test_multiparty_labels_survive_strict_merge():
+	# On a strict-alternation template the two labelled turns merge into one — but must NOT be double-prefixed.
+	a, b, c = StubParticipant("alice"), StubParticipant("bob"), StubParticipant("carol")
+	a.requires_alternating_roles = True
+	conv = Conversation((a, b, c))
+	conv.transcript.append("bob", "vote left")
+	conv.transcript.append("carol", "vote right")
+	view = conv._view(a)
+	assert len(view) == 1 and view[0]["content"] == "bob: vote left\n\ncarol: vote right"
+
+
+def test_two_party_unlabelled():
+	# 2-party never has a multi-other run, so the incoming turn stays unlabelled (no "bob:" noise).
+	a, b = StubParticipant("alice"), StubParticipant("bob")
+	conv = Conversation((a, b))
+	conv.transcript.append("bob", "vote left")
+	assert [m["content"] for m in conv._view(a)] == ["vote left"]
+
+
 def test_sample_is_ephemeral():
 	a, b = StubParticipant("alice", reply="ans"), StubParticipant("bob")
 	conv = Conversation((a, b))
