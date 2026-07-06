@@ -38,14 +38,20 @@ _SHARED_LOCK = threading.Lock()
 
 def _default_client(provider: str):
 	"""The process-wide shared client for ``provider`` (built lazily so the harness never imports a provider SDK
-	unless that provider actually runs). Raises on an unknown provider rather than silently defaulting."""
+	unless that provider actually runs). Raises on an unknown provider rather than silently defaulting. The
+	max-in-flight cap defaults to 4 but is overridable via ``INTERLENS_API_MAX_IN_FLIGHT`` so a caller that
+	thread-pools many independent rollouts can widen the concurrency to match (bounded by provider rate limits)."""
 	if provider not in _SHARED_CLIENTS:
 		with _SHARED_LOCK:
 			if provider not in _SHARED_CLIENTS:
 				if provider not in _CLIENT_CLASSES:
 					raise ValueError(f"unknown API provider {provider!r}; expected one of {sorted(_CLIENT_CLASSES)}")
+				import os
 				from . import api_client
-				_SHARED_CLIENTS[provider] = getattr(api_client, _CLIENT_CLASSES[provider])()
+				kw = {}
+				if os.environ.get("INTERLENS_API_MAX_IN_FLIGHT"):
+					kw["max_in_flight"] = int(os.environ["INTERLENS_API_MAX_IN_FLIGHT"])
+				_SHARED_CLIENTS[provider] = getattr(api_client, _CLIENT_CLASSES[provider])(**kw)
 	return _SHARED_CLIENTS[provider]
 
 
