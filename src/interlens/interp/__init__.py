@@ -28,9 +28,9 @@ from .patching import Patch
 from .layers import decoder_layers
 from .grad import GradCaptureSpec, GradForwardOutput, forward_with_grad, continuation_logprob
 from .bridge import soft_embed, gumbel_softmax_tokens, LinearBridge
-from .routing import (RoutingCapture, RoutingStats, capture_router_logits, routing_stats, message_token_spans,
-                      moe_num_experts, moe_topk, moe_layer_indices, kl_divergence, js_divergence,
-                      topk_expert_overlap)
+from .routing import (RoutingCapture, RoutingStats, RouterSteeringSpec, capture_router_logits, routing_stats,
+                      message_token_spans, moe_num_experts, moe_topk, moe_layer_indices, kl_divergence,
+                      js_divergence, topk_expert_overlap)
 
 __all__ = [
 	"ActivationCache",
@@ -55,6 +55,7 @@ __all__ = [
 	"LinearBridge",
 	"RoutingCapture",
 	"RoutingStats",
+	"RouterSteeringSpec",
 	"capture_router_logits",
 	"routing_stats",
 	"message_token_spans",

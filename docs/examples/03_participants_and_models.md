@@ -92,6 +92,12 @@ conv.run(turns=6)
 
 Requires `ANTHROPIC_API_KEY` (or `ANTHROPIC_API_KEY_FILE`) and outbound network. For tests, inject a fake `client=callable(system, messages, model, max_tokens, temperature) -> str`.
 
+**OpenAI** (`provider="openai"`) calls OpenAI directly via the `openai` SDK — needs `OPENAI_API_KEY` and the `[api]` extra:
+
+```python
+judge = APIParticipant(name="judge", provider="openai", model_id="gpt-5", max_tokens=400)
+```
+
 **OpenRouter** (`provider="openrouter"`) reaches any model behind [openrouter.ai](https://openrouter.ai) through one OpenAI-compatible endpoint — needs `OPENROUTER_API_KEY` and the `[api]` extra (`pip install "interlens[api]"`, which pulls `openai`):
 
 ```python
@@ -100,7 +106,20 @@ judge = APIParticipant(name="judge", provider="openrouter",
                        max_tokens=400)
 ```
 
-Both providers share one retry/backoff + max-in-flight client, built lazily per provider.
+All providers share one retry/backoff + max-in-flight client, built lazily per provider.
+
+### Batch mode for large rollouts
+
+`provider="anthropic"` and `provider="openai"` expose asynchronous **batch APIs** (Anthropic Message Batches / OpenAI Batch) — ~50% cost and much higher throughput, in exchange for batch-window latency. Set `batch=True` on the participant and run the rollout in throughput mode; the co-stepper collects each round's same-position turns across all rollouts into **one** provider batch:
+
+```python
+pro = APIParticipantConfig(name="pro", provider="openai", model_id="gpt-5", batch=True, system_prompt="Argue YES.")
+con = APIParticipantConfig(name="con", provider="anthropic", model_id="claude-sonnet-5", batch=True, system_prompt="Argue NO.")
+report = rollout(ConversationTemplate(participants=[pro, con], shared_context="…", turns=4),
+                 n=200, batched=True)   # each round → one batch submission per speaker
+```
+
+Batch mode is **unavailable on OpenRouter** — requesting `batch=True` there raises rather than silently degrading to serial calls, so a requested batch discount is never quietly dropped. Under the hood every participant/client also exposes `generate_batch(views)` / `client.submit_batch(requests)` directly if you want to batch outside a rollout.
 
 ## Per-turn `max_new_tokens`
 

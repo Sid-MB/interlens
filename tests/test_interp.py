@@ -128,3 +128,61 @@ def test_routing_divergences_self_zero_and_overlap_full():
 	assert js_divergence(p, p).abs().max() < 1e-5      # JS(p||p)=0
 	assert (js_divergence(p, q) >= -1e-6).all()        # JS >= 0
 	assert (topk_expert_overlap(p, p, k=2) >= 1.0 - 1e-6).all()  # a dist fully overlaps itself
+
+
+def _fake_moe(n_layers=2, n_experts=6, d=8):
+	"""Minimal module with the structure moe_layer_indices/decoder_layers expect: model.model.layers[i].mlp
+	with a .gate (Linear->n_experts) and .experts (ModuleList). Enough to register router-steering hooks."""
+	import torch.nn as nn
+
+	class _MLP(nn.Module):
+		def __init__(self):
+			super().__init__()
+			self.gate = nn.Linear(d, n_experts, bias=False)
+			self.experts = nn.ModuleList([nn.Linear(d, d) for _ in range(n_experts)])
+
+	class _Layer(nn.Module):
+		def __init__(self):
+			super().__init__(); self.mlp = _MLP()
+
+	class _Inner(nn.Module):
+		def __init__(self):
+			super().__init__(); self.layers = nn.ModuleList([_Layer() for _ in range(n_layers)])
+
+	class _Model(nn.Module):
+		def __init__(self):
+			super().__init__(); self.model = _Inner()
+			self.config = type("C", (), {"num_experts": n_experts, "num_experts_per_tok": 2})()
+
+	return _Model()
+
+
+def test_router_steering_biases_gate_logits():
+	from interlens.interp import RouterSteeringSpec, moe_layer_indices
+	m = _fake_moe(n_layers=2, n_experts=6, d=8)
+	layers = moe_layer_indices(m)                       # both layers are sparse
+	assert layers == (0, 1)
+	target = torch.zeros(2, 6); target[:, 3] = 1.0      # steer hard toward expert 3
+	spec = RouterSteeringSpec.toward_load(target, layers, coef=2.0)
+	x = torch.randn(4, 8)
+	base = m.model.layers[0].mlp.gate(x).clone()
+	handles = spec.register(m)
+	try:
+		steered = m.model.layers[0].mlp.gate(x)
+	finally:
+		for h in handles:
+			h.remove()
+	# bias row 0 = 2.0 * log(target+eps): expert 3 gets ~+0 (log 1), others get a large negative push.
+	delta = (steered - base)[0]
+	assert delta[3] > delta[0] and delta[3] > delta[1]   # expert 3 favored relative to others
+	assert torch.allclose((steered - base), spec.coef * spec.bias[0].to(steered.dtype), atol=1e-4)
+	# hooks removed -> back to baseline
+	assert torch.allclose(m.model.layers[0].mlp.gate(x), base, atol=1e-5)
+
+
+def test_router_steering_rejects_dense_layer():
+	from interlens.interp import RouterSteeringSpec
+	m = _fake_moe(n_layers=2, n_experts=6)
+	spec = RouterSteeringSpec.toward_load(torch.ones(1, 6) / 6, layers=(5,))  # layer 5 doesn't exist/sparse
+	with pytest.raises((ValueError, IndexError)):
+		spec.register(m)

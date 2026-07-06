@@ -33,6 +33,7 @@ class APIParticipantConfig(ParticipantConfig):
 	provider: Provider = "anthropic"
 	max_tokens: int = 512
 	temperature: float = 1.0
+	batch: bool = False
 
 	def build(self, device, registry=None) -> APIParticipant:
 		# device/registry are irrelevant to an API participant (no local model, no tools loop yet).
@@ -46,11 +47,12 @@ class APIParticipantConfig(ParticipantConfig):
 			provider=self.provider,
 			max_tokens=self.max_tokens,
 			temperature=self.temperature,
+			batch=self.batch,
 		)
 
 	def _extra_dict(self) -> dict:
 		return dict(model_id=self.model_id, provider=self.provider,
-		            max_tokens=self.max_tokens, temperature=self.temperature)
+		            max_tokens=self.max_tokens, temperature=self.temperature, batch=self.batch)
 
 	@classmethod
 	def from_dict(cls, data: dict) -> "APIParticipantConfig":
@@ -58,4 +60,5 @@ class APIParticipantConfig(ParticipantConfig):
 		if "model_id" not in data:
 			raise KeyError("APIParticipantConfig requires 'model_id'")
 		return cls(**base, model_id=data["model_id"], provider=data.get("provider", "anthropic"),
-		           max_tokens=data.get("max_tokens", 512), temperature=data.get("temperature", 1.0))
+		           max_tokens=data.get("max_tokens", 512), temperature=data.get("temperature", 1.0),
+		           batch=data.get("batch", False))

@@ -103,15 +103,86 @@ def check_real_conversation():
     log("real Claude conversation + classifier OK")
 
 
+def check_batch_generate():
+    """``generate_batch`` with ``batch=True`` routes every view through the client's ``submit_batch`` (one async
+    provider batch) and returns Messages in input order; ``batch=False`` falls back to per-view calls."""
+    class _BatchClient:
+        def __init__(self):
+            self.batches = 0
+            self.calls = 0
+
+        def __call__(self, system, messages, model, max_tokens, temperature):
+            self.calls += 1
+            return f"solo:{messages[-1]['content']}"
+
+        def submit_batch(self, requests, *, poll_interval=30.0):
+            self.batches += 1
+            return [f"batched:{r['messages'][-1]['content']}" for r in requests]
+
+    views = [[{"role": "user", "content": w}] for w in ("a", "b", "c")]
+
+    client = _BatchClient()
+    api = APIParticipant(name="j", model_id=MODEL, batch=True, client=client)
+    msgs = api.generate_batch(views)
+    assert [m.content for m in msgs] == ["batched:a", "batched:b", "batched:c"], msgs
+    assert client.batches == 1 and client.calls == 0 and all(m.metadata["batched"] for m in msgs)
+
+    client2 = _BatchClient()
+    api2 = APIParticipant(name="j", model_id=MODEL, batch=False, client=client2)
+    msgs2 = api2.generate_batch(views)
+    assert [m.content for m in msgs2] == ["solo:a", "solo:b", "solo:c"], msgs2
+    assert client2.batches == 0 and client2.calls == 3
+    log("generate_batch: batch=True -> one submit_batch (in order); batch=False -> per-view calls OK")
+
+
+def check_batch_unavailable_raises():
+    """A provider whose client exposes no ``submit_batch`` (OpenRouter) must raise on ``batch=True``, never
+    silently fall back — and the base client's default ``submit_batch`` raises too."""
+    class _NoBatchClient:
+        def __call__(self, system, messages, model, max_tokens, temperature):
+            return "x"
+
+    api = APIParticipant(name="j", model_id="openai/gpt-5", provider="openrouter", batch=True, client=_NoBatchClient())
+    try:
+        api.generate_batch([[{"role": "user", "content": "hi"}]])
+        raise AssertionError("expected NotImplementedError for a client without submit_batch")
+    except NotImplementedError as e:
+        assert "batch" in str(e).lower()
+
+    from interlens.participant.participants.api_client import _RetryingClient
+    base = _RetryingClient.__new__(_RetryingClient)
+    try:
+        base.submit_batch([])
+        raise AssertionError("expected _RetryingClient.submit_batch to raise")
+    except NotImplementedError as e:
+        assert "no batch API" in str(e)
+    log("batch mode unavailable (OpenRouter / base client) raises loudly OK")
+
+
+def check_provider_registry():
+    """The provider enum + client registry expose native anthropic + openai, and openai maps to a batch-capable
+    client while openrouter does not."""
+    from interlens.participant.participants.api_participant import _CLIENT_CLASSES
+    from interlens.participant.participants import api_client
+
+    assert set(_CLIENT_CLASSES) == {"anthropic", "openai", "openrouter"}, _CLIENT_CLASSES
+    assert "submit_batch" in vars(api_client.OpenAIClient), "OpenAIClient must implement submit_batch"
+    assert "submit_batch" in vars(api_client.AnthropicClient), "AnthropicClient must implement submit_batch"
+    assert "submit_batch" not in vars(api_client.OpenRouterClient), "OpenRouterClient must NOT implement submit_batch"
+    log("provider registry: native anthropic/openai (batch-capable) + openrouter (no batch) OK")
+
+
 def main():
+    offline = [check_backoff_wrapper, check_interp_raises, check_batch_generate,
+               check_batch_unavailable_raises, check_provider_registry]
     if not os.environ.get("ANTHROPIC_API_KEY"):
         log("ANTHROPIC_API_KEY not set — running offline checks only")
-        check_backoff_wrapper()
-        check_interp_raises()
+        for c in offline:
+            c()
         log("OFFLINE CHECKS PASSED (set ANTHROPIC_API_KEY for the live call)")
         return
-    check_backoff_wrapper()
-    check_interp_raises()
+    for c in offline:
+        c()
     check_real_conversation()
     log("ALL API CHECKS PASSED")
 

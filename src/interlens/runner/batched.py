@@ -31,9 +31,14 @@ def _chunks(items, size):
 
 
 def _batchable(participant) -> bool:
-	# Plain ModelParticipant with no tools batches; tool loops / API / human speakers take the per-conv path.
-	return type(participant).__name__ in ("ModelParticipant", "QwenModelParticipant", "GemmaModelParticipant") \
-		and not getattr(participant, "tools", ())
+	# Plain ModelParticipant with no tools batches locally; an APIParticipant with batch=True batches through the
+	# provider's async batch API (both expose generate_batch). Tool loops / non-batch API / human speakers take
+	# the per-conv path.
+	if getattr(participant, "tools", ()):
+		return False
+	if type(participant).__name__ in ("ModelParticipant", "QwenModelParticipant", "GemmaModelParticipant"):
+		return True
+	return type(participant).__name__ == "APIParticipant" and getattr(participant, "batch", False)
 
 
 def co_step(convs, turns: int, *, max_batch_size: int | None = None, group_seed: int = 0):

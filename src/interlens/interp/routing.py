@@ -199,6 +199,57 @@ def topk_expert_overlap(p: torch.Tensor, q: torch.Tensor, k: int = 8) -> torch.T
 	return out
 
 
+@dataclass
+class RouterSteeringSpec:
+	"""A causal intervention on MoE routing: add a per-expert bias to the gate logits during generation, nudging
+	which experts fire. The routing analogue of :class:`SteeringSpec` (which steers the residual stream) — here
+	forward hooks sit on each sparse layer's ``mlp.gate`` (the router ``nn.Linear`` whose output is the
+	``[tokens, n_experts]`` logits) and add ``coef * bias`` before top-k selection.
+
+	Build it with :meth:`toward_load` to push routing *toward* a target expert-usage distribution (e.g. the MoE's
+	solo-on-domain ``RoutingStats.expert_load``): the bias is ``log(target + eps)``, so adding it acts like a
+	log-prior that shifts the router's softmax toward the target experts, with ``coef`` the strength (0 = no-op).
+
+	A summary (layers, coef, per-layer bias norm) is available via :meth:`summary` for reproducibility.
+	"""
+
+	bias: torch.Tensor          # [len(layers), n_experts] additive gate-logit bias, row-aligned with ``layers``
+	layers: tuple[int, ...]     # decoder-layer indices to steer (must be sparse MoE layers)
+	coef: float = 1.0
+
+	@classmethod
+	def toward_load(cls, target_load: torch.Tensor, layers: tuple[int, ...], coef: float = 1.0,
+	                eps: float = 1e-6) -> "RouterSteeringSpec":
+		"""Steer toward a target expert-usage distribution ``target_load`` (``[len(layers), n_experts]``, rows the
+		fraction of routing mass per expert). Bias ``= log(target_load + eps)`` (a log-prior on expert choice)."""
+		return cls(bias=torch.log(target_load + eps), layers=tuple(layers), coef=coef)
+
+	def register(self, model: "PreTrainedModel") -> list:
+		"""Register the gate-bias hooks on ``model``'s sparse layers; returns handles (caller removes after use)."""
+		layers = decoder_layers(model)
+		sparse = set(moe_layer_indices(model))
+		handles = []
+		for row, li in enumerate(self.layers):
+			if li not in sparse:
+				raise ValueError(f"layer {li} is not a sparse MoE layer; cannot steer its router")
+			handles.append(layers[li].mlp.gate.register_forward_hook(self._hook(self.bias[row])))
+		return handles
+
+	def _hook(self, bias_row: torch.Tensor):
+		coef = self.coef
+
+		def hook(module, inputs, output):
+			# gate output is the router logits [*, n_experts]; add the (broadcast) per-expert bias before top-k.
+			b = bias_row.to(dtype=output.dtype, device=output.device)
+			return output + coef * b
+
+		return hook
+
+	def summary(self) -> dict:
+		return {"layers": list(self.layers), "coef": self.coef,
+		        "bias_norm_per_layer": [float(r.norm()) for r in self.bias]}
+
+
 def message_token_spans(tokenizer: "PreTrainedTokenizerBase", view: list[dict]) -> list[tuple[int, int]]:
 	"""Token span ``(start, end)`` of each message of ``view`` in the fully-rendered chat-template sequence.
 
