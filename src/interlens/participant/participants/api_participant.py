@@ -78,10 +78,25 @@ class APIParticipant(Participant):
 	# Anthropic needs strictly alternating user/assistant turns, so reuse the same merge the local families use.
 	requires_alternating_roles: bool = True
 
+	# Placeholder for an empty turn (a model can legitimately return "" — e.g. a reasoning model that spends its
+	# whole budget on hidden thinking). Hosted APIs reject empty message content, so we substitute this rather
+	# than crash the whole rollout on one blank turn. The nudge turns a trailing assistant turn into a request
+	# that ends on a user message.
+	_EMPTY_PLACEHOLDER = "(no response)"
+	_CONTINUE_NUDGE = "Please continue."
+
 	def _split_view(self, view: list[dict]) -> tuple[str | None, list[dict]]:
-		"""Split a flattened view into the provider's separate ``system`` string + user/assistant turns."""
+		"""Split a flattened view into the provider's separate ``system`` string + user/assistant turns, with two
+		hosted-API repairs: (1) empty/whitespace content is replaced with ``_EMPTY_PLACEHOLDER`` (Anthropic and
+		OpenAI both 400 on empty message content); (2) if the view ends on an *assistant* turn — which happens
+		when a participant continues itself (solo / self-refine loops) — a minimal user turn is appended, because
+		``generate`` must produce the NEXT turn and several hosted models (Claude Opus 4.8, OpenAI reasoning
+		models) reject a trailing assistant turn sent as a prefill ("conversation must end with a user message")."""
 		system = "\n\n".join(m["content"] for m in view if m["role"] == "system") or None
-		messages = [{"role": m["role"], "content": m["content"]} for m in view if m["role"] != "system"]
+		messages = [{"role": m["role"], "content": (m["content"] if (m["content"] or "").strip() else self._EMPTY_PLACEHOLDER)}
+		            for m in view if m["role"] != "system"]
+		if messages and messages[-1]["role"] == "assistant":
+			messages.append({"role": "user", "content": self._CONTINUE_NUDGE})
 		return system, messages
 
 	def generate(self, view: list[dict], *, steering=None, capture=None, patch=None,

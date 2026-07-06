@@ -125,6 +125,10 @@ class _OpenAICompatClient(_RetryingClient):
 	_base_url: str | None = None      # None -> the openai SDK's default (api.openai.com)
 	_api_key_env: str = ""
 	_label: str = "OpenAI-compatible"
+	# the request field carrying the output-token cap. Classic chat.completions uses ``max_tokens``; OpenAI's
+	# newer reasoning models (gpt-5, o-series) reject it and require ``max_completion_tokens``. Subclasses that
+	# target those models override this so the same call path serves both without per-call branching.
+	_tokens_param: str = "max_tokens"
 
 	def __init__(self, base_url: str | None = None, api_key: str | None = None, **kwargs):
 		super().__init__(**kwargs)
@@ -148,7 +152,7 @@ class _OpenAICompatClient(_RetryingClient):
 	def _call_once(self, system, messages, model, max_tokens, temperature) -> str:
 		resp = self._client.chat.completions.create(
 			model=model, messages=self._full_messages(system, messages),
-			max_tokens=max_tokens, temperature=temperature)
+			temperature=temperature, **{self._tokens_param: max_tokens})
 		return resp.choices[0].message.content or ""
 
 
@@ -158,6 +162,7 @@ class OpenAIClient(_OpenAICompatClient):
 
 	_api_key_env = "OPENAI_API_KEY"
 	_label = "OpenAI"
+	_tokens_param = "max_completion_tokens"   # gpt-5 / o-series reject the legacy ``max_tokens``
 
 	def submit_batch(self, requests: list[dict], *, poll_interval: float = 30.0) -> list[str]:
 		"""OpenAI **Batch API**: upload a JSONL of ``/v1/chat/completions`` requests (positional ``custom_id``),
@@ -168,7 +173,7 @@ class OpenAIClient(_OpenAICompatClient):
 
 		lines = [json.dumps({
 			"custom_id": f"req-{i}", "method": "POST", "url": "/v1/chat/completions",
-			"body": {"model": r["model"], "max_tokens": r["max_tokens"], "temperature": r["temperature"],
+			"body": {"model": r["model"], self._tokens_param: r["max_tokens"], "temperature": r["temperature"],
 			         "messages": self._full_messages(r.get("system"), r["messages"])}})
 			for i, r in enumerate(requests)]
 		upload = self._client.files.create(
