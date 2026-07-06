@@ -86,3 +86,45 @@ def test_decoder_layers_unwraps_peft():
 	base = _Base()
 	assert len(decoder_layers(base)) == 3
 	assert len(decoder_layers(_PeftLike(base))) == 3
+
+
+# --- MoE routing (weights-free: synthetic RoutingCapture) ---------------------------------------
+
+def _routing_caps(n_layers=2, n_experts=6, k=2, seq=5, seed=0):
+	from interlens.interp.routing import RoutingCapture
+	g = torch.Generator().manual_seed(seed)
+	caps = []
+	for l in range(n_layers):
+		logits = torch.randn(seq, n_experts, generator=g)
+		probs = torch.softmax(logits, dim=-1)
+		tp, ti = probs.topk(k, dim=-1)
+		caps.append(RoutingCapture(layer=l, router_logits=logits,
+		                           topk_experts=ti.to(torch.int16), topk_probs=tp.to(torch.float16)))
+	return caps
+
+
+def test_routing_stats_histogram_normalized_and_span_selected():
+	from interlens.interp import routing_stats
+	caps = _routing_caps(n_layers=2, n_experts=6, seq=5)
+	st = routing_stats(caps, n_experts=6, spans=[(1, 4)])
+	assert st.expert_load.shape == (2, 6)
+	# each layer's load is a distribution over experts (top-k selections normalized) -> rows sum to 1
+	assert torch.allclose(st.expert_load.sum(-1), torch.ones(2), atol=1e-5)
+	assert st.n_tokens == 3 and st.top_k == 2
+	assert st.expert_mass is not None and st.expert_mass.shape == (2, 6)
+
+
+def test_routing_stats_rejects_empty_span():
+	from interlens.interp import routing_stats
+	with pytest.raises(ValueError):
+		routing_stats(_routing_caps(seq=5), n_experts=6, spans=[(3, 3)])
+
+
+def test_routing_divergences_self_zero_and_overlap_full():
+	from interlens.interp import routing_stats, kl_divergence, js_divergence, topk_expert_overlap
+	p = routing_stats(_routing_caps(seed=1), n_experts=6).expert_load
+	q = routing_stats(_routing_caps(seed=2), n_experts=6).expert_load
+	assert kl_divergence(p, p).abs().max() < 1e-5      # KL(p||p)=0
+	assert js_divergence(p, p).abs().max() < 1e-5      # JS(p||p)=0
+	assert (js_divergence(p, q) >= -1e-6).all()        # JS >= 0
+	assert (topk_expert_overlap(p, p, k=2) >= 1.0 - 1e-6).all()  # a dist fully overlaps itself
