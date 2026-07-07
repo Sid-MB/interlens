@@ -16,7 +16,7 @@
 """Message-hook middleware: edit, deny, empty-chain pass-through, branch carry."""
 from __future__ import annotations
 
-from interlens import Conversation, MessageHook, MessageHookResult, ConversationTemplate
+from interlens import Conversation, MessageHook, MessageHookResult
 from interlens.message import Message
 from .conftest import StubParticipant
 

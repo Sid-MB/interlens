@@ -47,19 +47,17 @@ solver = AutoModelParticipant.from_pretrained(
 )
 ```
 
-### Via a template (by name)
+### On a participant
 
 ```python
-from interlens import ConversationTemplate, ModelParticipantConfig
-tmpl = ConversationTemplate(
-    participants=[ModelParticipantConfig(name="solver", model="Qwen/Qwen2.5-7B-Instruct",
-                                         tool_names=("calculator",), max_tool_iters=4)],
-    shared_context="Compute 17 * 23 using your tool, then explain.",
-    turns=2,
-)
-conv = tmpl.build(devices="cuda")   # resolves "calculator" against DEFAULT_REGISTRY (or a registry= you pass)
+from interlens import Conversation, AutoModelParticipant
+solver = AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-7B-Instruct", name="solver",
+                                              tools=(Calculator(),), max_tool_iters=4)
+conv = Conversation(participants=[solver], shared_context="Compute 17 * 23 using your tool, then explain.")
 conv.run(turns=2)
 ```
+
+Tools are resolved by name from `DEFAULT_REGISTRY` only when a saved conversation is reloaded (`Conversation.load`) — `save` stores each participant's tools by name; pass `registry=` there for a scoped registry.
 
 ## What the loop does
 
@@ -71,6 +69,6 @@ for step in msg.metadata.get("tool_trail", []):
     print(step)   # {"name": "calculator", "arguments": {...}, "output": "391", "error": False}
 ```
 
-Use a scoped registry instead of the global one by passing `registry=` to `build`/`run_conversations`.
+Use a scoped registry instead of the global one by passing `registry=` to `Conversation.load`.
 
 Next: [hooks](06_hooks.md).

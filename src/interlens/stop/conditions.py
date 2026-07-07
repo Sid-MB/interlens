@@ -87,3 +87,44 @@ class StopStringCondition(StopCondition):
 
 	def should_stop(self, conversation: "Conversation", last_message: "Message") -> bool:
 		return any(s in last_message.content for s in self.strings)
+
+
+def _generated_tokens(conversation: "Conversation") -> int:
+	"""Total generated tokens committed to ``conversation`` so far, summed from each message's recorded
+	``metadata['n_tokens']`` — free (no re-tokenization) since generation already records it. Seeded/moderator turns
+	have no count and contribute 0."""
+	return sum(int(m.metadata.get("n_tokens") or 0) for m in conversation.transcript)
+
+
+class TokenBudget(StopCondition):
+	"""A per-conversation compute budget — the matched-compute primitive for fair solo-vs-pair comparisons.
+
+	``per_conversation`` stops a conversation once ITS OWN cumulative generated tokens reach the budget, and
+	``per_turn`` caps each individual turn so the allowance is spread across real conversation turns rather than
+	consumed by one monologue. Both are enforced via ``turn_cap`` too: the run loop shrinks the next generation to
+	``min(speaker cap, per_turn, per_conversation - spent)``, so the budget is respected without overshoot.
+
+	**The budget is per-conversation, not a shared pool.** Spend is read from the conversation's own transcript
+	(``metadata['n_tokens']``), so the condition is stateless — in a rollout of N copies, each copy independently
+	gets the full budget. Cheap to count (never re-tokenizes) and trivially picklable, so it works installed
+	directly (``run_until=TokenBudget(...)``) or ambiently (``with TokenBudget(per_conversation=200): conv.rollout()``).
+	"""
+
+	def __init__(self, per_conversation: int | None = None, per_turn: int | None = None):
+		if per_conversation is None and per_turn is None:
+			raise ValueError("TokenBudget needs at least one of per_conversation= or per_turn=")
+		self.per_conversation = per_conversation
+		self.per_turn = per_turn
+
+	def should_stop(self, conversation: "Conversation", last_message: "Message") -> bool:
+		if self.per_conversation is None:
+			return False
+		return _generated_tokens(conversation) >= self.per_conversation
+
+	def turn_cap(self, conversation: "Conversation") -> int | None:
+		caps = []
+		if self.per_turn is not None:
+			caps.append(self.per_turn)
+		if self.per_conversation is not None:
+			caps.append(max(0, self.per_conversation - _generated_tokens(conversation)))
+		return min(caps) if caps else None

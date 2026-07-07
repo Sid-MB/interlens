@@ -37,8 +37,8 @@ See <https://pytorch.org/get-started/locally/>.
 - **`Conversation`** — turn-taking over a shared, perspective-neutral `Transcript`; per-speaker view pipeline (system/private framing → context-fit → family-correct chat template).
 - **`AutoModelParticipant`** — HF-style factory (`from_pretrained` / `from_model` / `from_`) that returns the family-correct participant (Qwen/Gemma/…); **`APIParticipant`** for hosted models.
 - **Interpretability** — `conv.capture(...)`, `SteeringSpec`, `Patch`, `token_logprobs`, backed by a queryable `ActivationCache`.
-- **Scale** — `rollout` / `run_conversations`: multi-GPU, checkpointed, resumable, batched co-stepping, with in-worker `analyze` callbacks.
-- **Serialization** — `ConversationTemplate` (recipe) and full save/load (template + transcript).
+- **Scale** — `conv.rollout(...)` / `interlens.run([...])`: multi-GPU, checkpointed, resumable, batched co-stepping, with in-worker `analyzer` callbacks; data-driven rollouts via `dataset_field`, matched compute via `TokenBudget`.
+- **One object, no ceremony** — a `Conversation` (with lazy participants) is at once the serializable recipe, the live dialogue, and the rollout driver; build it functionally (`.turns(6).data(ds).analyzer(grade)`), `.set(...)` copy-on-write, and `save`/`load` (recipe + transcript).
 
 See [`docs/examples/`](docs/examples/) for a simple→advanced walkthrough of the whole API.
 

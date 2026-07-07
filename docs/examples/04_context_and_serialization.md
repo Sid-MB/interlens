@@ -28,46 +28,41 @@ conv = Conversation(
 
 `context_limit=None` (default) means the tokenizer's own `model_max_length` is used.
 
-## Serialization: the three levels
+## Serialization: recipe + transcript
 
-### Level 2 — `ConversationTemplate` (recipe, no messages)
-
-A serializable spec: participant configs + scenario framing + policies. This is what rollouts expand and workers rebuild.
+There is no separate template type: a `Conversation` **is** its own recipe. Because its participants are lazy (they hold an HF id + settings, not weights), an unrun conversation is a cheap, serializable spec — build it, ship it to workers, or run it many times, all as one object.
 
 ```python
-from interlens import ConversationTemplate, ModelParticipantConfig, APIParticipantConfig, SlidingWindowPolicy
+from interlens import Conversation, AutoModelParticipant, SlidingWindowPolicy
 
-tmpl = ConversationTemplate(
+conv = Conversation(
     participants=[
-        ModelParticipantConfig(name="alice", model="Qwen/Qwen2.5-3B-Instruct", temperature=0.7, system_prompt="Be terse."),
-        ModelParticipantConfig(name="bob", model="google/gemma-2-2b-it", temperature=0.9),
+        AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="alice", temperature=0.7, system_prompt="Be terse."),
+        AutoModelParticipant.from_pretrained("google/gemma-2-2b-it", name="bob", temperature=0.9),
     ],
     shared_context="Debate: is a hotdog a sandwich?",
     shared_system_prompt="Stay civil.",
-    turns=6,
     context_policy=SlidingWindowPolicy(keep_last=8),
     reasoning_visibility="strip",
-)
+).turns(6)                                   # rollout/data fields via dot-modifier sugar
 
-tmpl.save("scenario.json")                       # round-trips through JSON
-tmpl2 = ConversationTemplate.load("scenario.json")
-
-conv = tmpl.build(devices="cuda")                # → live Conversation (loads the models)
-conv.run(turns=tmpl.turns)
+conv.run(turns=6)                            # loads the models lazily on first use
+conv.save("runs/hotdog")                     # writes conversation.json (recipe) + transcript.json
+later = Conversation.load("runs/hotdog")     # rebuilds lazy participants + attaches the transcript
 ```
 
-`ModelParticipantConfig` mirrors the `ModelParticipant` knobs (`dtype`, `attn`, `quant`, `revision`, `max_new_tokens`, `temperature`, `top_p`, `seed`, `thinking`, `tool_names`, `max_tool_iters`, `kv_reuse`, `weights_path`).
+`save` records each participant's own constructor kwargs (HF id + `dtype`/`attn`/`quant`/`revision`/`max_new_tokens`/`temperature`/`top_p`/`seed`/`thinking`/tool names/`max_tool_iters`/`kv_reuse`, or an API provider + model id) plus the scenario framing/policies — never weights. `load` raises on an unsupported (older) schema rather than silently mis-reading it.
 
-Go from a live conversation back to a template with `conv.to_template()`.
+Copy-on-write updates: `conv.set(field=value)` (or a dot-modifier like `conv.turns(6)`) returns a modified *copy* sharing the loaded models by reference — the original is untouched.
 
-### Level 3 — save/load a whole conversation (template + transcript)
+### Save / load a whole conversation (recipe + transcript)
 
 ```python
-conv.save("runs/debate_001")                     # writes template.json + transcript.json
-resumed = Conversation.load("runs/debate_001", devices="cuda")   # reloads models, ATTACHES the transcript
+conv.save("runs/debate_001")                     # writes conversation.json (recipe) + transcript.json
+resumed = Conversation.load("runs/debate_001", devices="cuda")   # rebuilds lazy participants, ATTACHES the transcript
 resumed.run(turns=4)                             # continues from where it left off (does not regenerate)
 ```
 
-`build`/`load` take `devices=` as a single device or a list (participants are round-robined across the list — handy for putting two big models on two GPUs).
+`load` takes `devices=` as a single device or a list (participants are round-robined across the list — handy for putting two big models on two GPUs), and raises on an unsupported (older) schema rather than silently mis-reading it.
 
 Next: [tools](05_tools.md) · [hooks](06_hooks.md) · [interpretability](07_interp.md) · [rollouts](08_rollouts_and_scale.md).

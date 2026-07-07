@@ -15,6 +15,8 @@ r = AutoModelParticipant.from_pretrained("mistralai/Mistral-7B-Instruct-v0.3", n
 
 The `config.model_type` → class mapping is a **class self-registry**: each participant subclass declares the model types it handles in a `MODEL_TYPES` class attribute, and `ModelParticipant.__init_subclass__` records them — there is no central table to keep in sync. Unregistered families (Mistral, OLMo, Phi, DeepSeek, …) fall back to the base `ModelParticipant` automatically, and a brand-new family/size resolves the moment it's on the Hub.
 
+**Weights load lazily.** `from_pretrained` does **not** touch weights — it reads only the model's `config.json` to resolve the family, and defers the actual load to the first time the model is used (or `p.model`/`p.tokenizer` is accessed). So an unbuilt participant is a cheap recipe: it costs KBs, pickles across a spawn boundary without shipping weights (each GPU worker loads on its own device), and `.set(...)` copies share one loaded model object by reference. The load is process-cached on `(hf_id, device, dtype, attn, quant, revision)`, so every same-recipe participant on a device shares ONE object — which is exactly what lets the runner batch them into a single `model.generate`. The default device is `cuda`; the runner binds each participant's device per worker before the load fires.
+
 **Static types when you want them.** `AutoModelParticipant.from_pretrained` is *dynamically* dispatched, so its declared return type is the base `ModelParticipant` — except for known id literals, which a type stub ([`factories.pyi`](https://github.com/Sid-MB/interlens/blob/main/src/interlens/factories.pyi)) narrows to the concrete subclass. For a guaranteed static type regardless of the id, **name the class directly** — it returns `Self`:
 
 ```python
@@ -113,10 +115,10 @@ All providers share one retry/backoff + max-in-flight client, built lazily per p
 `provider="anthropic"` and `provider="openai"` expose asynchronous **batch APIs** (Anthropic Message Batches / OpenAI Batch) — ~50% cost and much higher throughput, in exchange for batch-window latency. Set `batch=True` on the participant and run the rollout in throughput mode; the co-stepper collects each round's same-position turns across all rollouts into **one** provider batch:
 
 ```python
-pro = APIParticipantConfig(name="pro", provider="openai", model_id="gpt-5", batch=True, system_prompt="Argue YES.")
-con = APIParticipantConfig(name="con", provider="anthropic", model_id="claude-sonnet-5", batch=True, system_prompt="Argue NO.")
-report = rollout(ConversationTemplate(participants=[pro, con], shared_context="…", turns=4),
-                 n=200, batched=True)   # each round → one batch submission per speaker
+pro = APIParticipant(name="pro", provider="openai", model_id="gpt-5", batch=True, system_prompt="Argue YES.")
+con = APIParticipant(name="con", provider="anthropic", model_id="claude-sonnet-5", batch=True, system_prompt="Argue NO.")
+report = (Conversation(participants=[pro, con], shared_context="…")
+          .turns(4).rollout(n=200))   # batched=True is the default; each round → one batch per speaker
 ```
 
 Batch mode is **unavailable on OpenRouter** — requesting `batch=True` there raises rather than silently degrading to serial calls, so a requested batch discount is never quietly dropped. Under the hood every participant/client also exposes `generate_batch(views)` / `client.submit_batch(requests)` directly if you want to batch outside a rollout.

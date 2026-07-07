@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import torch
 
-from interlens import Tool, ToolRegistry, ModelParticipantConfig
+from interlens import Tool, ToolRegistry
+from interlens.participant.serialize import participant_to_dict
 from interlens.participant.participants.model_participant import ModelParticipant, _GenResult
 from interlens.participant.participants.gemma import GemmaModelParticipant
 from interlens.tools.tool_call import ToolCall
@@ -107,7 +108,8 @@ def test_tool_loop_respects_max_iters():
 	assert any("max_tool_iters" in str(e) for e in msg.metadata["tool_trail"])
 
 
-def test_config_tool_round_trip():
-	cfg = ModelParticipantConfig(name="a", model="qwen2.5-0.5b", tool_names=("calculator",), max_tool_iters=3)
-	cfg2 = ModelParticipantConfig.from_dict(cfg.to_dict())
-	assert cfg2.tool_names == ("calculator",) and cfg2.max_tool_iters == 3
+def test_participant_serializes_tool_names():
+	# A lazy (unloaded) participant serializes its tools by NAME (re-resolved from the registry on load); no weights.
+	p = ModelParticipant(name="a", hf_id="qwen2.5-0.5b", tools=(CALC,), max_tool_iters=3)
+	data = participant_to_dict(p)
+	assert data["tool_names"] == ["calculator"] and data["max_tool_iters"] == 3 and data["kind"] == "model"

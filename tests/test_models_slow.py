@@ -69,15 +69,13 @@ def test_auto_from_model_infers_tokenizer_and_family(device):
 
 
 def test_shared_scenario_pipeline_and_save_load(device, tmp_path):
-	from interlens import ConversationTemplate, ModelParticipantConfig, Conversation
-	tmpl = ConversationTemplate(
-		participants=[ModelParticipantConfig(name="a", model=MODEL, dtype="float32", temperature=0.0,
-		                                     max_new_tokens=12, system_prompt="Be terse."),
-		              ModelParticipantConfig(name="b", model=MODEL, dtype="float32", temperature=0.0,
-		                                     max_new_tokens=12, system_prompt="Be terse.")],
-		shared_context="Is the moon larger than Australia's width?",
-	)
-	conv = tmpl.build(devices=device)
+	from interlens import Conversation, AutoModelParticipant
+	def _p(name):
+		return AutoModelParticipant.from_pretrained(MODEL, name=name, device=device,
+		                                            load_kwargs={"dtype": "float32"}, temperature=0.0,
+		                                            max_new_tokens=12, system_prompt="Be terse.")
+	conv = Conversation(participants=[_p("a"), _p("b")],
+	                    shared_context="Is the moon larger than Australia's width?")
 	view = conv._view(conv.participant("a"))
 	assert view[0]["role"] == "system" and "terse" in view[0]["content"].lower()
 	conv.run(turns=2, first=conv.participant("a"))
@@ -130,14 +128,14 @@ def test_generate_batch_shapes_and_shared_prefill(device):
 def test_batched_rollout_costeps_and_saves(device, tmp_path):
 	"""Batched rollout co-steps all conversations, produces the right shape, and checkpoints each — asserted
 	distributionally (every conv fills its turns), NOT token-identical to unbatched (PLAN §Execution modes)."""
-	from interlens import ConversationTemplate, ModelParticipantConfig, rollout
-	tmpl = ConversationTemplate(
-		participants=[ModelParticipantConfig(name="a", model=MODEL, dtype="float32", temperature=0.8,
-		                                     max_new_tokens=12, system_prompt="Argue YES, briefly."),
-		              ModelParticipantConfig(name="b", model=MODEL, dtype="float32", temperature=0.8,
-		                                     max_new_tokens=12, system_prompt="Argue NO, briefly.")],
-		shared_context="Is cereal a soup?", turns=4)
-	report = rollout(tmpl, n=4, devices=[device], out_dir=tmp_path / "b", batched=True, max_batch_size=2)
+	from interlens import Conversation, AutoModelParticipant
+	def _p(name, sys):
+		return AutoModelParticipant.from_pretrained(MODEL, name=name, device=device,
+		                                            load_kwargs={"dtype": "float32"}, temperature=0.8,
+		                                            max_new_tokens=12, system_prompt=sys)
+	conv = Conversation(participants=[_p("a", "Argue YES, briefly."), _p("b", "Argue NO, briefly.")],
+	                    shared_context="Is cereal a soup?").turns(4)
+	report = conv.rollout(n=4, devices=[device], out_dir=tmp_path / "b", batched=True, max_batch_size=2)
 	assert not report.failed and len(report.results) == 4
 	for r in report.results.values():
 		assert len(r.transcript) == 5                       # 4 co-stepped turns + the moderator seed

@@ -22,19 +22,22 @@ from typing import TYPE_CHECKING, overload
 import torch
 
 from .participant import Participant
+from .functional import Functional, sugar_fields
 from .message import Message
 from .transcript import Transcript, MessageRef
+from .templating import has_fields, resolve
 from .view import ViewSegment
 from .reasoning_visibility import ReasoningVisibility
 from .execution_mode import ExecutionMode
 from .context import ContextPolicy, ErrorPolicy
-from .stop import StopCondition, AnyStopCondition
+from .stop import StopCondition, AnyStopCondition, active_stop_conditions
 from .interp.activation_cache import ActivationCache, CaptureSpec, OffloadLocation
 from .interp.capture import CaptureRequest
 from .hooks.message_hook import HookAction
 
 if TYPE_CHECKING:
 	from .factories import ModelLike
+	from .runner import RunReport
 
 # A reference to one participant: the ``Participant`` object, its ``name`` (str), or its index (int).
 ParticipantLike = Participant | str | int
@@ -43,23 +46,31 @@ ParticipantLike = Participant | str | int
 PromptLike = Message | str | None
 
 
+@sugar_fields("turns", "data", "analyzer", "name", "seed", "run_until")
 @dataclass
-class Conversation:
-	"""Orchestrates turn-taking between ``Participant``s over a shared, perspective-neutral ``Transcript``.
+class Conversation(Functional):
+	"""A multi-agent conversation: the recipe, the live dialogue, AND the benchmark-rollout driver, all in one
+	lightweight object.
 
-	``Conversation`` owns *who speaks when* and the **ordered view pipeline**. For each speaker it assembles a
-	structured, typed view (system block → private context → transcript turns), fits it to the context window on
-	those typed segments, then lets the participant flatten it (family fold/merge) and generate. Keeping the
-	pipeline ordered — fit *before* the lossy family flatten — is what lets the context policy preserve the
-	system/moderator framing reliably (see ``context/``).
+	It orchestrates turn-taking between ``Participant``s over a shared, perspective-neutral ``Transcript``, owning
+	*who speaks when* and the **ordered view pipeline**: for each speaker it assembles a structured, typed view
+	(system block → private context → transcript turns), fits it to the context window on those typed segments,
+	then lets the participant flatten it (family fold/merge) and generate. Fitting *before* the lossy family
+	flatten is what lets the context policy preserve the system/moderator framing reliably (see ``context/``).
 
 	Scenario framing is split by ownership: *shared* framing (``shared_context`` as a moderator seed turn,
-	``shared_system_prompt``) lives here; *private* framing (``system_prompt``, ``private_context``) lives on
-	each participant, so it is naturally invisible to the others and to the transcript.
+	``shared_system_prompt``) lives here; *private* framing (``system_prompt``, ``private_context``) lives on each
+	participant, so it is naturally invisible to the others and to the transcript.
 
-	``Conversation``s also support branching through ``branch()`` / ``branch_from()``, in-place history editing
-	(``rewind()``, ``edit()``, ``reset()``), ephemeral sampling through ``sample()`` / ``sample_all()``, activation
-	capture through ``capture()``, and loading to/from disk with ``save()`` / ``load()``.
+	**Copy-on-write + lazy.** Participants load their weights lazily, so an unrun ``Conversation`` is a cheap
+	recipe. Build it up functionally — ``conv.turns(4).data(ds).analyzer(grade)`` — where each dot-modifier
+	returns a modified *copy* (via ``Functional.set``), never mutating the original; call ``.set(field=value)`` for
+	fields without a dot-modifier. ``build``-free: run it directly with ``run()``, or expand it over data / N
+	samples with ``rollout()`` (which copies it per row — see there).
+
+	Also supports branching (``branch()`` / ``branch_from()``), in-place history editing (``rewind()``, ``edit()``,
+	``reset()``), ephemeral sampling (``sample()`` / ``sample_all()``), activation capture (``capture()``), and
+	disk persistence (``save()`` / ``load()``).
 	"""
 
 	participants: tuple[Participant, ...]
@@ -105,8 +116,27 @@ class Conversation:
 	for token-identical replay and interp fidelity."""
 
 	message_hooks: list = field(default_factory=list)
-	"""Runtime-only middleware (**not** serialized into the template): each hook vets / edits / denies a freshly
-	generated message before it is committed. Applied in order; default empty = pass-through. See ``hooks/``."""
+	"""Runtime-only middleware (**not** persisted): each hook vets / edits / denies a freshly generated message
+	before it is committed. Applied in order; default empty = pass-through. See ``hooks/``."""
+
+	# --- rollout / data fields (dot-modifier sugar via @sugar_fields; storage is the ``_`` name) ---
+	_turns: int | None = None
+	"""Default number of turns for ``run``/``rollout`` when not overridden. Read/set via ``conv.turns()`` /
+	``conv.turns(n)``."""
+	_data: object = None
+	"""Optional dataset / iterable of dict rows driving ``rollout`` (one conversation per row). Required only when a
+	templated field uses ``dataset_field``. ``conv.data()`` / ``conv.data(ds)``."""
+	_analyzer: object = None
+	"""Optional ``analyze(conv) -> serializable`` callable, or a registered analyzer name (a name is required for
+	multi-GPU spawn). Runs in-worker after each conversation. ``conv.analyzer()`` / ``conv.analyzer(fn)``."""
+	_name: str | None = None
+	"""Optional label; used to namespace job ids in a multi-lineup ``interlens.run``. ``conv.name()`` /
+	``conv.name(s)``."""
+	_seed: int = 0
+	"""Base RNG seed for ``rollout`` (sample *i* gets ``seed + i``). ``conv.seed()`` / ``conv.seed(k)``."""
+	_run_until: object = None
+	"""Optional ``StopCondition`` (or list) applied on every ``run``/``rollout`` conversation — e.g. a
+	``TokenBudget`` for matched-compute. ``conv.run_until()`` / ``conv.run_until(cond)``."""
 
 	def __post_init__(self):
 		self.participants = tuple(self.participants)
@@ -116,12 +146,18 @@ class Conversation:
 		if self.moderator_name in names:
 			raise ValueError(f"moderator_name {self.moderator_name!r} collides with a participant name")
 		self._pending_capture: CaptureRequest | None = None
-		# Seed the shared scenario as a moderator turn — but only when starting fresh, so a branched/loaded
-		# conversation (whose transcript already contains the seed) is not re-seeded. ``None`` means "no framing"
-		# and is skipped; an empty string is honoured as an explicit (blank) seed turn, so it still gives the
-		# first speaker a non-empty view rather than the opaque empty-view error.
-		if self.shared_context is not None and len(self.transcript) == 0:
+		# Seed the shared scenario as a moderator turn — but only when starting fresh (so a branched/loaded
+		# conversation is not re-seeded) AND the framing is already a concrete string. A data-parameterized framing
+		# (contains ``dataset_field``) is NOT seeded here: it is resolved per row and seeded during rollout
+		# expansion. ``None`` = no framing; ``""`` still seeds a blank turn so the first speaker has a non-empty view.
+		if self.shared_context is not None and not has_fields(self.shared_context) and len(self.transcript) == 0:
 			self.transcript.append(self.moderator_name, self.shared_context)
+
+	def _after_set(self, original) -> None:
+		# A copy-on-write clone gets an INDEPENDENT transcript (so branches / per-row rollout copies diverge without
+		# corrupting each other) and no in-flight capture. Participants are shared by reference (zero GPU cost).
+		self.transcript = self.transcript.copy()
+		self._pending_capture = None
 
 	@classmethod
 	def from_models(cls, models: tuple[ModelLike, ...], names: tuple[str, ...] = ("a", "b"),
@@ -263,19 +299,26 @@ class Conversation:
 		Speakers are taken in ``participants`` order (that tuple's order IS the turn order); ``first`` sets who
 		starts (default: ``participants[0]``) and the rest follow round-robin. ``first`` may be a ``Participant``,
 		its ``name`` (str), or its index (int) — resolved via ``_resolve_participant`` (raises if it isn't in this
-		conversation). ``until`` may be a single condition or a list (any of which stops the run). Stop conditions
-		are ``reset()`` at the start so a reused condition doesn't leak state across runs.
+		conversation).
 
-		``prompt`` (optional) is appended to the transcript **before** the run — a convenience so you don't have to
-		touch ``transcript`` by hand: a ``str`` is attributed to the LAST participant (so the ``first`` speaker
-		naturally replies to it), a ``Message`` is appended as-is, ``None`` appends nothing. It always appends to
-		the *current end* of the transcript; on a non-empty transcript it is simply one more trailing turn (it does
-		not reset or reseed anything).
+		Stop conditions are combined from three sources (any of which stops the run): ``until`` (this call), the
+		conversation's own ``run_until`` field, and any ambient ``with StopCondition(...):`` blocks. A condition may
+		also cap each turn's tokens (``turn_cap``) — e.g. a ``TokenBudget`` shrinks the final turn to land on budget.
+		Conditions are ``reset()`` at the start so a reused instance doesn't leak state. ``turns`` defaults to the
+		conversation's ``turns`` field; at least one of turns / a stop condition must be present.
+
+		``prompt`` (optional) is appended to the transcript **before** the run: a ``str`` is attributed to the LAST
+		participant (so ``first`` replies to it), a ``Message`` is appended as-is, ``None`` appends nothing. It
+		appends to the current end and never resets/reseeds.
 		"""
-		if turns is None and until is None:
-			raise ValueError("run requires at least one of `turns` or `until`")
+		self._check_resolved("run")
+		if turns is None:
+			turns = self._turns
+		stop = self._resolve_stop(until)
+		if turns is None and stop is None:
+			raise ValueError("run requires at least one of `turns`, a `run_until`/`until` stop condition, or an "
+			                 "ambient `with StopCondition(...)` block")
 		self._append_prompt(prompt)
-		stop = self._as_stop(until)
 		if stop is not None:
 			stop.reset()
 
@@ -283,12 +326,35 @@ class Conversation:
 		n = len(self.participants)
 		i = 0
 		while turns is None or i < turns:
-			message = self.step(self.participants[(start + i) % n])
+			cap = stop.turn_cap(self) if stop is not None else None
+			message = self.step(self.participants[(start + i) % n], max_new_tokens=self._turn_budget(start, i, cap))
 			i += 1
 			# A hook may have denied the turn (message is None); only a committed message is checked for stopping.
 			if message is not None and stop is not None and stop.should_stop(self, message):
 				break
 		return self.transcript
+
+	def _turn_budget(self, start: int, i: int, cap: int | None) -> int | None:
+		"""Bound the next turn's ``max_new_tokens`` by a stop-condition ``cap`` AND the speaker's own configured cap
+		(so a budget never *raises* a participant's token limit). ``None`` when there is no cap."""
+		if cap is None:
+			return None
+		speaker = self.participants[(start + i) % len(self.participants)]
+		own = getattr(speaker, "max_new_tokens", None)
+		return cap if own is None else min(own, cap)
+
+	def _resolve_stop(self, until):
+		"""Combine this call's ``until`` with the conversation's ``run_until`` field and any ambient
+		``with StopCondition`` blocks into one condition (any-of), or ``None`` if there are none."""
+		conditions: list = []
+		for source in (until, self._run_until):
+			if source is None:
+				continue
+			conditions.extend(source if isinstance(source, (list, tuple)) else [source])
+		conditions.extend(active_stop_conditions())
+		if not conditions:
+			return None
+		return conditions[0] if len(conditions) == 1 else AnyStopCondition(conditions)
 	
 	def _append_prompt(self, prompt: PromptLike) -> None:
 		"""Append an opening/injected turn to the transcript (see ``PromptLike``): a ``str`` becomes a turn by the
@@ -353,32 +419,14 @@ class Conversation:
 		return tokenizer.apply_chat_template(self.view(pov, extra=extra), tokenize=tokenize,
 		                                     add_generation_prompt=add_generation_prompt)
 
-	@staticmethod
-	def _as_stop(until) -> StopCondition | None:
-		if until is None:
-			return None
-		if isinstance(until, StopCondition):
-			return until
-		return AnyStopCondition(list(until))
-
 	# --- branching & ephemeral sampling --------------------------------------------------------------------
 
 	def branch(self) -> "Conversation":
-		"""Fork into a new ``Conversation`` that **reuses the same participant objects** (shared weights, zero
-		GPU cost) with a copied transcript. The branch can diverge freely; the original is untouched. To fork from a
-		specific point in the history rather than the end, use ``branch_from``."""
-		return Conversation(
-			participants=self.participants,
-			transcript=self.transcript.copy(),
-			shared_context=self.shared_context,
-			shared_system_prompt=self.shared_system_prompt,
-			moderator_name=self.moderator_name,
-			context_policy=self.context_policy,
-			context_limit=self.context_limit,
-			reasoning_visibility=self.reasoning_visibility,
-			execution_mode=self.execution_mode,
-			message_hooks=list(self.message_hooks),
-		)
+		"""Fork into a new ``Conversation`` that **reuses the same participant objects** (shared weights, zero GPU
+		cost) with a copied, independent transcript. The branch can diverge freely; the original is untouched. This
+		is exactly a no-op copy-on-write clone (``self.set()``). To fork from a specific point in the history rather
+		than the end, use ``branch_from``."""
+		return self.set()
 
 	def branch_from(self, ref: MessageRef) -> "Conversation":
 		"""Fork a new conversation whose history is this one's turns **up to and including** the turn ``ref`` — i.e.
@@ -435,6 +483,7 @@ class Conversation:
 		interviewer asking, NOT as Bob speaking). Pass ``as_author="bob"`` to make it read as that participant's
 		turn instead (e.g. "what would you say if Bob had just said X?"). The same interp options as ``step`` are
 		honored on each ephemeral generation."""
+		self._check_resolved("sample")
 		if isinstance(speaker, (list, tuple)):
 			return {self.participant(s).name: self.sample(s, message, as_author=as_author, steering=steering,
 			                                              capture=capture, patch=patch, return_logprobs=return_logprobs,
@@ -457,56 +506,179 @@ class Conversation:
 		                   capture=capture, patch=patch, return_logprobs=return_logprobs, max_new_tokens=max_new_tokens)
 
 
-	# --- serialization (levels 2 & 3) ----------------------------------------------------------------------
+	# --- data-driven rollout -------------------------------------------------------------------------------
 
-	def to_template(self):
-		"""Extract the reusable ``ConversationTemplate`` (specs + scenario framing, no messages) from this live
-		conversation, by asking each participant for its config."""
-		from .template import ConversationTemplate
+	@property
+	def row(self) -> dict:
+		"""The dataset row that produced this conversation in a data-driven ``rollout`` (the same dict the
+		``dataset_field``s resolved against), or ``{}`` outside a rollout. Read it in an ``analyzer`` to reach per-row
+		side data — labels, gold answers, ids — WITHOUT templating it into the model's view (so it never leaks into
+		the conversation). Travels with the conversation across the spawn boundary."""
+		return getattr(self, "_row", {})
 
-		return ConversationTemplate(
-			participants=[p.to_config() for p in self.participants],
-			shared_context=self.shared_context,
-			shared_system_prompt=self.shared_system_prompt,
-			moderator_name=self.moderator_name,
-			context_policy=self.context_policy,
-			context_limit=self.context_limit,
-			reasoning_visibility=self.reasoning_visibility,
-			execution_mode=self.execution_mode,
-		)
+	def _check_resolved(self, action: str) -> None:
+		"""Guard against running/sampling a conversation whose framing still contains unresolved ``dataset_field``s
+		(a data-parameterized recipe). Such a conversation is a template for ``rollout``, not a live dialogue."""
+		templated = has_fields(self.shared_context) or has_fields(self.shared_system_prompt) or any(
+			has_fields(getattr(p, "system_prompt", None)) for p in self.participants)
+		if templated:
+			raise ValueError(
+				f"cannot {action}() this conversation: its framing contains unresolved dataset_field(...) "
+				f"placeholders — it is a data-parameterized recipe. Call rollout() to expand it over data(), then "
+				f"read a finished conversation from report.results[job_id].conversation.")
+
+	def _expand(self, n: int | None, seed: int, stop):
+		"""Expand this recipe into ``(job_id, conversation)`` jobs — one per data row, or ``n`` seeded copies.
+
+		The dataset is **streamed, never materialized**: rows are pulled one at a time via ``_iter_rows`` (works for
+		an in-memory list, a map-style HF ``Dataset``, or a streaming ``IterableDataset`` — a 100-TB corpus is fine,
+		nothing is loaded up front). Each job is an INDEPENDENT copy-on-write clone with its per-row framing resolved,
+		its participants seeded (``seed + i``) and per-row-templated, ``data`` cleared, the combined stop condition
+		attached, and the source row stashed on ``conv.row`` for the analyzer. Resolution happens here (once,
+		deterministically → job *i* ⟷ row *i*), so resume stays correct and no dataset iterator leaks into a running
+		conversation."""
+		if self._data is None and n is None:
+			raise ValueError("rollout needs either data() (one conversation per row) or n= (that many copies)")
+		jobs = []
+		for i, row in self._iter_rows(n):
+			job_id = f"row_{i:05d}" if self._data is not None else f"rollout_{i:04d}"
+			participants = tuple(self._expand_participant(p, row, seed + i) for p in self.participants)
+			job = self.set(participants=participants, data=None, run_until=stop,
+			               shared_context=resolve(self.shared_context, row),
+			               shared_system_prompt=resolve(self.shared_system_prompt, row))
+			job._row = dict(row) if row else {}      # the source row, available to the analyzer as conv.row
+			job.reset()  # clear the (empty) transcript and seed the now-resolved shared_context
+			jobs.append((job_id, job))
+		return jobs
+
+	def _iter_rows(self, n: int | None):
+		"""Yield ``(index, row)`` lazily, capped at ``n``. For ``data()`` this iterates the dataset ONE row at a time
+		(no ``list(...)`` — so map-style ``Dataset``s stay Arrow-backed on disk and streaming ``IterableDataset``s are
+		consumed once); ``n`` defaults to ``len(data)`` when the length is known, else all rows. With no data, yields
+		``(i, {})`` for ``i`` in ``range(n)``."""
+		if self._data is None:
+			yield from ((i, {}) for i in range(n))
+			return
+		try:
+			total = len(self._data)               # map-style Dataset: O(1) metadata, no materialization
+		except TypeError:
+			total = None                           # streaming IterableDataset: unknown length
+		limit = total if n is None else (n if total is None else min(n, total))
+		for i, row in enumerate(self._data):       # one row at a time
+			if limit is not None and i >= limit:
+				break
+			yield i, row
+
+	@staticmethod
+	def _expand_participant(p, row: dict, seed: int):
+		"""One per-job participant copy: its ``system_prompt`` resolved against ``row`` and (for local models that
+		sample) its ``seed`` set so rollouts diverge but stay reproducible. Weights are shared by reference."""
+		changes = {}
+		sp = getattr(p, "system_prompt", None)
+		if has_fields(sp):
+			changes["system_prompt"] = resolve(sp, row)
+		if hasattr(p, "seed"):  # local ModelParticipant — per-rollout seed offset
+			changes["seed"] = seed
+		return p.set(**changes) if changes else p.set()
+
+	def rollout(self, n: int | None = None, *, devices=None, out_dir=None, resume: bool = False,
+	            batched: bool = True, max_batch_size: int | None = None, seed: int | None = None) -> "RunReport":
+		"""Run many conversations from this one recipe and return a ``RunReport`` — the benchmark/scale entry point.
+
+		**Rollout does NOT mutate this conversation.** It makes an independent copy-on-write clone per job and runs
+		*those*; ``self`` stays the unrun recipe. Finished conversations live in ``report.results[job_id].conversation``
+		(and their transcripts / analyses on the same ``RunResult``) — that is where to ``sample()`` or inspect
+		afterwards, NOT on the original.
+
+		Two modes: with ``data()`` set, expands to ONE conversation per row (job ids ``row_00000``…), resolving each
+		templated field (``dataset_field``) against the row; otherwise expands to ``n`` seeded copies of one scenario
+		(job ids ``rollout_0000``…). ``n`` defaults to ``len(data)``. Sample *i* gets ``seed + i`` (``seed`` defaults
+		to the conversation's ``seed`` field). Any ambient ``with StopCondition(...)`` blocks and the ``run_until``
+		field are captured now and attached to every job (so they survive the spawn boundary).
+
+		Parallel by default on two axes (see :func:`interlens.run`): one worker process per device, and batched
+		co-stepping within each device. ``batched=False`` gives the token-identical DETERMINISTIC path.
+		"""
+		from .runner.pool import run_jobs
+		seed = self._seed if seed is None else seed
+		stop = self._combined_stop_for_jobs()
+		jobs = self._expand(n, seed, stop)
+		return run_jobs(jobs, devices=devices, out_dir=out_dir, resume=resume, batched=batched,
+		                max_batch_size=max_batch_size)
+
+	def _jobs_for_run(self, index: int):
+		"""Expand this conversation into namespaced ``(job_id, conversation)`` jobs for ``interlens.run``: one per
+		``data()`` row if it has data, else a single job. Job ids are prefixed with the conversation's ``name``
+		(default ``conv{index}``) so a mixed multi-lineup run keeps unique, resumable ids."""
+		prefix = self._name or f"conv{index}"
+		stop = self._combined_stop_for_jobs()
+		if self._data is not None:
+			jobs = self._expand(None, self._seed, stop)
+			return [(f"{prefix}/{jid}", conv) for jid, conv in jobs]
+		single = self.set(run_until=stop)
+		single._check_resolved("run")
+		return [(prefix, single)]
+
+	def _combined_stop_for_jobs(self):
+		"""Capture ambient ``with StopCondition`` blocks + this conversation's ``run_until`` into a single value to
+		attach to each job (resolved now, since the ambient ContextVar does not cross the spawn boundary). Returns a
+		condition, a list, or ``None``."""
+		conditions = list(active_stop_conditions())
+		if self._run_until is not None:
+			conditions.extend(self._run_until if isinstance(self._run_until, (list, tuple)) else [self._run_until])
+		if not conditions:
+			return None
+		return conditions[0] if len(conditions) == 1 else list(conditions)
+
+	# --- persistence ---------------------------------------------------------------------------------------
 
 	def save(self, directory) -> None:
-		"""Persist the entire conversation (level 3): the template + the transcript, side by side."""
+		"""Persist the conversation: the transcript (``transcript.json``) + the recipe (``conversation.json`` — the
+		participants' own constructor kwargs + scenario framing/policies, no weights)."""
+		import json
 		from pathlib import Path
+		from .participant.serialize import participant_to_dict
+		from .transcript import SCHEMA_VERSION
 
 		directory = Path(directory)
 		directory.mkdir(parents=True, exist_ok=True)
-		self.to_template().save(directory / "template.json")
+		recipe = {
+			"schema_version": SCHEMA_VERSION,
+			"participants": [participant_to_dict(p) for p in self.participants],
+			"shared_context": self.shared_context if not has_fields(self.shared_context) else None,
+			"shared_system_prompt": self.shared_system_prompt if not has_fields(self.shared_system_prompt) else None,
+			"moderator_name": self.moderator_name,
+			"context_limit": self.context_limit,
+			"reasoning_visibility": self.reasoning_visibility.value,
+			"execution_mode": self.execution_mode.value,
+		}
+		(directory / "conversation.json").write_text(json.dumps(recipe, indent=2))
 		self.transcript.save(directory / "transcript.json")
 
 	@classmethod
 	def load(cls, directory, devices="cuda") -> "Conversation":
-		"""Rebuild a saved conversation: reload participants from the template and **attach** the saved
-		transcript, resuming from that state. This does NOT regenerate messages — use ``replay`` for that."""
+		"""Rebuild a saved conversation: reconstruct (lazy) participants from the recipe and attach the saved
+		transcript, resuming from that state (does NOT regenerate messages). Raises on an unsupported schema."""
+		import json
 		from pathlib import Path
-		from .template import ConversationTemplate
-		from .transcript import Transcript
+		from .participant.serialize import participant_from_dict
+		from .transcript import Transcript, SCHEMA_VERSION
 
 		directory = Path(directory)
-		template = ConversationTemplate.load(directory / "template.json")
-		transcript = Transcript.load(directory / "transcript.json")
-		return template.build(devices, transcript=transcript)
-
-	def replay(self, devices="cuda") -> "Conversation":
-		"""Deterministically **regenerate** the conversation from its template, re-running each model turn in the
-		recorded author order. Token-identical only in ``ExecutionMode.DETERMINISTIC`` (throughput mode is
-		distributional); meaningful for fully model-generated transcripts."""
-		fresh = self.to_template().build(devices)
-		# Skip the moderator seed (it's re-created by build from shared_context); regenerate the rest in order.
-		for message in self.transcript:
-			if message.author == self.moderator_name:
-				continue
-			speaker = next((p for p in fresh.participants if p.name == message.author), None)
-			if speaker is not None:
-				fresh.step(speaker)
-		return fresh
+		recipe = json.loads((directory / "conversation.json").read_text())
+		version = recipe.get("schema_version")
+		if version != SCHEMA_VERSION:
+			raise ValueError(f"checkpoint schema {version!r} is no longer supported (current {SCHEMA_VERSION}); "
+			                 f"re-generate the run with the current interlens.")
+		device = devices[0] if isinstance(devices, (list, tuple)) else devices
+		participants = tuple(participant_from_dict(p, device=device) for p in recipe["participants"])
+		return cls(
+			participants=participants,
+			transcript=Transcript.load(directory / "transcript.json"),
+			shared_context=recipe.get("shared_context"),
+			shared_system_prompt=recipe.get("shared_system_prompt"),
+			moderator_name=recipe.get("moderator_name", "moderator"),
+			context_limit=recipe.get("context_limit"),
+			reasoning_visibility=ReasoningVisibility(recipe.get("reasoning_visibility", "strip")),
+			execution_mode=ExecutionMode(recipe.get("execution_mode", "throughput")),
+		)

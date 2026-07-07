@@ -13,16 +13,21 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Serialization round-trips that need no weights: transcript, template (configs/policies/enums), API config."""
+"""Serialization round-trips that need no weights: transcript, participant recipes (same-type persistence),
+conversation save/load, and per-row templating."""
 from __future__ import annotations
 
 import json
+import pickle
+
+import pytest
 
 from interlens import (
-	Transcript, ContextItem, ConversationTemplate, ModelParticipantConfig, APIParticipantConfig,
-	SlidingWindowPolicy, SummarizePolicy, ReasoningVisibility, ExecutionMode,
+	Transcript, ContextItem, Conversation, APIParticipant, ModelParticipant, ReasoningVisibility, ExecutionMode,
+	dataset_field,
 )
-from interlens.participant.config import participant_config_from_dict
+from interlens.participant.serialize import participant_to_dict, participant_from_dict
+from interlens.templating import resolve, has_fields
 
 
 def test_transcript_round_trip(tmp_path):
@@ -37,52 +42,61 @@ def test_transcript_round_trip(tmp_path):
 	assert json.loads(path.read_text())["schema_version"] == 1
 
 
-def test_model_config_round_trip():
-	cfg = ModelParticipantConfig(
-		name="alice", model="qwen2.5-0.5b", system_prompt="argue A",
-		private_context=(ContextItem("secret"),), thinking=False, tool_names=("calc",),
-		kv_reuse=True, attn="sdpa", revision="abc123",
-	)
-	cfg2 = ModelParticipantConfig.from_dict(cfg.to_dict())
-	assert cfg2.model == "qwen2.5-0.5b" and cfg2.thinking is False
-	assert cfg2.private_context[0].content == "secret"
-	assert cfg2.tool_names == ("calc",) and cfg2.kv_reuse is True
-	assert cfg2.attn == "sdpa" and cfg2.revision == "abc123"
+def test_model_participant_recipe_round_trip():
+	# A lazy participant IS its own recipe: participant_to_dict captures the load spec + settings (no weights).
+	p = ModelParticipant(name="alice", hf_id="qwen2.5-0.5b", system_prompt="argue A",
+	                     private_context=(ContextItem("secret"),), thinking=False, kv_reuse=True,
+	                     attn="sdpa", revision="abc123", max_new_tokens=128)
+	data = participant_to_dict(p)
+	assert data["kind"] == "model" and data["hf_id"] == "qwen2.5-0.5b" and data["thinking"] is False
+	assert data["private_context"][0]["content"] == "secret"
+	assert data["kv_reuse"] is True and data["attn"] == "sdpa" and data["revision"] == "abc123"
 
 
-def test_api_config_polymorphic_dispatch():
-	cfg = APIParticipantConfig(name="judge", model_id="claude-x", temperature=0.3)
-	cfg2 = participant_config_from_dict(cfg.to_dict())
-	assert isinstance(cfg2, APIParticipantConfig)
-	assert cfg2.model_id == "claude-x" and cfg2.temperature == 0.3
+def test_api_participant_recipe_round_trip():
+	p = APIParticipant(name="judge", model_id="claude-x", temperature=0.3)
+	p2 = participant_from_dict(participant_to_dict(p))
+	assert isinstance(p2, APIParticipant)
+	assert p2.model_id == "claude-x" and p2.temperature == 0.3
 
 
-def test_template_round_trip(tmp_path):
-	tmpl = ConversationTemplate(
-		participants=[
-			ModelParticipantConfig(name="alice", model="qwen2.5-0.5b"),
-			ModelParticipantConfig(name="bob", model="gemma2-2b"),
-		],
+def test_conversation_save_load_recipe(tmp_path):
+	# Save/load a conversation with API participants (no weights) — recipe + transcript round-trip.
+	conv = Conversation(
+		participants=[APIParticipant(name="a", model_id="m"), APIParticipant(name="b", model_id="m")],
 		shared_context="Debate.", shared_system_prompt="Brief.",
-		context_policy=SlidingWindowPolicy(keep_last=6),
-		reasoning_visibility=ReasoningVisibility.SHARED,
-		execution_mode=ExecutionMode.DETERMINISTIC,
+		reasoning_visibility=ReasoningVisibility.SHARED, execution_mode=ExecutionMode.DETERMINISTIC,
 	)
-	path = tmp_path / "tmpl.json"
-	tmpl.save(path)
-	loaded = ConversationTemplate.load(path)
-	assert [c.name for c in loaded.participants] == ["alice", "bob"]
-	assert isinstance(loaded.context_policy, SlidingWindowPolicy) and loaded.context_policy.keep_last == 6
+	conv.transcript.append("a", "hi", n_tokens=1)
+	conv.save(tmp_path / "conv")
+	loaded = Conversation.load(tmp_path / "conv")
+	assert [p.name for p in loaded.participants] == ["a", "b"]
+	assert loaded.shared_context == "Debate." and loaded.shared_system_prompt == "Brief."
 	assert loaded.reasoning_visibility == ReasoningVisibility.SHARED
 	assert loaded.execution_mode == ExecutionMode.DETERMINISTIC
+	assert [m.content for m in loaded.transcript] == ["Debate.", "hi"]
 
 
-def test_summarize_policy_round_trip_drops_callable():
-	tmpl = ConversationTemplate(participants=[], context_policy=SummarizePolicy(keep_last=3, summarizer=lambda t: "x"))
-	loaded = ConversationTemplate.from_dict(tmpl.to_dict())
-	assert isinstance(loaded.context_policy, SummarizePolicy)
-	assert loaded.context_policy.keep_last == 3 and loaded.context_policy.summarizer is None
+def test_load_rejects_old_schema(tmp_path):
+	d = tmp_path / "old"
+	d.mkdir()
+	(d / "conversation.json").write_text(json.dumps({"schema_version": 0, "participants": []}))
+	Transcript().save(d / "transcript.json")
+	with pytest.raises(ValueError, match="no longer supported"):
+		Conversation.load(d)
 
 
-def test_message_hooks_not_in_template():
-	assert "message_hooks" not in ConversationTemplate(participants=[]).to_dict()
+def test_api_participant_pickles_without_client():
+	# The live client is dropped on pickle (unpicklable SDK object) and reconstructed lazily.
+	p = APIParticipant(name="j", model_id="m", client=lambda **kw: "x")
+	p2 = pickle.loads(pickle.dumps(p))
+	assert p2.model_id == "m" and p2.client is None
+
+
+def test_templating_resolve():
+	row = {"question": "2+2?", "topic": "math"}
+	assert resolve("plain", row) == "plain"
+	assert resolve(dataset_field("question"), row) == "2+2?"
+	assert resolve(("Q: ", dataset_field("question")), row) == "Q: 2+2?"
+	assert resolve(lambda r: r["topic"].upper(), row) == "MATH"
+	assert has_fields(("x", dataset_field("question"))) and not has_fields("plain")

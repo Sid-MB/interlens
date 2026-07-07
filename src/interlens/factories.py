@@ -57,12 +57,17 @@ class AutoModelParticipant:
 	@staticmethod
 	def from_pretrained(id_or_path: str | Path, *, name: str, device: str | torch.device = "cuda",
 	                    load_kwargs: dict | None = None, **participant_kwargs) -> ModelParticipant:
-		"""Load ``id_or_path`` (an HF id or local path) and return the family-correct participant, with its class
-		resolved from ``config.model_type``. ``load_kwargs`` / ``participant_kwargs`` are forwarded through the
-		resolved class's ``from_pretrained`` (see :meth:`ModelParticipant.from_pretrained`)."""
-		from .loading import load_model  # lazy: avoids importing torch/transformers loaders at module import
-		model, tokenizer = load_model(id_or_path, device=device, **(load_kwargs or {}))
-		return AutoModelParticipant.from_model(model, tokenizer, name=name, device=device, **participant_kwargs)
+		"""Return a family-correct participant for ``id_or_path`` (an HF id or local path) that will load its weights
+		**lazily on first use**. The concrete class is resolved from ``config.model_type`` by reading ONLY the
+		model's config (``AutoConfig.from_pretrained`` — cheap, no weights); ``load_kwargs`` (``dtype`` / ``attn`` /
+		``quant`` / ``revision`` / ``weights_path``) are recorded for that deferred load and ``participant_kwargs``
+		go to the participant (see :meth:`ModelParticipant.from_pretrained`)."""
+		from transformers import AutoConfig  # lazy: avoids importing transformers at module import
+		lk = load_kwargs or {}
+		cfg = AutoConfig.from_pretrained(id_or_path, revision=lk.get("revision"))
+		cls = ModelParticipant.for_model_type(getattr(cfg, "model_type", None))
+		return cls.from_pretrained(id_or_path, name=name, device=device, load_kwargs=load_kwargs,
+		                           **participant_kwargs)
 
 	@staticmethod
 	def from_model(model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase | None = None, *, name: str,

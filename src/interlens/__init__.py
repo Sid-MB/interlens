@@ -16,8 +16,9 @@
 from .message import Message
 from .transcript import Transcript
 from .context_item import ContextItem
+from .functional import Functional
+from .templating import dataset_field, DatasetField
 from .conversation import Conversation
-from .template import ConversationTemplate
 from .reasoning_visibility import ReasoningVisibility
 from .execution_mode import ExecutionMode
 from .participant import Participant
@@ -26,7 +27,6 @@ from .participant.participants.qwen import QwenModelParticipant
 from .participant.participants.gemma import GemmaModelParticipant
 from .participant.participants.llama import LlamaModelParticipant
 from .participant.participants.api_participant import APIParticipant, Provider
-from .participant.config import ParticipantConfig, ModelParticipantConfig, APIParticipantConfig
 from .context import ContextPolicy, ErrorPolicy, DropOldestPolicy, SlidingWindowPolicy, SummarizePolicy
 from .hooks import MessageHook, MessageHookResult, HookAction
 from .stop import (
@@ -36,6 +36,7 @@ from .stop import (
 	TokenStopCondition,
 	ElapsedTimeStopCondition,
 	StopStringCondition,
+	TokenBudget,
 )
 from .interp import (
 	ActivationCache, CaptureSpec, SteeringSpec, Patch, token_logprobs, decoder_layers,
@@ -44,7 +45,7 @@ from .interp import (
 )
 from .tools import Tool, ToolCall, ToolResult, ToolRegistry, DEFAULT_REGISTRY
 from .runner import (
-	available_devices, ConversationSpec, run_conversations, RunResult, RunReport, rollout,
+	available_devices, run, run_jobs, RunResult, RunReport,
 	register_analyzer, register_worker_init,
 )
 from .factories import conversation_from_models, conversation_from_ids, AutoModelParticipant, ModelLike
@@ -53,8 +54,10 @@ __all__ = [
 	"Message",
 	"Transcript",
 	"ContextItem",
+	"Functional",
+	"dataset_field",
+	"DatasetField",
 	"Conversation",
-	"ConversationTemplate",
 	"ReasoningVisibility",
 	"ExecutionMode",
 	"Participant",
@@ -64,9 +67,6 @@ __all__ = [
 	"LlamaModelParticipant",
 	"APIParticipant",
 	"Provider",
-	"ParticipantConfig",
-	"ModelParticipantConfig",
-	"APIParticipantConfig",
 	"ContextPolicy",
 	"ErrorPolicy",
 	"DropOldestPolicy",
@@ -81,6 +81,7 @@ __all__ = [
 	"TokenStopCondition",
 	"ElapsedTimeStopCondition",
 	"StopStringCondition",
+	"TokenBudget",
 	"ActivationCache",
 	"CaptureSpec",
 	"SteeringSpec",
@@ -100,11 +101,10 @@ __all__ = [
 	"ToolRegistry",
 	"DEFAULT_REGISTRY",
 	"available_devices",
-	"ConversationSpec",
-	"run_conversations",
+	"run",
+	"run_jobs",
 	"RunResult",
 	"RunReport",
-	"rollout",
 	"register_analyzer",
 	"register_worker_init",
 	"conversation_from_models",

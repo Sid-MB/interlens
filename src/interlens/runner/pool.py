@@ -13,6 +13,13 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+"""The execution engine behind ``Conversation.rollout`` and ``interlens.run``.
+
+A *job* is a ``(job_id, Conversation)`` pair — an unrun, fully-resolved conversation (lazy participants, no
+dataset). ``run_jobs`` runs a list of them across devices with checkpointing, resume, per-job failure isolation,
+and (by default) batched co-stepping within each device. Each finished conversation is returned on its
+``RunResult`` so it can be sampled/inspected afterwards. The analyzer travels ON each conversation
+(``conv._analyzer``) — a callable in-process, or a registered name across a spawn boundary."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -25,18 +32,29 @@ from .worker_init import run_worker_init
 
 @dataclass
 class RunResult:
-	"""Outcome of one spec: its transcript + the (serializable) analyze output, or an error string if it failed."""
+	"""Outcome of one job: the finished ``conversation`` (weightless participants + completed transcript), its
+	``transcript`` and (serializable) ``analysis``, or an ``error`` string if it failed. ``conversation`` is the
+	object to ``sample()``/inspect after a rollout (the source recipe is never mutated)."""
 
 	job_id: str
+	conversation: object = None
 	transcript: object = None
 	analysis: object = None
 	error: str | None = None
 	device: str | None = None
 
+	@property
+	def tokens_generated(self) -> int:
+		"""Total generated tokens in this conversation (summed from each turn's ``metadata['n_tokens']``) — the
+		realized compute, for verifying matched-compute comparisons. 0 if the job failed."""
+		if self.transcript is None:
+			return 0
+		return sum(int(m.metadata.get("n_tokens") or 0) for m in self.transcript)
+
 
 @dataclass
 class RunReport:
-	"""Aggregate outcome of a run. Failures are isolated, not fatal: ``results`` holds every attempted spec,
+	"""Aggregate outcome of a run. Failures are isolated, not fatal: ``results`` holds every attempted job,
 	``failed`` lists the ones that errored, ``skipped`` lists resume-skipped (already-checkpointed) ids."""
 
 	results: dict = field(default_factory=dict)
@@ -52,129 +70,141 @@ class RunReport:
 	def analyses(self) -> dict:
 		return {jid: r.analysis for jid, r in self.results.items() if r.error is None}
 
+	def conversations(self) -> dict:
+		return {jid: r.conversation for jid, r in self.results.items() if r.error is None}
+
 
 def _already_done(out_dir, job_id) -> bool:
 	return out_dir is not None and (Path(out_dir) / job_id / "transcript.json").exists()
 
 
-def _run_one(spec, device, analyze, out_dir, registry) -> RunResult:
-	"""Build → run → analyze → checkpoint one spec, catching *any* error so one bad/OOM spec can't take down the
-	others. ``analyze`` runs in-process here while the models are resident, so it can sample/branch/read
-	activations on the live conversation; only its serializable return value is kept."""
+def _bind(conv, device):
+	"""Bind every participant's lazy load to ``device`` (idempotent; no-op for participants without weights)."""
+	for p in conv.participants:
+		if hasattr(p, "_bind"):
+			p._bind(device)
+	return conv
+
+
+def _finish(job_id, conv, device, out_dir) -> RunResult:
+	"""Analyze + checkpoint a conversation that has already been run, into a ``RunResult``. Analyze errors are
+	isolated per job. The analyzer is read off the conversation (a callable in-process, or a registered name)."""
 	try:
-		fn = resolve_analyzer(analyze)
-		conv = spec.template.build(devices=device, registry=registry)
-		turns = spec.turns if spec.turns is not None else spec.template.turns
-		conv.run(turns=turns)
+		conv.job_id = job_id
+		fn = resolve_analyzer(conv._analyzer)
 		analysis = fn(conv) if fn is not None else None
 		if out_dir is not None:
-			conv.save(Path(out_dir) / spec.job_id)
-		return RunResult(spec.job_id, conv.transcript, analysis, None, str(device))
+			conv.save(Path(out_dir) / job_id)
+		return RunResult(job_id, conv, conv.transcript, analysis, None, str(device))
 	except Exception as exc:
-		return RunResult(spec.job_id, None, None, f"{type(exc).__name__}: {exc}", str(device))
+		return RunResult(job_id, None, None, None, f"{type(exc).__name__}: {exc}", str(device))
 
 
-def _run_group(specs, device, analyze, out_dir, registry, max_batch_size):
-	"""Batched (throughput-mode) path: build every spec on one device (so they share the cached model), co-step
-	them in lockstep batching same-position turns, then analyze + checkpoint each. Build/analyze errors are
-	isolated per job id exactly like ``_run_one``; a per-spec build failure just drops that spec from the group."""
+def _run_one(job_id, conv, device, out_dir) -> RunResult:
+	"""Run → analyze → checkpoint one job, catching *any* error so one bad/OOM job can't take down the others."""
+	try:
+		_bind(conv, device)
+		conv.run(turns=conv._turns)
+	except Exception as exc:
+		return RunResult(job_id, None, None, None, f"{type(exc).__name__}: {exc}", str(device))
+	return _finish(job_id, conv, device, out_dir)
+
+
+def _run_group(jobs, device, out_dir, max_batch_size) -> dict:
+	"""Batched (throughput) path: bind every job on one device (so same-recipe participants share the cached model),
+	group by co-step SCHEDULE SIGNATURE (turns + per-position participant identity), co-step each group in lockstep,
+	then analyze + checkpoint each. A per-job build/run failure is isolated; a batch-level failure degrades that
+	group's jobs to per-job error records."""
 	from .batched import co_step, schedule_signature
 
-	fn = resolve_analyzer(analyze)
-	results, built = {}, {}
-	for spec in specs:
-		try:
-			built[spec.job_id] = (spec, spec.template.build(devices=device, registry=registry))
-		except Exception as exc:
-			results[spec.job_id] = RunResult(spec.job_id, None, None, f"{type(exc).__name__}: {exc}", str(device))
-
-	# Group by full co-step SCHEDULE SIGNATURE (turns + per-position model/participant identity), not turn count
-	# alone: only convs that share a schedule may co-step, so a heterogeneous mix of specs still batches correctly
-	# (each distinct lineup forms its own group; a one-off lineup is a singleton group = per-conv). This is what
-	# lets batching be the safe default even for arbitrary run_conversations specs.
-	by_sig: dict[tuple, list] = {}
-	turns_of: dict[tuple, int] = {}
-	for jid, (spec, conv) in built.items():
-		turns = int(spec.turns if spec.turns is not None else spec.template.turns)
+	results = {}
+	by_sig, turns_of = {}, {}
+	for job_id, conv in jobs:
+		_bind(conv, device)
+		turns = conv._turns
 		sig = schedule_signature(conv, turns)
-		by_sig.setdefault(sig, []).append((jid, conv))
+		by_sig.setdefault(sig, []).append((job_id, conv))
 		turns_of[sig] = turns
 	for sig, group in by_sig.items():
-		turns = turns_of[sig]
 		try:
-			co_step([conv for _, conv in group], turns, max_batch_size=max_batch_size)
-		except Exception as exc:  # a batch-level failure shouldn't lose the whole run; degrade to per-conv record
-			for jid, _ in group:
-				results[jid] = RunResult(jid, None, None, f"batched co_step: {type(exc).__name__}: {exc}", str(device))
+			co_step([conv for _, conv in group], turns_of[sig], max_batch_size=max_batch_size)
+		except Exception as exc:  # a batch-level failure shouldn't lose the whole run; degrade to per-job records
+			for job_id, _ in group:
+				results[job_id] = RunResult(job_id, None, None, None,
+				                            f"batched co_step: {type(exc).__name__}: {exc}", str(device))
 			continue
-		for jid, conv in group:
-			try:
-				analysis = fn(conv) if fn is not None else None
-				if out_dir is not None:
-					conv.save(Path(out_dir) / jid)
-				results[jid] = RunResult(jid, conv.transcript, analysis, None, str(device))
-			except Exception as exc:
-				results[jid] = RunResult(jid, None, None, f"{type(exc).__name__}: {exc}", str(device))
+		for job_id, conv in group:
+			results[job_id] = _finish(job_id, conv, device, out_dir)
 	return results
 
 
-def run_conversations(specs, devices=None, analyze=None, out_dir=None, resume=False,
-                      registry=None, in_process=None, batched=True, max_batch_size=None) -> RunReport:
-	"""Run many conversation specs across devices, with checkpointing, resume, and per-spec failure isolation.
+def run_jobs(jobs, devices=None, out_dir=None, resume=False, batched=True, max_batch_size=None) -> RunReport:
+	"""Run ``(job_id, Conversation)`` jobs across devices, with checkpointing, resume, and per-job failure isolation.
 
-	Parallel by default across **two** axes: one worker **process per device** (specs round-robined; multi-GPU
-	spawns via ``torch.multiprocessing`` since fork+CUDA is broken — a single device / ``in_process=True`` runs
-	sequentially in this process), and within each device **batched co-stepping** (``batched=True``, the default).
-	Specs are grouped by their co-step schedule signature (turns + per-position model identity), so each round's
-	same-position turns batch into one ``model.generate`` — correct for ANY mix of specs, since only convs that
-	share a schedule (e.g. all problems of a benchmark eval) land in the same batch group. Each completed
-	conversation is saved under ``out_dir/<job_id>/`` as it finishes; ``resume=True`` skips already-checkpointed ids.
-
-	Pass ``batched=False`` for the ``ExecutionMode.DETERMINISTIC`` path (token-identical replay + per-turn interp),
-	which batched generation cannot provide.
+	Parallel by default on **two** axes: one worker **process per device** (jobs round-robined; multi-GPU spawns via
+	``torch.multiprocessing`` since fork+CUDA is broken — a single device runs in-process), and within each device
+	**batched co-stepping** (``batched=True``). Jobs are grouped by co-step schedule signature so same-schedule jobs
+	batch into one ``model.generate`` — correct for ANY mix. ``batched=False`` gives the DETERMINISTIC path.
 	"""
 	devices = devices or available_devices()
-	pending = [s for s in specs if not (resume and _already_done(out_dir, s.job_id))]
-	skipped = [s.job_id for s in specs if resume and _already_done(out_dir, s.job_id)]
+	pending = [(jid, conv) for jid, conv in jobs if not (resume and _already_done(out_dir, jid))]
+	skipped = [jid for jid, conv in jobs if resume and _already_done(out_dir, jid)]
 
-	use_spawn = (in_process is False) or (in_process is None and len(devices) > 1)
-	if use_spawn:
-		results = _run_spawn(pending, devices, analyze, out_dir, registry, batched, max_batch_size)
+	if len(devices) > 1:
+		results = _run_spawn(pending, devices, out_dir, batched, max_batch_size)
 	elif batched:
-		# One device (or forced in-process): build the whole shard on it and co-step as a batched group.
-		results = _run_group(pending, devices[0], analyze, out_dir, registry, max_batch_size)
+		results = _run_group(pending, devices[0], out_dir, max_batch_size)
 	else:
 		results = {}
-		for i, spec in enumerate(pending):
-			results[spec.job_id] = _run_one(spec, devices[i % len(devices)], analyze, out_dir, registry)
+		for i, (jid, conv) in enumerate(pending):
+			results[jid] = _run_one(jid, conv, devices[i % len(devices)], out_dir)
 	return RunReport(results=results, skipped=skipped)
 
 
-def _worker(device, shard, analyze, out_dir, registry, queue, batched, max_batch_size):
-	# Spawned workers inherit no parent state — repopulate registries first (tools/analyzers/config kinds).
+def run(conversations, devices=None, out_dir=None, resume=False, batched=True, max_batch_size=None) -> RunReport:
+	"""Run several conversation lineups in ONE pool — the multi-lineup entry point (e.g. a ladder of model pairs ×
+	conditions in one overnight job).
+
+	Each conversation is expanded to its jobs (one per ``data()`` row if it has data, else a single conversation),
+	with job ids namespaced by that conversation's ``name`` (default ``conv{i}``) so ids stay unique and resumable.
+	All jobs go into one pool, so GPUs stay packed across lineups (no idle tail between sequential rollouts) under a
+	single ``out_dir``/resume namespace, returning one merged ``RunReport``. Mixing lineups is safe: batched
+	co-stepping groups by schedule signature, so each distinct lineup forms its own batch group.
+
+	``Conversation.rollout`` is the single-lineup sugar for this (``run([conv], ...)``-equivalent via ``run_jobs``).
+	"""
+	jobs = []
+	for i, conv in enumerate(conversations):
+		jobs.extend(conv._jobs_for_run(i))
+	return run_jobs(jobs, devices=devices, out_dir=out_dir, resume=resume, batched=batched,
+	                max_batch_size=max_batch_size)
+
+
+def _worker(device, shard, out_dir, queue, batched, max_batch_size):
+	# Spawned workers inherit no parent runtime state — repopulate registries first (tools/analyzers).
 	run_worker_init()
 	if batched:
-		for r in _run_group(shard, device, analyze, out_dir, registry, max_batch_size).values():
+		for r in _run_group(shard, device, out_dir, max_batch_size).values():
 			queue.put(r)
 	else:
-		for spec in shard:
-			queue.put(_run_one(spec, device, analyze, out_dir, registry))
+		for jid, conv in shard:
+			queue.put(_run_one(jid, conv, device, out_dir))
 
 
-def _run_spawn(specs, devices, analyze, out_dir, registry, batched=False, max_batch_size=None) -> dict:
-	"""Spawn one worker per device, round-robining specs. Results stream back over a queue as each conversation
-	completes (checkpoint-as-you-go). ``analyze`` must be a top-level callable or a registered name to survive
-	pickling into the worker; a closure will fail fast."""
+def _run_spawn(jobs, devices, out_dir, batched=True, max_batch_size=None) -> dict:
+	"""Spawn one worker per device, round-robining jobs. Results stream back over a queue as each conversation
+	completes (checkpoint-as-you-go). Conversations pickle cheaply (lazy participants ship no weights); a closure
+	analyzer won't survive pickling — register it by name for the multi-GPU path."""
 	import torch.multiprocessing as mp
 
 	ctx = mp.get_context("spawn")
 	queue = ctx.Queue()
-	shards = [specs[i::len(devices)] for i in range(len(devices))]
+	shards = [jobs[i::len(devices)] for i in range(len(devices))]
 	procs = []
 	for device, shard in zip(devices, shards):
 		if not shard:
 			continue
-		p = ctx.Process(target=_worker, args=(device, shard, analyze, out_dir, registry, queue, batched, max_batch_size))
+		p = ctx.Process(target=_worker, args=(device, shard, out_dir, queue, batched, max_batch_size))
 		p.start()
 		procs.append(p)
 

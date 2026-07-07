@@ -64,7 +64,7 @@ for L in range(0, 28, 4):
 Collect an activation-based measurement over many rollouts. The probe read happens **inside the worker** while models are resident; only the scalar crosses back.
 
 ```python
-from interlens import ConversationTemplate, ModelParticipantConfig, rollout, register_analyzer
+from interlens import Conversation, AutoModelParticipant, register_analyzer
 import torch
 
 PROBE = torch.load("stance_probe_layer14.pt")   # a [d_model] direction you fit earlier
@@ -79,12 +79,12 @@ def project_stance(conv):
 
 register_analyzer("project_stance", project_stance)
 
-tmpl = ConversationTemplate(
-    participants=[ModelParticipantConfig(name="a", model="Qwen/Qwen2.5-3B-Instruct"),
-                  ModelParticipantConfig(name="b", model="Qwen/Qwen2.5-3B-Instruct")],
-    shared_context="Debate: should we colonize Mars?", turns=6,
-)
-report = rollout(tmpl, n=128, turns=6, out_dir="runs/mars", analyze="project_stance")
+conv = Conversation(
+    participants=[AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="a"),
+                  AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="b")],
+    shared_context="Debate: should we colonize Mars?",
+).turns(6).analyzer("project_stance")
+report = conv.rollout(n=128, out_dir="runs/mars")
 projs = [r.analysis["stance_proj"] for r in report.results.values() if r.error is None]
 print("mean stance projection:", sum(projs) / len(projs))
 ```

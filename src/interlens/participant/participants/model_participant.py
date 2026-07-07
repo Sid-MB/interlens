@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Self
 
@@ -26,12 +26,27 @@ import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from ..participant import Participant
+from ...functional import Functional
 from ...message import Message
 from ...interp.activation_cache import ActivationRecord
 from ...interp.capture import capture_activations
 from ...interp.logprobs import token_logprobs
 
 logger = logging.getLogger(__name__)
+
+# Named dtypes for serialization/lazy-load (the participant stores its dtype as a str so it round-trips and
+# pickles without a torch handle). This is the single source of the name<->dtype mapping.
+_DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+
+
+def dtype_to_str(dtype) -> str:
+	"""``torch.bfloat16`` -> ``'bfloat16'`` (accepts a str unchanged)."""
+	return dtype if isinstance(dtype, str) else str(dtype).replace("torch.", "")
+
+
+def str_to_dtype(name) -> "torch.dtype":
+	"""``'bfloat16'`` -> ``torch.bfloat16`` (accepts a ``torch.dtype`` unchanged)."""
+	return name if isinstance(name, torch.dtype) else _DTYPES[name]
 
 # Matches a leading ``<think> ... </think>`` reasoning block emitted by thinking models (Qwen3, R1-style).
 # Kept as a base-class default; families whose delimiters differ override ``split_reasoning``.
@@ -65,7 +80,7 @@ class _GenResult:
 
 
 @dataclass
-class ModelParticipant(Participant):
+class ModelParticipant(Functional, Participant):
 	"""A conversation participant backed by a local HuggingFace causal LM.
 
 	Generation flow: the ``Conversation`` hands us a ``view`` — the transcript rendered from *our* perspective,
@@ -76,13 +91,26 @@ class ModelParticipant(Participant):
 	never fed back into other participants' views (it's stripped from history automatically because
 	``render_roles`` uses ``content``).
 
-	The raw ``model`` is exposed deliberately: interpretability experiments register forward hooks on it
-	directly, so we don't hide it behind wrapper indirection.
+	**The participant is its own recipe.** It stores *what to load* (``hf_id`` + dtype/attn/quant/revision) and
+	loads the weights **lazily on first use** through the process-wide model cache — so an unrun participant is
+	cheap (KBs), pickles across a spawn boundary without shipping weights, and ``.set(...)`` copies share one
+	loaded model object by reference (the co-stepping batch win). ``model``/``tokenizer`` are properties that
+	trigger the load; the raw ``model`` is exposed deliberately (interp experiments register forward hooks on it).
+	Weight loads are keyed on ``(hf_id, device, dtype, attn, quant, revision)`` and cached, so all same-recipe
+	participants on one device share ONE object. Build via ``from_pretrained`` (lazy) or ``from_model`` (eager,
+	from an already-loaded model); ``.set()`` (from ``Functional``) makes copy-on-write clones with fresh KV state.
 	"""
 
-	model: PreTrainedModel
-	tokenizer: PreTrainedTokenizerBase
-	name: str
+	name: str = ""
+	# What to load (weights are pulled lazily on first ``model``/``tokenizer`` access). ``weights_path`` overrides
+	# ``hf_id`` as the load source (e.g. a merged-LoRA checkpoint) while ``hf_id`` still names the base for the
+	# tokenizer/config; dtype is stored as a str so the participant serializes and pickles without a torch handle.
+	hf_id: str | None = None
+	weights_path: str | None = None
+	dtype: str = "bfloat16"
+	attn: str = "flash_attention_2"
+	quant: str | None = None
+	revision: str | None = None
 	device: str | torch.device | None = None
 	max_new_tokens: int = 512
 	temperature: float = 0.8
@@ -102,6 +130,15 @@ class ModelParticipant(Participant):
 	# full prefill, so it is never wrong-by-default — but it can perturb outputs at the FP level vs. a full prefill,
 	# so reproducibility-critical / determinism-mode experiments should pin ``kv_reuse=False``.
 	kv_reuse: bool | str = "auto"
+	# Default steering applied to EVERY ``generate`` for this participant when the call doesn't pass its own
+	# ``steering=`` (a per-call arg still overrides). Lets a caller attach a persistent intervention to a specific
+	# participant (e.g. steer one debater and not the other) without threading it through ``conv.run``. ``None`` =
+	# no steering. Excluded from equality/repr (a tensor isn't hashable and shouldn't gate the weight cache).
+	steering: object = field(default=None, compare=False, repr=False)
+	# Loaded weights/tokenizer — populated lazily (or eagerly by ``from_model``). Not part of equality/repr, and
+	# dropped on pickle (see ``__getstate__``); ``.set()`` shares them by reference.
+	_model: "PreTrainedModel | None" = field(default=None, compare=False, repr=False)
+	_tokenizer: "PreTrainedTokenizerBase | None" = field(default=None, compare=False, repr=False)
 
 	# Family self-registration. Each subclass lists the transformers ``config.model_type`` values it handles in
 	# ``MODEL_TYPES``; ``__init_subclass__`` records them in ``_REGISTRY`` so ``AutoModelParticipant`` can resolve a
@@ -129,46 +166,131 @@ class ModelParticipant(Participant):
 	@classmethod
 	def from_model(cls, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase | None = None, *, name: str,
 	               device: str | torch.device | None = None, **participant_kwargs) -> Self:
-		"""Build a participant of THIS class from an already-loaded ``model`` (e.g. to share weights between
-		speakers). ``tokenizer`` is optional — when omitted it is inferred from ``model.config._name_or_path``. The
-		chat-template flags (``supports_system_role`` / ``requires_alternating_roles``) are derived from the
-		tokenizer's own template, so no per-family configuration is needed. Because it constructs ``cls``, calling
-		it on a subclass (``QwenModelParticipant.from_model(...)``) returns that subclass — use
-		``AutoModelParticipant.from_model`` instead to have the family resolved from ``config.model_type``."""
+		"""Build a participant of THIS class from an already-loaded ``model`` (the eager path — e.g. to wrap a model
+		you already hold, or share weights between speakers). ``tokenizer`` is optional — when omitted it is inferred
+		from ``model.config._name_or_path``. The chat-template flags (``supports_system_role`` /
+		``requires_alternating_roles``) are derived from the tokenizer's own template. ``hf_id``/``dtype`` are read
+		back from the model so the participant can still be pickled + re-loaded on a spawn worker. Because it
+		constructs ``cls``, calling it on a subclass returns that subclass — use ``AutoModelParticipant.from_model``
+		to have the family resolved from ``config.model_type``."""
 		from ...loading import load_tokenizer, derive_chat_flags  # lazy: loading imports this module
+		hf_id = getattr(model.config, "_name_or_path", None) or None
 		if tokenizer is None:
-			hf_id = getattr(model.config, "_name_or_path", None)
 			if not hf_id:
 				raise ValueError("cannot infer a tokenizer: model.config._name_or_path is empty; pass tokenizer=")
 			tokenizer = load_tokenizer(hf_id)
 		supports_system, requires_alt = derive_chat_flags(tokenizer)
-		p = cls(model=model, tokenizer=tokenizer, name=name, device=device, **participant_kwargs)
+		p = cls(name=name, device=device, hf_id=hf_id, dtype=dtype_to_str(model.dtype),
+		        attn=getattr(model, "_resolved_attn", "flash_attention_2"), **participant_kwargs)
+		p._model = model
+		p._tokenizer = tokenizer
 		p.supports_system_role = supports_system
 		p.requires_alternating_roles = requires_alt
+		if p.device is None:
+			p.device = model.device
 		return p
 
 	@classmethod
 	def from_pretrained(cls, id_or_path: str | Path, *, name: str, device: str | torch.device = "cuda",
 	                    load_kwargs: dict | None = None, **participant_kwargs) -> Self:
-		"""Load ``id_or_path`` (an HF id or local path) and build a participant of THIS class. ``load_kwargs`` are
-		forwarded to ``load_model`` (``dtype`` / ``attn`` / ``quant`` / ``revision`` — their defaults live there);
-		``participant_kwargs`` (``temperature``, ``max_new_tokens``, ``system_prompt``, ``tools``, ``kv_reuse``, …)
-		go to the participant. Weight loads are process-cached, so calling this twice with the same id/device/dtype
-		shares ONE model object. As with ``from_model``, the class is ``cls`` — use ``AutoModelParticipant`` to
-		resolve the family from ``config.model_type`` instead."""
-		from ...loading import load_model  # lazy: loading imports this module
-		model, tokenizer = load_model(id_or_path, device=device, **(load_kwargs or {}))
-		return cls.from_model(model, tokenizer, name=name, device=device, **participant_kwargs)
+		"""Build a participant of THIS class that will load ``id_or_path`` (an HF id or local path) **lazily on first
+		use** — no weights are touched here. ``load_kwargs`` (``dtype`` / ``attn`` / ``quant`` / ``revision`` /
+		``weights_path``) are recorded for that deferred load; ``participant_kwargs`` (``temperature``,
+		``max_new_tokens``, ``system_prompt``, ``tools``, ``kv_reuse``, …) go to the participant. When the load fires
+		it is process-cached, so all same-(id, device, dtype, …) participants share ONE model object. As with
+		``from_model``, the class is ``cls`` — use ``AutoModelParticipant.from_pretrained`` to resolve the family
+		from ``config.model_type`` (it reads only the config, still no weights)."""
+		lk = dict(load_kwargs or {})
+		return cls(name=name, device=device, hf_id=str(id_or_path),
+		           weights_path=lk.get("weights_path"), dtype=dtype_to_str(lk.get("dtype", torch.bfloat16)),
+		           attn=lk.get("attn", "flash_attention_2"), quant=lk.get("quant"), revision=lk.get("revision"),
+		           **participant_kwargs)
 
 	def __post_init__(self):
-		# Default to wherever the model already lives, so callers rarely have to think about placement.
-		if self.device is None:
-			self.device = self.model.device
+		# Adopt the model's device if one is already loaded (eager ``from_model`` path); otherwise the device is
+		# bound (default 'cuda') and the model loads there lazily on first ``model``/``tokenizer`` access.
+		if self.device is None and self._model is not None:
+			self.device = self._model.device
 		self._kv_cache = None       # DynamicCache from the last generation
 		self._cached_tokens = None  # the full token ids that produced _kv_cache
 		self._kv_reuse_enabled = self._resolve_kv_reuse()
-		logger.info("%s: cross-turn KV reuse %s (kv_reuse=%r)", self.name,
-		            "ENABLED" if self._kv_reuse_enabled else "disabled", self.kv_reuse)
+
+	# --- lazy loading --------------------------------------------------------------------------------------
+
+	@property
+	def model(self) -> "PreTrainedModel":
+		"""The loaded HF model, loading it on first access (cached process-wide). The raw model is exposed so interp
+		experiments can register forward hooks directly."""
+		if self._model is None:
+			self._ensure_loaded()
+		return self._model
+
+	@property
+	def tokenizer(self) -> "PreTrainedTokenizerBase":
+		"""The loaded tokenizer, loading the model+tokenizer on first access (cached process-wide)."""
+		if self._tokenizer is None:
+			self._ensure_loaded()
+		return self._tokenizer
+
+	def _bind(self, device) -> "ModelParticipant":
+		"""Bind the device the lazy load will target (the runner calls this per worker/GPU before stepping). Returns
+		self for chaining. Only meaningful before the first load."""
+		self.device = str(device) if device is not None else None
+		return self
+
+	def _ensure_loaded(self) -> None:
+		"""Load weights + tokenizer onto the bound device via the process cache, then derive chat-template flags.
+		Requires a device: uses ``self.device``, else defaults to ``cuda`` when available, else raises."""
+		if self._model is not None and self._tokenizer is not None:
+			return
+		source = self.weights_path or self.hf_id
+		if not source:
+			raise RuntimeError(f"participant {self.name!r} has no loaded model and no hf_id/weights_path to load "
+			                   f"from; build it with from_pretrained(...) or from_model(...).")
+		device = self.device
+		if device is None:
+			device = "cuda" if torch.cuda.is_available() else None
+			if device is None:
+				raise RuntimeError(f"participant {self.name!r}: no device bound and CUDA is unavailable; "
+				                   f"call ._bind(device) (the runner does this per worker).")
+			self.device = device
+		from ...loading import load_model, derive_chat_flags  # lazy: loading imports this module
+		model, tokenizer = load_model(source, device=device, dtype=str_to_dtype(self.dtype), attn=self.attn,
+		                              quant=self.quant, revision=self.revision)
+		self._model = model
+		self._tokenizer = tokenizer
+		self.supports_system_role, self.requires_alternating_roles = derive_chat_flags(tokenizer)
+		logger.info("%s: loaded %s on %s (kv_reuse %s)", self.name, source, device,
+		            "ENABLED" if self._kv_reuse_enabled else "disabled")
+
+	def batch_signature(self) -> tuple:
+		"""Key identifying which model this participant would batch AS (used by the co-stepper). When loaded, the
+		cached model object's identity is authoritative; when not yet loaded, the load recipe is (the cache
+		guarantees same recipe on one device -> same object), so participants can be grouped WITHOUT forcing a
+		load."""
+		if self._model is not None:
+			return ("model", id(self._model))
+		return ("model", self.weights_path or self.hf_id, str(self.device), self.dtype, self.attn, self.quant,
+		        self.revision)
+
+	def __getstate__(self) -> dict:
+		# Drop the heavy/device-bound state on pickle: weights (reloaded lazily on the worker's device via hf_id),
+		# tokenizer, and the KV cache (GPU tensors tied to a device the other process doesn't have).
+		state = self.__dict__.copy()
+		state["_model"] = None
+		state["_tokenizer"] = None
+		state["_kv_cache"] = None
+		state["_cached_tokens"] = None
+		return state
+
+	def __setstate__(self, state: dict) -> None:
+		self.__dict__.update(state)  # volatile/heavy fields are None; first ``model`` access reloads lazily
+
+	def _after_set(self, original) -> None:
+		# A copy-on-write clone shares the loaded model/tokenizer (by reference, via copy.copy) but must NOT inherit
+		# the original's KV cache — its transcript/history differs, so reuse would be wrong.
+		self._kv_cache = None
+		self._cached_tokens = None
 
 	def _resolve_kv_reuse(self) -> bool:
 		"""Resolve the ``kv_reuse`` setting to a boolean. ``'auto'`` enables reuse because it is runtime-guarded
@@ -190,6 +312,9 @@ class ModelParticipant(Participant):
 	def generate(self, view: list[dict], *, steering=None, capture=None, patch=None,
 	             return_logprobs: bool = False, turn: int | None = None,
 	             max_new_tokens: int | None = None) -> Message:
+		# Fall back to this participant's default steering when the call didn't pass its own (per-call wins).
+		if steering is None:
+			steering = self.steering
 		if self.seed is not None:
 			torch.manual_seed(self.seed)
 
@@ -245,15 +370,17 @@ class ModelParticipant(Participant):
 		return Message(author=self.name, content=content, metadata=metadata)
 
 	def generate_batch(self, views: list[list[dict]], *, turn: int | None = None,
-	                   group_seed: int | None = None) -> list[Message]:
+	                   group_seed: int | None = None, max_new_tokens: int | None = None) -> list[Message]:
 		"""Batched generation for many independent conversations that share THIS model (``throughput`` mode).
 
 		Renders each ``view`` with this model's chat template and runs **one** ``model.generate`` over the
 		left-padded batch, returning one ``Message`` per view — the co-stepping throughput win (5-20x on a
-		rollout). **No tools/steering/capture/logprobs** here: callers needing those fall back to the
-		per-conversation ``generate``. Tokens are **not** guaranteed identical to unbatched — batch composition
-		and the single global RNG perturb rows (see PLAN §Execution modes); only distributional reproducibility
-		holds. ``metadata['batched']`` marks these turns; ``metadata['shared_prefill']`` marks the fast path.
+		rollout). ``max_new_tokens`` overrides this participant's per-turn cap for the batch (the co-stepper passes a
+		``turn_cap`` here so a ``TokenBudget`` can shrink the final round). **No tools/steering/capture/logprobs**
+		here: callers needing those fall back to the per-conversation ``generate``. Tokens are **not** guaranteed
+		identical to unbatched — batch composition and the single global RNG perturb rows (see PLAN §Execution
+		modes); only distributional reproducibility holds. ``metadata['batched']`` marks these turns;
+		``metadata['shared_prefill']`` marks the fast path.
 		"""
 		if not views:
 			return []
@@ -268,8 +395,8 @@ class ModelParticipant(Participant):
 		                                              **template_kwargs) for v in views]
 
 		do_sample = bool(self.temperature and self.temperature > 0)
-		gen = dict(max_new_tokens=self.max_new_tokens, do_sample=do_sample,
-		           pad_token_id=self.tokenizer.pad_token_id)
+		gen = dict(max_new_tokens=max_new_tokens if max_new_tokens is not None else self.max_new_tokens,
+		           do_sample=do_sample, pad_token_id=self.tokenizer.pad_token_id)
 		if do_sample:
 			gen.update(temperature=self.temperature, top_p=self.top_p)
 
@@ -470,28 +597,3 @@ class ModelParticipant(Participant):
 			for layer, site, tensor in capture_activations(self.model, input_ids, request.spec)
 		]
 		request.cache.add_batch(records)
-
-	def to_config(self):
-		"""Reconstruct a serializable ``ModelParticipantConfig`` from this live participant, for round-tripping.
-
-		The model id and dtype are read back from the loaded model (``config._name_or_path`` / ``model.dtype``),
-		so a manually-constructed participant round-trips without the caller threading its id separately.
-		"""
-		from ..config.model_participant_config import ModelParticipantConfig, dtype_to_str
-
-		hf_id = getattr(self.model.config, "_name_or_path", "")
-		return ModelParticipantConfig(
-			name=self.name,
-			system_prompt=self.system_prompt,
-			private_context=tuple(self.private_context),
-			model=hf_id,
-			dtype=dtype_to_str(self.model.dtype),
-			max_new_tokens=self.max_new_tokens,
-			temperature=self.temperature,
-			top_p=self.top_p,
-			seed=self.seed,
-			thinking=self.thinking,
-			tool_names=tuple(t.name for t in self.tools),
-			max_tool_iters=self.max_tool_iters,
-			kv_reuse=self.kv_reuse,
-		)

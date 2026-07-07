@@ -45,6 +45,24 @@ class SteeringSpec:
 	coef: float = 1.0
 	mode: Mode = "add"
 
+	@classmethod
+	def difference_of_means(cls, pos_acts, neg_acts, layers, coef: float = 1.0, mode: Mode = "add") -> "SteeringSpec":
+		"""Build a spec whose ``direction`` is the **unit difference-of-means** of two activation populations,
+		``normalize(mean(pos) − mean(neg))`` — the classic contrastive/concept-direction recipe, pointing TOWARD
+		the positive class. ``pos_acts``/``neg_acts`` are ``[n, d_model]`` (a stack of per-example residuals) or a
+		pre-pooled ``[d_model]`` vector; anything ``torch.as_tensor`` accepts works. Steer toward the positive
+		concept with ``coef>0`` and **away** from it (suppress) with ``coef<0``. ``layers`` is an int or an
+		iterable of decoder-layer indices. This lives here (not re-hand-rolled per experiment) per the
+		contribution convention."""
+		pos = torch.as_tensor(pos_acts, dtype=torch.float32)
+		neg = torch.as_tensor(neg_acts, dtype=torch.float32)
+		pm = pos if pos.ndim == 1 else pos.mean(0)
+		nm = neg if neg.ndim == 1 else neg.mean(0)
+		d = pm - nm
+		d = d / (d.norm() + 1e-8)
+		layers = (layers,) if isinstance(layers, int) else tuple(layers)
+		return cls(direction=d, layers=layers, coef=coef, mode=mode)
+
 	def register(self, model: "PreTrainedModel") -> list:
 		"""Register the steering hooks on ``model`` and return the handles (caller removes them after generate)."""
 		layers = decoder_layers(model)

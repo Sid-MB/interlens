@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from ..participant import Participant
+from ...functional import Functional
 from ...message import Message
 
 # The set of hosted API backends. ``anthropic`` calls Claude directly via the ``anthropic`` SDK; ``openai`` calls
@@ -56,7 +57,7 @@ def _default_client(provider: str):
 
 
 @dataclass
-class APIParticipant(Participant):
+class APIParticipant(Functional, Participant):
 	"""A participant backed by a hosted API — Claude via ``anthropic`` (``provider="anthropic"``, the default) or
 	any model behind OpenRouter (``provider="openrouter"``, OpenAI-compatible) — for use as a debate opponent,
 	moderator, or the classifier inside an ``analyze`` callback.
@@ -155,16 +156,13 @@ class APIParticipant(Participant):
 		                metadata={"provider": self.provider, "model": self.model_id, "batched": True})
 		        for t in texts]
 
-	def to_config(self):
-		from ..config.api_participant_config import APIParticipantConfig
+	def __getstate__(self) -> dict:
+		# The client is a live SDK/network object (often unpicklable) and is reconstructed lazily per provider via
+		# ``_default_client`` — drop it on pickle. An injected test client is dropped too (tests run in-process).
+		state = self.__dict__.copy()
+		state["client"] = None
+		return state
 
-		return APIParticipantConfig(
-			name=self.name,
-			system_prompt=self.system_prompt,
-			private_context=tuple(self.private_context),
-			model_id=self.model_id,
-			provider=self.provider,
-			max_tokens=self.max_tokens,
-			temperature=self.temperature,
-			batch=self.batch,
-		)
+	def _after_set(self, original) -> None:
+		# API participants carry no volatile per-conversation state; nothing to reset.
+		pass

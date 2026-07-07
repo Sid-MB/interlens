@@ -13,19 +13,22 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from .stop_condition import StopCondition, AnyStopCondition
+from .stop_condition import StopCondition, AnyStopCondition, active_stop_conditions
 from .conditions import (
 	TurnStopCondition,
 	TokenStopCondition,
 	ElapsedTimeStopCondition,
 	StopStringCondition,
+	TokenBudget,
 )
 
 __all__ = [
 	"StopCondition",
 	"AnyStopCondition",
+	"active_stop_conditions",
 	"TurnStopCondition",
 	"TokenStopCondition",
 	"ElapsedTimeStopCondition",
 	"StopStringCondition",
+	"TokenBudget",
 ]

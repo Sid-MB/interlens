@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 import sys
 
-from interlens import APIParticipant, ConversationTemplate, APIParticipantConfig, Conversation
+from interlens import APIParticipant, Conversation
 
 MODEL = "claude-haiku-4-5-20251001"  # cheap + fast for a smoke test
 
@@ -79,13 +79,12 @@ def check_interp_raises():
 
 
 def check_real_conversation():
-    tmpl = ConversationTemplate(
-        participants=[APIParticipantConfig(name="pro", model_id=MODEL, max_tokens=80, temperature=1.0,
-                                           system_prompt="Argue YES. One short sentence."),
-                      APIParticipantConfig(name="con", model_id=MODEL, max_tokens=80, temperature=1.0,
-                                           system_prompt="Argue NO. One short sentence.")],
-        shared_context="Is a hot dog a sandwich?", turns=4)
-    conv = tmpl.build(devices="cpu")  # API participants ignore device
+    conv = Conversation(
+        participants=[APIParticipant(name="pro", model_id=MODEL, max_tokens=80, temperature=1.0,
+                                     system_prompt="Argue YES. One short sentence."),
+                      APIParticipant(name="con", model_id=MODEL, max_tokens=80, temperature=1.0,
+                                     system_prompt="Argue NO. One short sentence.")],
+        shared_context="Is a hot dog a sandwich?")
     conv.run(turns=4)
     log(f"Claude-vs-Claude produced {len(conv.transcript)} turns:")
     for m in conv.transcript:

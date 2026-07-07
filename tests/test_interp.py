@@ -54,6 +54,22 @@ def test_steering_summary_records_spec():
 	assert s["direction_norm"] == pytest.approx(4.0)  # ||ones(16)|| = 4
 
 
+def test_difference_of_means_direction():
+	# pos cluster around +e0, neg around -e0 -> unit direction ~ +e0; layers int is normalized to a tuple.
+	d = 8
+	pos = torch.zeros(10, d); pos[:, 0] = 5.0
+	neg = torch.zeros(10, d); neg[:, 0] = -5.0
+	spec = SteeringSpec.difference_of_means(pos, neg, layers=6, coef=-2.0)
+	assert spec.layers == (6,) and spec.coef == -2.0
+	assert spec.direction.shape == (d,)
+	assert spec.direction.norm() == pytest.approx(1.0, abs=1e-5)   # unit
+	assert spec.direction[0] > 0.99                                # points toward the positive class
+	# pre-pooled [d_model] vectors also accepted
+	spec2 = SteeringSpec.difference_of_means(pos.mean(0), neg.mean(0), layers=[2, 4])
+	assert spec2.layers == (2, 4)
+	assert torch.allclose(spec2.direction, spec.direction, atol=1e-5)
+
+
 def test_token_logprobs_shapes_and_signs():
 	vocab = 32
 	scores = [torch.randn(1, vocab) for _ in range(4)]
