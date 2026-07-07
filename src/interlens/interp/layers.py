@@ -26,14 +26,18 @@ def decoder_layers(model: "PreTrainedModel"):
 
 	Steering/patching hooks and per-layer capture all need the ordered layer stack. Qwen and Gemma both expose
 	it at ``model.model.layers``; a few fallbacks cover other families so the interp layer isn't Qwen/Gemma-only.
-	PEFT/adapter wrappers (``PeftModelForCausalLM``) are unwrapped first so hooks land on the real decoder layers.
+	Multimodal image-text-to-text wrappers (Qwen 3.5, Gemma 4, …) nest the text decoder one level deeper — its
+	layers live at ``model.language_model.layers`` (or ``.model.language_model.model.layers``) — so those paths are
+	included too. PEFT/adapter wrappers (``PeftModelForCausalLM``) are unwrapped first so hooks land on the real
+	decoder layers.
 	"""
 	if hasattr(model, "get_base_model"):  # peft wrapper -> underlying transformers model
 		try:
 			model = model.get_base_model()
 		except Exception:
 			pass
-	for path in ("model.layers", "transformer.h", "gpt_neox.layers", "model.decoder.layers"):
+	for path in ("model.layers", "transformer.h", "gpt_neox.layers", "model.decoder.layers",
+	             "model.language_model.layers", "language_model.layers", "model.language_model.model.layers"):
 		obj = model
 		try:
 			for attr in path.split("."):

@@ -18,9 +18,28 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 from .model_cache import cached_model, cached_tokenizer
+
+
+def _auto_model_class(hf_id: str, revision: str | None):
+	"""Pick the right ``AutoModelFor*`` for ``hf_id`` by peeking at its config.
+
+	Text-only decoders load via ``AutoModelForCausalLM``. Newer-gen releases (Qwen 3.5, Gemma 4, …) ship as
+	*multimodal* image-text-to-text wrappers whose config carries a nested ``text_config``; ``AutoModelForCausalLM``
+	refuses them, so those load via ``AutoModelForImageTextToText``. The full wrapper is kept (it owns ``generate``
+	+ ``lm_head``); text-only generation works with plain ``input_ids`` and ``output_hidden_states`` returns the
+	text decoder's states, so the rest of the stack (capture, ``decoder_layers``) is unaffected once
+	``decoder_layers`` knows the nested layer path."""
+	try:
+		cfg = AutoConfig.from_pretrained(hf_id, revision=revision)
+	except Exception:
+		return AutoModelForCausalLM
+	if hasattr(cfg, "text_config"):
+		from transformers import AutoModelForImageTextToText
+		return AutoModelForImageTextToText
+	return AutoModelForCausalLM
 
 
 def load_tokenizer(hf_id: str, revision: str | None = None) -> PreTrainedTokenizerBase:
@@ -67,11 +86,12 @@ def _load_model_weights(hf_id, device, dtype, attn, quant, revision):
 
 	# Try the requested attention backend, then progressively simpler ones, so flash-attn-by-default never
 	# hard-fails on hardware/builds that lack it.
+	auto_cls = _auto_model_class(hf_id, revision)
 	backends = [attn, "sdpa", "eager"]
 	last_err = None
 	for backend in dict.fromkeys(b for b in backends if b):  # dedupe, keep order
 		try:
-			model = AutoModelForCausalLM.from_pretrained(hf_id, attn_implementation=backend, **kwargs)
+			model = auto_cls.from_pretrained(hf_id, attn_implementation=backend, **kwargs)
 			model.eval()
 			model._resolved_attn = backend  # traceable in saved metadata
 			if quant is None:
