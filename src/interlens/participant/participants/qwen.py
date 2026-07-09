@@ -22,4 +22,4 @@ class QwenModelParticipant(ModelParticipant):
 	``<tool_call>`` JSON already handled by ``ModelParticipant``, so this class adds no behavior — it exists so
 	Qwen models resolve to a distinct, statically-typed participant class."""
 
-	MODEL_TYPES: ClassVar[frozenset[str]] = frozenset({"qwen2", "qwen3"})
+	MODEL_TYPES: ClassVar[frozenset[str]] = frozenset({"qwen2", "qwen3", "qwen3_5", "qwen3_5_moe"})
