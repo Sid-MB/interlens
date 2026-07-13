@@ -27,6 +27,7 @@ from .participant.participants.qwen import QwenModelParticipant
 from .participant.participants.gemma import GemmaModelParticipant
 from .participant.participants.llama import LlamaModelParticipant
 from .participant.participants.api_participant import APIParticipant, Provider
+from .participant.participants.scripted_participant import ScriptedParticipant
 from .context import ContextPolicy, ErrorPolicy, DropOldestPolicy, SlidingWindowPolicy, SummarizePolicy
 from .hooks import MessageHook, MessageHookResult, HookAction
 from .stop import (
