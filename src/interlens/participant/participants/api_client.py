@@ -87,13 +87,13 @@ class AnthropicClient(_RetryingClient):
 			isinstance(exc, a.APIStatusError) and getattr(exc, "status_code", None) in (429, 500, 502, 503, 529))
 
 	def _call_once(self, system, messages, model, max_tokens, temperature) -> str:
-		resp = self._client.messages.create(
-			model=model,
-			system=system if system else self._anthropic.NOT_GIVEN,
-			messages=messages,
-			max_tokens=max_tokens,
-			temperature=temperature,
-		)
+		# Newer models (e.g. Opus 4.8) DEPRECATE the `temperature` param and 400 if it is sent at all. Omit it when
+		# None so callers can opt out; pass it through otherwise.
+		kw = dict(model=model, system=system if system else self._anthropic.NOT_GIVEN, messages=messages,
+		          max_tokens=max_tokens)
+		if temperature is not None:
+			kw["temperature"] = temperature
+		resp = self._client.messages.create(**kw)
 		return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 
 	def submit_batch(self, requests: list[dict], *, poll_interval: float = 30.0) -> list[str]:
@@ -150,9 +150,12 @@ class _OpenAICompatClient(_RetryingClient):
 		return ([{"role": "system", "content": system}] if system else []) + list(messages)
 
 	def _call_once(self, system, messages, model, max_tokens, temperature) -> str:
+		# Some models (e.g. GPT-5) only accept the default temperature; omit the param when None to avoid a 400.
+		kw = {self._tokens_param: max_tokens}
+		if temperature is not None:
+			kw["temperature"] = temperature
 		resp = self._client.chat.completions.create(
-			model=model, messages=self._full_messages(system, messages),
-			temperature=temperature, **{self._tokens_param: max_tokens})
+			model=model, messages=self._full_messages(system, messages), **kw)
 		return resp.choices[0].message.content or ""
 
 
