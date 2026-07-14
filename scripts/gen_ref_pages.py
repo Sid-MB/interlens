@@ -27,9 +27,10 @@ build-time virtual files, it does two things that must happen BEFORE ``zensical 
    text replacement between markers — comments and everything else in mkdocs.yml are left untouched.
 
 It also invokes ``gen_llms_txt.py`` so the whole pre-build generation is one command. Run it before every
-build; CI does this in ``.github/workflows/docs.yml``. Locally::
+build; Vercel does this in ``vercel.ts``'s buildCommand (``.github/workflows/docs.yml`` is the manual
+fallback). Locally::
 
-    python docs/gen_ref_pages.py && zensical serve
+    python scripts/gen_ref_pages.py && zensical serve
 """
 from __future__ import annotations
 
@@ -37,8 +38,8 @@ import shutil
 import sys
 from pathlib import Path
 
-sys.dont_write_bytecode = True  # no docs/__pycache__ — everything under docs/ gets copied into the built site
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # so this works from any cwd, not just docs/
+sys.dont_write_bytecode = True  # keep scripts/ free of __pycache__ clutter
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # so this works from any cwd, not just scripts/
 import gen_llms_txt
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,7 +48,7 @@ REF_DIR = ROOT / "docs" / "reference"
 CONFIG = ROOT / "mkdocs.yml"
 
 # Marker lines in mkdocs.yml (must match exactly, including indentation) that delimit the generated nav block.
-BEGIN = "      # BEGIN generated reference nav — run docs/gen_ref_pages.py to refresh; do not edit by hand"
+BEGIN = "      # BEGIN generated reference nav — run scripts/gen_ref_pages.py to refresh; do not edit by hand"
 END = "      # END generated reference nav"
 
 INDEX_KEY = "__index__"  # tree key holding a package's own index page (its __init__.py stub)

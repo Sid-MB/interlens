@@ -50,8 +50,8 @@ dev = [
 # reference straight from docstrings, rendered by Zensical's native mkdocstrings module). A group rather
 # than an extra because building the docs never imports interlens — mkdocstrings/griffe reads src/
 # statically — so CI installs just this group (`pip install --group docs`), no package, no torch.
-# Build: `python docs/gen_ref_pages.py && zensical build --clean`
-# Serve: `python docs/gen_ref_pages.py && zensical serve`
+# Build: `python scripts/gen_ref_pages.py && zensical build --clean`
+# Serve: `python scripts/gen_ref_pages.py && zensical serve`
 docs = [
     "zensical>=0.0.50",
     "mkdocstrings[python]>=0.27",

@@ -18,24 +18,23 @@
 # Design: the site is built from THREE sources with zero content duplication —
 #   1. `docs/index.md`      → snippet-includes the top-level README (single source of truth for the intro).
 #   2. `docs/examples/*.md` → the existing hand-written simple→advanced walkthrough, reused verbatim.
-#   3. `docs/reference/**`  → API stub pages (gitignored) written by `docs/gen_ref_pages.py`, one `:::`
+#   3. `docs/reference/**`  → API stub pages (gitignored) written by `scripts/gen_ref_pages.py`, one `:::`
 #                             directive per module, rendered by Zensical's native mkdocstrings module. The
 #                             script also splices the nav tree between the markers below — run it before
 #                             every build/serve. No manual upkeep as the public API grows.
-# The script also invokes `docs/gen_llms_txt.py`, which emits `llms.txt` (index) and `llms-full.txt`
+# The script also invokes `scripts/gen_llms_txt.py`, which emits `llms.txt` (index) and `llms-full.txt`
 # (concatenated bodies) into `docs/` — Zensical copies them verbatim to the site root — replacing the
 # mkdocs-llmstxt plugin, which Zensical doesn't run.
 #
-# Build: python docs/gen_ref_pages.py && zensical build --clean
-# Serve: python docs/gen_ref_pages.py && zensical serve
+# Build: python scripts/gen_ref_pages.py && zensical build --clean
+# Serve: python scripts/gen_ref_pages.py && zensical serve
 site_name: interlens
 site_description: A framework for scaffolding and interpreting multi-agent conversations (activation capture, steering, patching).
 # site_url is the single source of truth for the published URL — gen_llms_txt.py reads it from here, and
-# Zensical derives canonical links + sitemap entries from it. The site lives under the /interlens subpath
-# of docs.sidmb.com, so site_dir nests the output accordingly (vercel.ts serves `site/` at the domain root
-# and redirects / → /interlens/).
-site_url: https://interlens.docs.sidmb.com/
-site_dir: site/interlens
+# Zensical derives canonical links + sitemap entries from it. The site lives at the domain root, so the
+# build output goes straight into `site/` (which vercel.ts serves as-is).
+site_url: https://interlens.sidmb.com/
+site_dir: site
 repo_url: https://github.com/Sid-MB/interlens
 repo_name: Sid-MB/interlens
 edit_uri: edit/main/
@@ -97,7 +96,7 @@ nav:
       - Rollouts & scale: examples/08_rollouts_and_scale.md
       - Advanced interp pipelines: examples/09_advanced_interp_pipelines.md
   - API reference:
-      # BEGIN generated reference nav — run docs/gen_ref_pages.py to refresh; do not edit by hand
+      # BEGIN generated reference nav — run scripts/gen_ref_pages.py to refresh; do not edit by hand
       - interlens:
           - reference/interlens/index.md
           - context:

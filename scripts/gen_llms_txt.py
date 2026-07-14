@@ -28,7 +28,7 @@ files verbatim to the site root — that way they exist under ``zensical serve``
 Only the hand-written pages (overview + examples) are included, mirroring the old plugin config; the API
 reference is huge, generated, and better consumed via the objects.inv / rendered pages.
 
-Runs as part of the single pre-build step — ``docs/gen_ref_pages.py`` invokes it (see there), so CI and
+Runs as part of the single pre-build step — ``scripts/gen_ref_pages.py`` invokes it (see there), so CI and
 local serve only ever run that one script.
 """
 from __future__ import annotations

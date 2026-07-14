@@ -22,7 +22,7 @@ name: docs
 #   on:
 #     push:
 #       branches: [main]
-#       paths: ['src/**/*.py', 'docs/**', 'README.md', 'mkdocs.yml', 'pyproject.toml']
+#       paths: ['src/**/*.py', 'docs/**', 'scripts/**', 'README.md', 'mkdocs.yml', 'pyproject.toml']
 #
 # Two-step build (see mkdocs.yml header): gen_ref_pages.py writes the API stub pages + nav (Zensical
 # doesn't run the old gen-files/literate-nav plugins) and the llms.txt/llms-full.txt files (replaces
@@ -59,16 +59,16 @@ jobs:
           pip install --group docs
 
       - name: Generate API reference pages + nav + llms.txt
-        run: python docs/gen_ref_pages.py
+        run: python scripts/gen_ref_pages.py
 
       - name: Build site
         run: zensical build --clean --strict
 
       - uses: actions/upload-pages-artifact@v5
         with:
-          # mkdocs.yml nests the output in site/interlens (the site lives under a /interlens subpath on
-          # Vercel); GitHub Pages already serves this repo under /interlens, so upload the inner dir.
-          path: site/interlens
+          # mkdocs.yml renders straight into site/ (the site lives at the interlens.sidmb.com root now);
+          # note GitHub Pages serves this repo under /interlens, so relative links may break on the fallback.
+          path: site
 
   deploy:
     needs: build
