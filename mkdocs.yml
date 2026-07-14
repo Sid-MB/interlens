@@ -1,3 +1,18 @@
+# interlens: a framework for scaffolding and interpreting multi-agent conversations
+# Copyright (C) 2026 Siddharth M. Bhatia
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of version 3 of the GNU Affero General Public License
+# as published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 # Site config for interlens, built with Zensical (reads mkdocs.yml natively — no separate config needed).
 #
 # Design: the site is built from THREE sources with zero content duplication —
@@ -15,7 +30,12 @@
 # Serve: python docs/gen_ref_pages.py && zensical serve
 site_name: interlens
 site_description: A framework for scaffolding and interpreting multi-agent conversations (activation capture, steering, patching).
-site_url: https://sid-mb.github.io/interlens/
+# site_url is the single source of truth for the published URL — gen_llms_txt.py reads it from here, and
+# Zensical derives canonical links + sitemap entries from it. The site lives under the /interlens subpath
+# of docs.sidmb.com, so site_dir nests the output accordingly (vercel.ts serves `site/` at the domain root
+# and redirects / → /interlens/).
+site_url: https://docs.sidmb.com/interlens/
+site_dir: site/interlens
 repo_url: https://github.com/Sid-MB/interlens
 repo_name: Sid-MB/interlens
 edit_uri: edit/main/

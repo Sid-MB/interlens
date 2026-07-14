@@ -1,3 +1,18 @@
+# interlens: a framework for scaffolding and interpreting multi-agent conversations
+# Copyright (C) 2026 Siddharth M. Bhatia
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of version 3 of the GNU Affero General Public License
+# as published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
@@ -22,15 +37,21 @@ dependencies = [
 
 [project.optional-dependencies]
 api = ["anthropic>=0.112,<1", "openai>=1.40"]   # APIParticipant: anthropic (Claude) and/or openai SDK (OpenRouter)
-dev = ["pytest>=9"]
+
+# Dev tooling (PEP 735 group — uv installs `dev` by default on `uv sync`, so every contributor gets
+# pytest + pre-commit without asking; activate the git hook once with `uv run pre-commit install`).
+[dependency-groups]
+dev = [
+    "pytest>=9",
+    "pre-commit>=4",   # license-header insertion (.pre-commit-config.yaml)
+]
 
 # Docs site: Zensical (successor to MkDocs Material — reads mkdocs.yml natively) + mkdocstrings (API
-# reference straight from docstrings, rendered by Zensical's native mkdocstrings module). A PEP 735 group
-# rather than an extra because building the docs never imports interlens — mkdocstrings/griffe reads src/
+# reference straight from docstrings, rendered by Zensical's native mkdocstrings module). A group rather
+# than an extra because building the docs never imports interlens — mkdocstrings/griffe reads src/
 # statically — so CI installs just this group (`pip install --group docs`), no package, no torch.
 # Build: `python docs/gen_ref_pages.py && zensical build --clean`
 # Serve: `python docs/gen_ref_pages.py && zensical serve`
-[dependency-groups]
 docs = [
     "zensical>=0.0.50",
     "mkdocstrings[python]>=0.27",
