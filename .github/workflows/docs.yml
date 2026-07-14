@@ -1,6 +1,6 @@
-name: docs
+name: Documentation
 
-# Build the MkDocs site and publish it to GitHub Pages on every push to main. Runs only when something that can
+# Build the Zensical site and publish it to GitHub Pages on every push to main. Runs only when something that can
 # affect the rendered docs changes: docstrings/sources, the example pages, or the docs/build config.
 on:
   push:
@@ -8,6 +8,7 @@ on:
     paths:
       - 'src/**/*.py'
       - 'docs/**'
+      - 'scripts/docs/**'
       - 'README.md'
       - 'mkdocs.yml'
       - 'pyproject.toml'
@@ -35,7 +36,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: pip
+
+      - uses: actions/configure-pages@v6
 
       - name: Install docs deps (CPU torch keeps it light; mkdocstrings imports the package to read signatures)
         run: |
@@ -44,11 +46,9 @@ jobs:
           pip install -e ".[docs]"
 
       - name: Build site
-        run: mkdocs build --strict
-        env:
-          DISABLE_MKDOCS_2_WARNING: "true"   # silence the mkdocs-material 2.0 advertising banner in CI logs
+        run: python scripts/docs/build.py build
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
@@ -60,4 +60,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

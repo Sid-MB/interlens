@@ -51,6 +51,18 @@ pytest
 # fast tests; opt-in to thorough tests requiring downloading models + a GPU with: pytest -m slow
 ```
 
+### Documentation
+
+The documentation uses Zensical with the transition-compatible `mkdocs.yml` format and mkdocstrings for the source-derived API reference. The wrapper generates the gitignored module pages and LLM-friendly text assets before starting Zensical:
+
+```bash
+pip install -e ".[docs]"
+python scripts/docs/build.py serve
+
+# Production build (the GitHub Actions workflow runs these commands):
+python scripts/docs/build.py build
+```
+
 ## License
 
 GNU AGPLv3 — see [LICENSE](LICENSE).

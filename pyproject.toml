@@ -23,15 +23,11 @@ dependencies = [
 [project.optional-dependencies]
 api = ["anthropic>=0.112,<1", "openai>=1.40"]   # APIParticipant: anthropic (Claude) and/or openai SDK (OpenRouter)
 dev = ["pytest>=9"]
-# Docs site: MkDocs Material + mkdocstrings (API reference straight from docstrings) + auto-discovery
-# (gen-files/literate-nav) + llms.txt generation. Build with `mkdocs serve` / `mkdocs build` from this dir.
+# Docs site: Zensical + mkdocstrings, with repository-owned generators for the module reference tree and LLM-friendly text.
+# Use `python scripts/docs/build.py serve` locally and `python scripts/docs/build.py build` for a production build.
 docs = [
-    "mkdocs-material>=9.5",
+    "zensical>=0.0.11",
     "mkdocstrings[python]>=0.27",
-    "mkdocs-gen-files>=0.5",
-    "mkdocs-literate-nav>=0.6",
-    "mkdocs-section-index>=0.3",
-    "mkdocs-llmstxt>=0.2",
     "black>=24",   # mkdocstrings uses it to pretty-format rendered signatures
 ]
 
