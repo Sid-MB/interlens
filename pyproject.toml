@@ -23,15 +23,17 @@ dependencies = [
 [project.optional-dependencies]
 api = ["anthropic>=0.112,<1", "openai>=1.40"]   # APIParticipant: anthropic (Claude) and/or openai SDK (OpenRouter)
 dev = ["pytest>=9"]
-# Docs site: MkDocs Material + mkdocstrings (API reference straight from docstrings) + auto-discovery
-# (gen-files/literate-nav) + llms.txt generation. Build with `mkdocs serve` / `mkdocs build` from this dir.
+
+# Docs site: Zensical (successor to MkDocs Material — reads mkdocs.yml natively) + mkdocstrings (API
+# reference straight from docstrings, rendered by Zensical's native mkdocstrings module). A PEP 735 group
+# rather than an extra because building the docs never imports interlens — mkdocstrings/griffe reads src/
+# statically — so CI installs just this group (`pip install --group docs`), no package, no torch.
+# Build: `python docs/gen_ref_pages.py && zensical build --clean`
+# Serve: `python docs/gen_ref_pages.py && zensical serve`
+[dependency-groups]
 docs = [
-    "mkdocs-material>=9.5",
+    "zensical>=0.0.50",
     "mkdocstrings[python]>=0.27",
-    "mkdocs-gen-files>=0.5",
-    "mkdocs-literate-nav>=0.6",
-    "mkdocs-section-index>=0.3",
-    "mkdocs-llmstxt>=0.2",
     "black>=24",   # mkdocstrings uses it to pretty-format rendered signatures
 ]
 
