@@ -1,17 +1,35 @@
+# interlens: a framework for scaffolding and interpreting multi-agent conversations
+# Copyright (C) 2026 Siddharth M. Bhatia
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of version 3 of the GNU Affero General Public License
+# as published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 name: docs
 
-# Build the MkDocs site and publish it to GitHub Pages on every push to main. Runs only when something that can
-# affect the rendered docs changes: docstrings/sources, the example pages, or the docs/build config.
+# DISABLED — docs are deployed by Vercel now (see vercel.ts: Vercel builds on every push, with per-branch
+# preview URLs and production on main), so this workflow no longer auto-runs. It is kept as a manual
+# fallback: trigger it from the Actions tab to re-publish the site to GitHub Pages if Vercel is ever
+# unavailable. To fully re-enable, restore the old push trigger:
+#   on:
+#     push:
+#       branches: [main]
+#       paths: ['src/**/*.py', 'docs/**', 'README.md', 'mkdocs.yml', 'pyproject.toml']
+#
+# Two-step build (see mkdocs.yml header): gen_ref_pages.py writes the API stub pages + nav (Zensical
+# doesn't run the old gen-files/literate-nav plugins) and the llms.txt/llms-full.txt files (replaces
+# mkdocs-llmstxt), then `zensical build` renders the site (its native mkdocstrings module pulls
+# docstrings from src/ statically — no package or torch install needed).
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/**/*.py'
-      - 'docs/**'
-      - 'README.md'
-      - 'mkdocs.yml'
-      - 'pyproject.toml'
-  workflow_dispatch:   # allow manual re-publish from the Actions tab
+  workflow_dispatch:   # manual-only: docs deploys moved to Vercel
 
 # GitHub Pages deploy needs pages:write + id-token:write; contents:read to check out the repo.
 permissions:
@@ -29,28 +47,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0   # tags available so hatch-vcs can resolve a version during the editable install
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
 
-      - name: Install docs deps (CPU torch keeps it light; mkdocstrings imports the package to read signatures)
+      - name: Install docs deps (just the PEP 735 docs group — griffe reads src/ statically, no package install)
         run: |
           python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[docs]"
+          pip install --group docs
+
+      - name: Generate API reference pages + nav + llms.txt
+        run: python docs/gen_ref_pages.py
 
       - name: Build site
-        run: mkdocs build --strict
-        env:
-          DISABLE_MKDOCS_2_WARNING: "true"   # silence the mkdocs-material 2.0 advertising banner in CI logs
+        run: zensical build --clean --strict
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
-          path: site
+          # mkdocs.yml nests the output in site/interlens (the site lives under a /interlens subpath on
+          # Vercel); GitHub Pages already serves this repo under /interlens, so upload the inner dir.
+          path: site/interlens
 
   deploy:
     needs: build
@@ -60,4 +78,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

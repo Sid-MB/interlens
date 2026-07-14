@@ -1,15 +1,41 @@
-# MkDocs site config for interlens.
+# interlens: a framework for scaffolding and interpreting multi-agent conversations
+# Copyright (C) 2026 Siddharth M. Bhatia
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of version 3 of the GNU Affero General Public License
+# as published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+# Site config for interlens, built with Zensical (reads mkdocs.yml natively — no separate config needed).
 #
 # Design: the site is built from THREE sources with zero content duplication —
 #   1. `docs/index.md`      → snippet-includes the top-level README (single source of truth for the intro).
 #   2. `docs/examples/*.md` → the existing hand-written simple→advanced walkthrough, reused verbatim.
-#   3. `reference/**`       → API pages generated at build time by `docs/gen_ref_pages.py` (mkdocs-gen-files),
-#                             one page per module, navigated via a literate-nav SUMMARY.md. mkdocstrings pulls
-#                             the rendered docstrings. No manual upkeep as the public API grows.
-# `mkdocs-llmstxt` emits `llms.txt` (index) and `llms-full.txt` (concatenated bodies) at the site root.
+#   3. `docs/reference/**`  → API stub pages (gitignored) written by `docs/gen_ref_pages.py`, one `:::`
+#                             directive per module, rendered by Zensical's native mkdocstrings module. The
+#                             script also splices the nav tree between the markers below — run it before
+#                             every build/serve. No manual upkeep as the public API grows.
+# The script also invokes `docs/gen_llms_txt.py`, which emits `llms.txt` (index) and `llms-full.txt`
+# (concatenated bodies) into `docs/` — Zensical copies them verbatim to the site root — replacing the
+# mkdocs-llmstxt plugin, which Zensical doesn't run.
+#
+# Build: python docs/gen_ref_pages.py && zensical build --clean
+# Serve: python docs/gen_ref_pages.py && zensical serve
 site_name: interlens
 site_description: A framework for scaffolding and interpreting multi-agent conversations (activation capture, steering, patching).
-site_url: https://sid-mb.github.io/interlens/
+# site_url is the single source of truth for the published URL — gen_llms_txt.py reads it from here, and
+# Zensical derives canonical links + sitemap entries from it. The site lives under the /interlens subpath
+# of docs.sidmb.com, so site_dir nests the output accordingly (vercel.ts serves `site/` at the domain root
+# and redirects / → /interlens/).
+site_url: https://docs.sidmb.com/interlens/
+site_dir: site/interlens
 repo_url: https://github.com/Sid-MB/interlens
 repo_name: Sid-MB/interlens
 edit_uri: edit/main/
@@ -34,12 +60,6 @@ theme:
 
 plugins:
   - search
-  - gen-files:
-      scripts:
-        - docs/gen_ref_pages.py
-  - literate-nav:
-      nav_file: SUMMARY.md
-  - section-index
   - mkdocstrings:
       handlers:
         python:
@@ -54,18 +74,6 @@ plugins:
             show_symbol_type_heading: true
             show_symbol_type_toc: true
             filters: ["!^_"]                # hide private members (leading underscore), keep dunder-free public API.
-  - llmstxt:
-      markdown_description: >-
-        interlens is a harness for multi-agent (model-to-model) conversations with first-class
-        interpretability — activation capture, steering, activation patching, and token logprobs — all hooked
-        into the same generation path as real turns, scaling from one dialogue to thousands of checkpointed
-        multi-GPU rollouts.
-      full_output: llms-full.txt
-      sections:
-        Overview:
-          - index.md
-        Examples (simple to advanced):
-          - examples/*.md
 
 markdown_extensions:
   - admonition
@@ -88,4 +96,72 @@ nav:
       - Interpretability: examples/07_interp.md
       - Rollouts & scale: examples/08_rollouts_and_scale.md
       - Advanced interp pipelines: examples/09_advanced_interp_pipelines.md
-  - API reference: reference/
+  - API reference:
+      # BEGIN generated reference nav — run docs/gen_ref_pages.py to refresh; do not edit by hand
+      - interlens:
+          - reference/interlens/index.md
+          - context:
+              - reference/interlens/context/index.md
+              - context_policy: reference/interlens/context/context_policy.md
+              - drop_oldest_policy: reference/interlens/context/drop_oldest_policy.md
+              - error_policy: reference/interlens/context/error_policy.md
+              - sliding_window_policy: reference/interlens/context/sliding_window_policy.md
+              - summarize_policy: reference/interlens/context/summarize_policy.md
+          - context_item: reference/interlens/context_item.md
+          - conversation: reference/interlens/conversation.md
+          - execution_mode: reference/interlens/execution_mode.md
+          - factories: reference/interlens/factories.md
+          - functional: reference/interlens/functional.md
+          - hooks:
+              - reference/interlens/hooks/index.md
+              - message_hook: reference/interlens/hooks/message_hook.md
+          - interp:
+              - reference/interlens/interp/index.md
+              - activation_cache: reference/interlens/interp/activation_cache.md
+              - bridge: reference/interlens/interp/bridge.md
+              - capture: reference/interlens/interp/capture.md
+              - grad: reference/interlens/interp/grad.md
+              - layers: reference/interlens/interp/layers.md
+              - logprobs: reference/interlens/interp/logprobs.md
+              - patching: reference/interlens/interp/patching.md
+              - routing: reference/interlens/interp/routing.md
+              - steering: reference/interlens/interp/steering.md
+          - loading:
+              - reference/interlens/loading/index.md
+              - load: reference/interlens/loading/load.md
+              - model_cache: reference/interlens/loading/model_cache.md
+          - message: reference/interlens/message.md
+          - participant:
+              - reference/interlens/participant/index.md
+              - participant: reference/interlens/participant/participant.md
+              - participants:
+                  - reference/interlens/participant/participants/index.md
+                  - api_client: reference/interlens/participant/participants/api_client.md
+                  - api_participant: reference/interlens/participant/participants/api_participant.md
+                  - gemma: reference/interlens/participant/participants/gemma.md
+                  - llama: reference/interlens/participant/participants/llama.md
+                  - model_participant: reference/interlens/participant/participants/model_participant.md
+                  - qwen: reference/interlens/participant/participants/qwen.md
+              - role: reference/interlens/participant/role.md
+              - serialize: reference/interlens/participant/serialize.md
+          - reasoning_visibility: reference/interlens/reasoning_visibility.md
+          - runner:
+              - reference/interlens/runner/index.md
+              - analyzer_registry: reference/interlens/runner/analyzer_registry.md
+              - batched: reference/interlens/runner/batched.md
+              - devices: reference/interlens/runner/devices.md
+              - pool: reference/interlens/runner/pool.md
+              - worker_init: reference/interlens/runner/worker_init.md
+          - stop:
+              - reference/interlens/stop/index.md
+              - conditions: reference/interlens/stop/conditions.md
+              - stop_condition: reference/interlens/stop/stop_condition.md
+          - templating: reference/interlens/templating.md
+          - tools:
+              - reference/interlens/tools/index.md
+              - registry: reference/interlens/tools/registry.md
+              - tool: reference/interlens/tools/tool.md
+              - tool_call: reference/interlens/tools/tool_call.md
+          - transcript: reference/interlens/transcript.md
+          - view: reference/interlens/view.md
+      # END generated reference nav

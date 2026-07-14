@@ -46,8 +46,9 @@ See [`docs/examples/`](docs/examples/) for a simple→advanced walkthrough of th
 
 ```bash
 git clone https://github.com/Sid-MB/interlens && cd interlens
-pip install -e ".[dev]"
-pytest                      
+uv sync                     # installs the package + dev group (pytest, pre-commit)
+uv run pre-commit install   # one-time: activate the AGPLv3 license-header git hook
+uv run pytest               
 # fast tests; opt-in to thorough tests requiring downloading models + a GPU with: pytest -m slow
 ```
 

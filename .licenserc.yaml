@@ -23,7 +23,9 @@ header:
       along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
   paths:
-    - 'src/**/*.py'
-    - 'tests/**/*.py'
+    - '**.py'
+    - '**.yml'
+    - '**.toml'
+    - '**.ts'
 
   comment: never

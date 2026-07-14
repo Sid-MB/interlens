@@ -1,8 +1,25 @@
+# interlens: a framework for scaffolding and interpreting multi-agent conversations
+# Copyright (C) 2026 Siddharth M. Bhatia
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of version 3 of the GNU Affero General Public License
+# as published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 name: publish
 
-# Every push to main cuts a new release: bump the patch version, create+push a `vX.Y.Z` tag (the version is
-# derived from it via hatch-vcs), build, publish to PyPI via Trusted Publishing (OIDC — no token), and cut a
-# GitHub Release. The tag is the source of truth; nothing is committed back, so there's no bump-loop.
+# Every push to main cuts a new release: auto-fix any missing AGPLv3 license headers (committed back to
+# main), bump the patch version, create+push a `vX.Y.Z` tag (the version is derived from it via hatch-vcs),
+# build, publish to PyPI via Trusted Publishing (OIDC — no token), and cut a GitHub Release. The tag is the
+# source of truth. The header-fix commit can't cause a release loop: pushes made with the workflow's
+# GITHUB_TOKEN never trigger new workflow runs, and nothing else is committed back.
 #
 # One-time PyPI setup (https://pypi.org/manage/account/publishing/): add a pending publisher for
 #   project: interlens · owner: Sid-MB · repo: interlens · workflow: publish.yml · environment: pypi
@@ -37,9 +54,30 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Auto-fix missing AGPLv3 file headers instead of failing the release. Deliberately runs the SAME
+      # insert-license pre-commit hook devs use locally (see .pre-commit-config.yaml) rather than
+      # License-Eye's fix mode, so CI and local hooks write byte-identical headers and can never fight
+      # over formatting. The hook exits non-zero when it modifies files — the commit step below picks the
+      # changes up, and the License-Eye gate re-verifies, so a real hook failure still stops the release.
+      - name: Fix missing license headers (same insert-license hook as local pre-commit)
+        run: |
+          python -m pip install --upgrade pre-commit
+          pre-commit run --all-files || true
+
+      # Push any fixed headers back to the branch that triggered the run before tagging, so the tag (and
+      # the sdist/wheel built from this checkout) always points at a fully-headered tree.
+      - name: Commit fixed headers back to the triggering branch
+        run: |
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "Add missing AGPLv3 license headers [auto]"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
+
       # Gate the release on the AGPLv3 file headers: no tag, build, or publish happens unless every source
-      # file carries the header (same check devs run locally via the insert-license pre-commit hook).
-      # Config lives in .licenserc.yaml; runs here rather than in a separate workflow to save machine time.
+      # file now carries the header. Config lives in .licenserc.yaml; its paths mirror the pre-commit
+      # hook's `files` patterns — keep the two in sync.
       - name: Check AGPLv3 license headers
         uses: apache/skywalking-eyes/header@v0.8.0
         with:
