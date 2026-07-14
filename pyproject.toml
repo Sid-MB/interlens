@@ -68,6 +68,13 @@ source = "vcs"   # version = latest `vX.Y.Z` git tag (+ dev suffix for untagged 
 [tool.hatch.build.targets.wheel]
 packages = ["src/interlens"]
 
+# Keep the published sdist to what's needed to build + audit the package: src plus the auto-included
+# pyproject.toml/README/LICENSE/PKG-INFO. Without this, hatchling's default sweeps in everything that
+# isn't gitignored — docs, tests, CI workflows, uv.lock, even local build caches — none of which a
+# client installing the package needs.
+[tool.hatch.build.targets.sdist]
+only-include = ["src"]
+
 [tool.pytest.ini_options]
 # `src` first so `import interlens` resolves to the working tree (no install needed for dev); `.` so the
 # top-level `tests` package is importable (e.g. `python -m tests.profile_pipeline`).
