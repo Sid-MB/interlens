@@ -30,8 +30,12 @@ export const config = {
   // uv is available on Vercel's Python-aware build image; the curl fallback covers images without it
   // (the standalone installer lands in ~/.local/bin, hence the PATH export in buildCommand).
   installCommand: 'command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh',
+  // SETUPTOOLS_SCM_PRETEND_VERSION_FOR_INTERLENS: Vercel deployments have no .git directory, and uv's
+  // resolution builds the project's metadata even for --only-group runs — hatch-vcs would fail deriving
+  // the version from tags. The pretend version (never installed, never published) sidesteps that; and
+  // --frozen makes uv trust uv.lock as-is instead of re-resolving.
   buildCommand:
-    'export PATH="$HOME/.local/bin:$PATH" && uv run --only-group docs python docs/gen_ref_pages.py && uv run --only-group docs zensical build --clean --strict',
+    'export PATH="$HOME/.local/bin:$PATH" SETUPTOOLS_SCM_PRETEND_VERSION_FOR_INTERLENS=0.0.0 && uv run --frozen --only-group docs python docs/gen_ref_pages.py && uv run --frozen --only-group docs zensical build --clean --strict',
 
   // The site lives at docs.sidmb.com/interlens (site_url in mkdocs.yml — the single source of truth for
   // the published URL): mkdocs.yml sets `site_dir: site/interlens`, so serving `site/` at the domain root
