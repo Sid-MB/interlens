@@ -34,7 +34,7 @@ site_description: A framework for scaffolding and interpreting multi-agent conve
 # Zensical derives canonical links + sitemap entries from it. The site lives under the /interlens subpath
 # of docs.sidmb.com, so site_dir nests the output accordingly (vercel.ts serves `site/` at the domain root
 # and redirects / → /interlens/).
-site_url: https://docs.sidmb.com/interlens/
+site_url: https://interlens.docs.sidmb.com/
 site_dir: site/interlens
 repo_url: https://github.com/Sid-MB/interlens
 repo_name: Sid-MB/interlens
