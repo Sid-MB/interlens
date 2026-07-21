@@ -55,7 +55,11 @@ def replay_episode(scenario: Scenario, instance: Instance, episode: dict) -> dic
 	for turn in episode["turns"]:
 		request = _match_request(scenario, state, turn)
 		scenario.apply(state, request, turn["content"])
-	return scenario.score(state)
+	outcome = scenario.score(state)
+	# the same post-scoring refinement the engine applies live (e.g. the distributed long-context
+	# truncation/capitulation outcome classes) — pure in (state, turns, outcome), so it replays exactly
+	outcome.update(scenario.classify_outcome(state, episode["turns"], outcome) or {})
+	return outcome
 
 
 def _match_request(scenario: Scenario, state: dict, turn: dict):

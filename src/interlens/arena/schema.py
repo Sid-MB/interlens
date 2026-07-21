@@ -100,6 +100,7 @@ class TurnRecord:
 	n_tokens_out: int = 0
 	n_tokens_in: int = 0
 	stop_reason: str | None = None
+	cap: int = 0            # max_tokens this turn was generated under (0 = unrecorded)
 	raw: str | None = None  # raw completion incl. reasoning, when different from content
 
 

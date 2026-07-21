@@ -40,6 +40,12 @@ api = ["anthropic>=0.112,<1", "openai>=1.40"]   # APIParticipant: anthropic (Cla
 inspect = [
     "inspect-ai>=0.3.248",
 ]
+# Instance builders for the distributed long-context scenarios (interlens.arena.scenarios.dlc.build):
+# they fetch benchmark data from the benchmarks' own HuggingFace sources at pinned revisions. Running
+# episodes on already-built instance banks needs nothing beyond the base install.
+benchmarks = [
+    "datasets>=3",
+]
 
 # Dev tooling (PEP 735 group — uv installs `dev` by default on `uv sync`, so every contributor gets
 # pytest + pre-commit without asking; activate the git hook once with `uv run pre-commit install`).

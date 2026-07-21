@@ -133,7 +133,9 @@ def arena_solver(arm: str = "team", communication: str = "messaging",
 	the priority scheduler (recorded as transcript events), with the finalizer's fenced
 	``{"answer"}``/``{"proposal"}`` JSON scored exactly as in the protocol mode. ``"round_robin"`` runs the
 	scenario's published turn protocol through the arena engine — the mode the shipped v0 transcript dataset
-	was produced under, so use it when comparing against those cells."""
+	was produced under, so use it when comparing against those cells. Scenarios with no sound messaging
+	reduction (the security dilemma) reject messaging; their tasks pin the protocol via
+	``Scenario.default_communication``."""
 
 	async def solve(state: TaskState, generate: Generate) -> TaskState:
 		scenario, instance, metadata = _instance_from_state(state)
@@ -172,6 +174,14 @@ def _run_messaging_episode(scenario, instance, cfg, loop, meter, turn_max_tokens
 	Each agent's private framing is the scenario's per-seat system prompt; the deciding seat's last fenced
 	action JSON is scored by feeding it through the scenario's own finalization path."""
 	state = scenario.make_state(instance, "team", instance.seed, cfg=cfg)
+	from ..scenario import Scenario as _ScenarioBase
+	has_hook = type(scenario).score_from_messaging is not _ScenarioBase.score_from_messaging
+	if not has_hook and scenario.name not in ("e1_negotiation", "e5_relay"):
+		raise ValueError(
+			f"scenario {scenario.name!r} does not support communication='messaging': it neither implements "
+			"score_from_messaging nor ends in a single final answer/proposal action (e.g. the security "
+			"dilemma's simultaneous payoff game has no sound messaging reduction). For the distributed "
+			"long-context scenario use its native directed-messaging arm (arm='team-msg') instead.")
 	framings = scenario.seat_framings(state)
 	seats = [spec["name"] for spec in scenario.seat_specs(state)]
 	participants = tuple(
@@ -182,6 +192,19 @@ def _run_messaging_episode(scenario, instance, cfg, loop, meter, turn_max_tokens
 	conv = Conversation(participants=participants, communication=policy,
 	                    shared_context="Work autonomously; communicate only via messages.")
 	conv.run(turns=turns)
+	texts = [(m.author, m.content) for m in conv.transcript]
+	hook_outcome = scenario.score_from_messaging(instance, texts, cfg=cfg)
+	if hook_outcome is not None:
+		episode_json = {
+			"episode_id": f"messaging-{instance.instance_id}",
+			"turns": [
+				{"seat": m.author, "round": i, "phase": "messaging", "content": m.content,
+				 "parsed_action": (m.metadata.get("comm_sends") or m.metadata.get("comm_read"))}
+				for i, m in enumerate(conv.transcript) if m.author != conv.moderator_name],
+			"comm_events": list(policy.events),
+		}
+		from ...usage import transcript_usage
+		return episode_json, hook_outcome, transcript_usage(conv.transcript)
 	# extract the deciding seat's final structured action from its own turns (latest wins)
 	decider = seats[0] if scenario.name == "e5_relay" else seats[state["inst"].payload.get("proposer", 0)]
 	final_action = None

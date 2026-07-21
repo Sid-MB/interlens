@@ -51,7 +51,8 @@ class Scenario(ABC):
 	default is the async messaging system (``send_message``/``read_message`` mailboxes with pings and the
 	priority scheduler — see ``interlens.communication.MessagingPolicy``); the round-robin published protocol
 	and direct piping remain available as explicit configs (``communication="round_robin"``, or a
-	``DirectPipingPolicy`` on a raw ``Conversation``). Note the shipped v0 transcript dataset was produced
+	``DirectPipingPolicy`` on a raw ``Conversation``). Scenarios with no sound messaging reduction override
+	this (the security dilemma pins ``"round_robin"``). Note the shipped v0 transcript dataset was produced
 	under the round-robin protocol (recorded per episode in ``gen_config``), so use ``round_robin`` when
 	comparing against those cells."""
 
@@ -94,7 +95,23 @@ class Scenario(ABC):
 		"""Score a provisional final action with the normal scorer. Default: not scored."""
 		return None
 
+	# ------------------------------------------------------------ messaging --
+	def score_from_messaging(self, instance, transcript: list[tuple[str, str]],
+	                         cfg: dict | None = None) -> dict | None:
+		"""Score a free-form messaging-mode episode (the Inspect adapter's ``communication="messaging"``):
+		``transcript`` is ``[(seat, text), ...]`` in send order. Return the outcome dict, or ``None`` when the
+		scenario has no messaging reduction — the adapter then falls back to the final-answer/proposal
+		reduction for scenarios whose protocol ends in one structured action, and raises otherwise."""
+		return None
+
 	# -------------------------------------------------------------- scoring --
+	def classify_outcome(self, state: dict, turns: list, outcome: dict) -> dict:
+		"""Post-scoring outcome refinement, merged into the episode's outcome by the engine AND by replay.
+		Must be pure in ``(state, turns, outcome)``. ``turns`` items are ``TurnRecord``s live and plain dicts in
+		replay — read fields defensively. Default: no refinement. The distributed long-context scenario uses
+		this for its ``truncated_at_budget`` / ``capitulated`` outcome classes."""
+		return {}
+
 	@abstractmethod
 	def score(self, state: dict) -> dict:
 		"""Final outcome dict. Must include ``primary`` (float, higher is better) and ``success`` (bool) where

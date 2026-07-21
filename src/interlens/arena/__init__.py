@@ -43,6 +43,7 @@ from .schema import (Episode, EpisodeStore, Instance, PERSONAS, SeatRequest, Tur
                      load_instances, save_instances)
 from .scenario import Scenario
 from .engine import BatchedEpisodePool, EpisodePool, EpisodeRun
+from .ratchet import DifficultyRatchet, found_level
 from .replay import ReplayError, replay_episode, rescore
 from .gates import check_reasoning_leak, check_template_fidelity, scenario_smoke_views
 from .views import build_view, extract_json, strip_think
@@ -60,6 +61,8 @@ __all__ = [
 	"EpisodePool",
 	"BatchedEpisodePool",
 	"EpisodeRun",
+	"DifficultyRatchet",
+	"found_level",
 	"replay_episode",
 	"rescore",
 	"ReplayError",
