@@ -34,7 +34,8 @@ from inspect_ai import Task, task
 from inspect_ai.dataset import MemoryDataset, Sample
 
 from ..scenario import Scenario
-from ..scenarios import InfoRelay, Negotiation
+from ..scenarios import CodingCollab, InfoRelay, Negotiation, SecurityDilemma, dlc_scenario
+from ..schema import Instance
 from .adapter import arena_solver, scenario_scorer
 
 
@@ -72,6 +73,79 @@ def info_relay(level: int = 0, n_instances: int = 10, seed0: int = 1, arm: str =
 		                               seed0=seed0, cfg=cfg)),
 		solver=arena_solver(arm=arm, communication=communication, turn_max_tokens=turn_max_tokens,
 		                    messaging_turns=messaging_turns),
+		scorer=scenario_scorer(),
+		token_limit=token_limit,
+	)
+
+
+@task
+def security_dilemma(level: int = 0, n_instances: int = 10, seed0: int = 1,
+                     turn_max_tokens: int = 2048, token_limit: int | None = None) -> Task:
+	"""The repeated security dilemma as an Inspect task: 12 rounds of message + simultaneous
+	build/deescalate/attack waves with noisy intelligence; ``level`` sets the first-strike bonus and the
+	observation-noise probability. Team arm only (the game is irreducibly 2-party), round-robin protocol only
+	(a simultaneous-move payoff game has no sound free-messaging reduction)."""
+	return Task(
+		dataset=MemoryDataset(_samples(SecurityDilemma(), level=level, n_instances=n_instances,
+		                               seed0=seed0, cfg={"cell": "inspect"})),
+		solver=arena_solver(arm="team", turn_max_tokens=turn_max_tokens),
+		scorer=scenario_scorer(),
+		token_limit=token_limit,
+	)
+
+
+@task
+def coding_collab(level: int = 0, n_instances: int = 10, seed0: int = 1, arm: str = "team",
+                  communication: str = "round_robin", turn_max_tokens: int = 2048,
+                  token_limit: int | None = None, messaging_turns: int = 24) -> Task:
+	"""The coding-collaboration scenario as an Inspect task: 3 seats jointly write one Python module against a
+	public pytest suite while each holds private style constraints; ``level`` sets how many constraints are
+	dealt. Scoring runs the sandboxed test suite + AST constraint checks. ``communication="messaging"`` runs
+	the autonomous mailbox variant; the latest complete ```python fence in the sends is the submission."""
+	return Task(
+		dataset=MemoryDataset(_samples(CodingCollab(), level=level, n_instances=n_instances,
+		                               seed0=seed0, cfg={"cell": "inspect"})),
+		solver=arena_solver(arm=arm, communication=communication, turn_max_tokens=turn_max_tokens,
+		                    messaging_turns=messaging_turns),
+		scorer=scenario_scorer(),
+		token_limit=token_limit,
+	)
+
+
+@task
+def distributed_longcontext(instances: str, task_name: str | None = None, n_instances: int | None = None,
+                            arm: str = "team", communication: str = "round_robin",
+                            token_limit: int | None = None) -> Task:
+	"""A distributed long-context task as an Inspect task. Instances embed megabytes of context and are built
+	offline (``interlens.arena.scenarios.dlc.build``); pass the saved bank as ``-T instances=/path/to/
+	dlc_sniah_L0.json``. ``task_name`` overrides the task inferred from the bank's first instance.
+	``communication="messaging"`` runs the scenario's NATIVE directed-messaging arm (``team-msg`` — each
+	non-finalizer turn routes private fenced-JSON messages), not the generic mailbox variant, so episodes stay
+	replayable. Per-turn caps come from the task adapter (they are part of the task definition)."""
+	import json as _json
+	from pathlib import Path as _Path
+
+	raw = _json.loads(_Path(instances).read_text())
+	if n_instances is not None:
+		raw = raw[:n_instances]
+	bank = [Instance.from_json(d) for d in raw]
+	scenario = dlc_scenario(task_name or bank[0].payload["task"], name=bank[0].scenario)
+	if communication == "messaging":
+		arm, communication = "team-msg", "round_robin"
+	samples = []
+	for instance in bank:
+		state = scenario.make_state(instance, "team", instance.seed)
+		samples.append(Sample(
+			id=instance.instance_id,
+			input=(f"{scenario.name} instance {instance.instance_id} (seed {instance.seed}); "
+			       f"the arena solver plays every seat."),
+			target=str(instance.solution),
+			metadata={"instance": instance.to_json(), "cfg": {"cell": "inspect"},
+			          "seat_framings": scenario.seat_framings(state)},
+		))
+	return Task(
+		dataset=MemoryDataset(samples),
+		solver=arena_solver(arm=arm, communication=communication),
 		scorer=scenario_scorer(),
 		token_limit=token_limit,
 	)

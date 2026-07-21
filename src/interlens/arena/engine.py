@@ -145,7 +145,7 @@ class EpisodeRun:
 				cap = min(cap, max(1, budget_cap))
 		return cap
 
-	def record_turn(self, request: SeatRequest, message: Message) -> dict | None:
+	def record_turn(self, request: SeatRequest, message: Message, cap: int = 0) -> dict | None:
 		"""Commit one generated turn: strip any leaked reasoning, apply it to the scenario state, log the
 		``TurnRecord``, accumulate usage, and check the budget. Returns the scenario's retry directive, if any."""
 		raw = message.metadata.get("raw_completion") or message.content
@@ -165,6 +165,7 @@ class EpisodeRun:
 			content=text, parsed_action=parsed, parse_ok=ok,
 			n_tokens_out=tokens_out, n_tokens_in=tokens_in,
 			stop_reason=message.metadata.get("stop_reason"),
+			cap=cap,
 			raw=(raw if raw != text or think else None),
 		))
 		self._turn_idx += 1
@@ -223,6 +224,10 @@ class EpisodeRun:
 			self.ep.outcome = self.scenario.score(self.state)
 			self.ep.rounds_used = self.scenario.rounds_used(self.state)
 			self.ep.status = "done"
+			# scenario-defined outcome refinement (e.g. the distributed long-context truncation/capitulation
+			# classes) — pure in (state, turns, outcome), so replay recomputes it identically
+			self.ep.outcome.update(
+				self.scenario.classify_outcome(self.state, self.ep.turns, self.ep.outcome) or {})
 		self.ep.ended_at = time.time()
 		self.save()
 		return self.ep
@@ -274,12 +279,14 @@ class EpisodePool:
 						if not requests:
 							break
 						for request in requests:
-							message = await self._generate(participant, request, run.turn_cap(request))
-							directive = run.record_turn(request, message)
+							cap = run.turn_cap(request)
+							message = await self._generate(participant, request, cap)
+							directive = run.record_turn(request, message, cap=cap)
 							while directive and "retry" in directive and run.allow_retry(request):
 								retry = run.retry_request(request, message.content, directive["retry"])
-								message = await self._generate(participant, retry, run.turn_cap(retry))
-								directive = run.record_turn(retry, message)
+								cap = run.turn_cap(retry)
+								message = await self._generate(participant, retry, cap)
+								directive = run.record_turn(retry, message, cap=cap)
 						# forked provisional elicitations (state is never mutated by their responses)
 						for provisional in scenario.provisional_due(run.state):
 							provisional.episode_id = run.ep.episode_id
@@ -343,14 +350,16 @@ class BatchedEpisodePool:
 				by_participant.setdefault(id(run.participant), []).append((run, request))
 			for pairs in by_participant.values():
 				participant = pairs[0][0].participant
-				messages = self._generate_batch(participant, [(r.turn_cap(q), q) for r, q in pairs])
-				for (run, request), message in zip(pairs, messages):
+				capped = [(r.turn_cap(q), q) for r, q in pairs]
+				messages = self._generate_batch(participant, capped)
+				for (run, request), (cap, _q), message in zip(pairs, capped, messages):
 					try:
-						directive = run.record_turn(request, message)
+						directive = run.record_turn(request, message, cap=cap)
 						if directive and "retry" in directive and run.allow_retry(request):
 							retry = run.retry_request(request, message.content, directive["retry"])
-							retry_message = self._generate_batch(participant, [(run.turn_cap(retry), retry)])[0]
-							run.record_turn(retry, retry_message)
+							retry_cap = run.turn_cap(retry)
+							retry_message = self._generate_batch(participant, [(retry_cap, retry)])[0]
+							run.record_turn(retry, retry_message, cap=retry_cap)
 					except Exception:
 						run.finalize(error=traceback.format_exc()[-2000:])
 						live.pop(run.ep.episode_id, None)

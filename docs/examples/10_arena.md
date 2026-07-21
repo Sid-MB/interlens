@@ -1,6 +1,6 @@
 # 10 · Arena: scoreable multi-agent evaluations
 
-`interlens.arena` turns the conversation harness into an **evaluation harness**: a `Scenario` defines a game — solver-verified instance generation, per-seat private framing, a turn protocol with structured JSON actions, early termination, exact scoring — and the engine plays it through any `Participant`, persisting every episode to one JSON schema. Two scenarios ship: a multi-issue **negotiation** with secret score sheets, and a wrong-shard **info relay** (an epistemic team task with a confidently-wrong agent). Both come from the collaboration-arena research program, and stored episodes from those experiments re-score exactly under this package.
+`interlens.arena` turns the conversation harness into an **evaluation harness**: a `Scenario` defines a game — solver-verified instance generation, per-seat private framing, a turn protocol with structured JSON actions, early termination, exact scoring — and the engine plays it through any `Participant`, persisting every episode to one JSON schema. Five scenario families ship: a multi-issue **negotiation** with secret score sheets, a wrong-shard **info relay** (an epistemic team task with a confidently-wrong agent), a repeated **security dilemma** (build/deescalate/attack with an absorbing war spiral and noisy intelligence), a **coding collaboration** with private mechanically-checkable constraints (sandboxed pytest scoring), and a **distributed long-context** family (one long-context benchmark task partitioned across 4 seats). All come from the collaboration-arena research program, and stored episodes from those experiments re-score exactly under this package.
 
 ## Run an episode
 
@@ -59,6 +59,43 @@ assert check_template_fidelity(tokenizer, views, enable_thinking=True)["ok"]   #
 assert check_reasoning_leak(episode)["ok"]   # no <think> content leaked into other seats' views
 ```
 
+## The second scenario wave
+
+### Security dilemma (`SecurityDilemma`, no solo arm)
+
+Two seats play 12 rounds of message-then-simultaneous-action (`build` / `deescalate` / `attack`). Once BOTH attack in the same round, war spirals: every remaining round is forced mutual attack. Intelligence is noisy — with a level-dependent probability, a seat's *report* of the opponent's action is flipped; true actions always drive payoffs, and each seat sees only its own report and payoffs, so misreports are seeded, private, and replayable. The difficulty ladder raises the first-strike bonus and the noise. `primary` = joint payoff / 96 (mutual deescalation for 12 rounds); `success` = no spiral.
+
+### Coding collaboration (`CodingCollab`)
+
+Three seats jointly write ONE Python module against a public spec + pytest suite; each seat holds private style constraints (AST-checkable: no loops, full type hints, line caps, ...) it must get honored WITHOUT revealing verbatim. The latest complete ```` ```python ```` fence anywhere is the working draft; per-turn `{"constraints_ok": true|false}` declarations drive early consensus. Scoring is exact and sandboxed: `primary` = (tests passing) × (constraints held), with the suite run in an isolated subprocess (`sys.executable -I`, fresh tmpdir, 30 s timeout). The generator verifies every dealt constraint set against a bundled reference solution, so `primary == 1.0` is always achievable.
+
+### Distributed long-context (`DistributedLongContext` + task adapters)
+
+One long-context task is partitioned into 4 contiguous shards (asserted: their concatenation reproduces the original context exactly); each seat privately holds one shard, and the finalizer (seat 0, last each round) submits the answer. Three arms: `team` (round-robin broadcast), `team-msg` (directed messaging — each non-finalizer turn is only a fenced `{"messages": [...]}` routing object; a seat sees only mail addressed to it — the routing is part of the state machine, so episodes replay), and `solo` (the full concatenated context in one seat).
+
+Task adapters (`interlens.arena.scenarios.dlc`) port four benchmarks: **S-NIAH** (RULER-style needle in a haystack, exact match), **OOLONG-Pairs** (pairwise aggregation, F1 over the emitted pair set), **LongBench-v2 CodeQA** (repo-understanding multiple choice), and **BrowseComp-Plus** (multi-hop QA; two-phase — the scenario records the answer un-judged, and the official grader template ships for a post-hoc LLM-judge pass). Benchmark data does **not** ship in the repo: `interlens.arena.scenarios.dlc.build` fetches from each benchmark's own source at a pinned revision (`pip install interlens[benchmarks]`) and writes a `load_instances`-compatible bank; instances embed megabytes of context, so they are built offline, once.
+
+**Outcome classes.** Long-context episodes fail in ways a bare score conflates, so two classes are first-class outcome fields, applied by the engine and recomputed identically in replay (`Scenario.classify_outcome`):
+
+- `truncated_at_budget` — some committed turn stopped at its `max_tokens` cap. The episode ran out of room; exclude it from success/failure analysis rather than scoring the accident.
+- `capitulated` (OOLONG-Pairs) — NOT truncated, but the answer enumerated <50% of the gold pairs: the model *declined* the enumeration. The classification carries evidence — how many relevant user IDs the team had actually surfaced in discussion vs how many pairs it emitted.
+- otherwise `answered` / `no_answer`.
+
+## Adaptive difficulty ratchet
+
+A ceiling-saturated cell measures nothing. `DifficultyRatchet` drives any scenario with a difficulty ladder to its *found level* — the first level whose probe mean drops below 75% of ceiling — then measures there and at the neighbor level, then runs paired solo baselines on the SAME instances under a `TokenBudget` equal to the median team spend (matched compute):
+
+```python
+from interlens.arena import DifficultyRatchet, EpisodePool, EpisodeStore
+
+ratchet = DifficultyRatchet(scenario, player, EpisodePool(EpisodeStore("episodes/"), meter=meter),
+                            instances_dir="instances/", state_path="ratchet.json",
+                            speculative=True)   # probe the first 3 levels concurrently
+state = asyncio.run(ratchet.run())              # {"found": ..., "probe_means": ..., ...}
+```
+
+State persists after every batch: a restarted ratchet resumes where it stopped and never duplicates a completed episode (instances are deterministic per level and skipped by id, so team/solo pairings stay intact). `speculative=True` probes the first wave of levels concurrently — faster wall-clock at the cost of probing levels a sequential climb might have skipped; the found decision is the same pure function (`found_level`) either way.
+
 ## Replay and re-scoring
 
 Scenarios are pure state machines, so a stored episode replays exactly:
@@ -84,7 +121,12 @@ With the extra installed (`pip install interlens[inspect]`), both scenarios run 
 inspect eval interlens.arena.inspect/info_relay --model anthropic/claude-sonnet-5 -T level=2
 inspect eval interlens.arena.inspect/negotiation --model openai/gpt-5 -T n_parties=8 -T arm=solo
 inspect eval interlens.arena.inspect/info_relay -T communication=messaging --model anthropic/claude-sonnet-5
+inspect eval interlens.arena.inspect/security_dilemma --model anthropic/claude-sonnet-5 -T level=2
+inspect eval interlens.arena.inspect/coding_collab --model openai/gpt-5 -T level=3
+inspect eval interlens.arena.inspect/distributed_longcontext -T instances=banks/dlc_sniah_L0.json --model anthropic/claude-sonnet-5
 ```
+
+Messaging-mode notes for the new families: `coding_collab -T communication=messaging` scores the latest complete ```` ```python ```` fence in the agents' mail as the submission (the same working-draft rule as the protocol); `distributed_longcontext -T communication=messaging` maps to the scenario's NATIVE directed-messaging arm (`team-msg`), so those episodes stay replayable; `security_dilemma` rejects messaging mode — a simultaneous-move payoff game has no sound free-messaging reduction.
 
 Instance banks become samples (instance JSON + per-seat framings in sample metadata), the arena engine runs inside a fully-async solver (Inspect's `--max-samples` runs many episodes concurrently), the exact scenario scorers register as Inspect scorers (`success` accuracy + mean `primary`), and each seat turn is mirrored into the sample's message list so `inspect view` renders the multi-agent flow with seat attribution, structured actions as transcript events, and the outcome in the score view. Inspect's native `token_limit` carries episode budgets; the adapter adds per-sample dollar cost (`metadata["cost_usd"]`) computed from the same pricing as `UsageMeter`. Without the extra, `import interlens.arena.inspect` fails with a clear install hint — the base package never requires inspect-ai.
 
