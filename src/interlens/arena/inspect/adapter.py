@@ -33,8 +33,8 @@ import asyncio
 import json
 
 from inspect_ai.log import transcript
-from inspect_ai.model import (ChatMessageAssistant, ChatMessageSystem, ChatMessageUser, GenerateConfig,
-                              get_model)
+from inspect_ai.model import (ChatMessageAssistant, ChatMessageSystem, ChatMessageUser, ContentReasoning,
+                              ContentText, GenerateConfig, get_model)
 from inspect_ai.scorer import Score, Target, accuracy, mean, scorer, stderr
 from inspect_ai.solver import Generate, TaskState, solver
 
@@ -97,6 +97,17 @@ class InspectModelParticipant(Participant):
 		stop_reason = getattr(output, "stop_reason", None)
 		metadata = {"model": self.model_id, "n_tokens": tokens_out, "n_tokens_in": tokens_in,
 		            "stop_reason": stop_reason}
+		# Reasoning record: Inspect surfaces provider reasoning as ContentReasoning blocks on the message.
+		content = getattr(output.message, "content", None)
+		if isinstance(content, list):
+			blocks = [c for c in content if getattr(c, "type", None) == "reasoning"]
+			if blocks:
+				text = "\n\n".join(b.reasoning for b in blocks if getattr(b, "reasoning", None)) or None
+				redacted = any(getattr(b, "redacted", False) for b in blocks)
+				summarized = any(getattr(b, "summary", None) for b in blocks)
+				metadata["reasoning"] = text
+				metadata["reasoning_provenance"] = (
+					"withheld_or_summarized" if (redacted or summarized or text is None) else "full")
 		if stop_reason in ("refusal", "content_filter"):
 			metadata["refusal"] = True
 		if self.meter is not None:
@@ -112,12 +123,26 @@ def _instance_from_state(state: TaskState) -> tuple:
 	return scenario, instance, metadata
 
 
+def _turn_message(turn: dict) -> ChatMessageAssistant:
+	"""One episode turn as a seat-attributed assistant message. A turn carrying a reasoning record renders it
+	as a first-class ``ContentReasoning`` block ahead of the text, so ``inspect view`` shows the reasoning as
+	part of the model event (redacted=True marks a withheld/summarized record)."""
+	text = f"[{turn['seat']} — round {turn['round']}, {turn['phase']}]\n{turn['content']}"
+	reasoning = turn.get("reasoning")
+	if reasoning:
+		return ChatMessageAssistant(content=[
+			ContentReasoning(reasoning=reasoning,
+			                 redacted=turn.get("reasoning_provenance") == "withheld_or_summarized"),
+			ContentText(text=text)])
+	return ChatMessageAssistant(content=text)
+
+
 def _record_turns(state: TaskState, episode_json: dict) -> None:
 	"""Mirror the episode into the sample's message list so ``inspect view`` renders the multi-agent flow:
-	each turn as a seat-attributed assistant message, structured actions as transcript info events."""
+	each turn as a seat-attributed assistant message (reasoning as a content block when recorded), structured
+	actions as transcript info events."""
 	for turn in episode_json["turns"]:
-		state.messages.append(ChatMessageAssistant(
-			content=f"[{turn['seat']} — round {turn['round']}, {turn['phase']}]\n{turn['content']}"))
+		state.messages.append(_turn_message(turn))
 		if turn.get("parsed_action"):
 			transcript().info({"seat": turn["seat"], "round": turn["round"], "phase": turn["phase"],
 			                   "action": turn["parsed_action"]}, source="arena.action")
@@ -199,7 +224,9 @@ def _run_messaging_episode(scenario, instance, cfg, loop, meter, turn_max_tokens
 			"episode_id": f"messaging-{instance.instance_id}",
 			"turns": [
 				{"seat": m.author, "round": i, "phase": "messaging", "content": m.content,
-				 "parsed_action": (m.metadata.get("comm_sends") or m.metadata.get("comm_read"))}
+				 "parsed_action": (m.metadata.get("comm_sends") or m.metadata.get("comm_read")),
+				 "reasoning": m.metadata.get("reasoning"),
+				 "reasoning_provenance": m.metadata.get("reasoning_provenance", "none")}
 				for i, m in enumerate(conv.transcript) if m.author != conv.moderator_name],
 			"comm_events": list(policy.events),
 		}

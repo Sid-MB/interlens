@@ -102,6 +102,13 @@ class TurnRecord:
 	stop_reason: str | None = None
 	cap: int = 0            # max_tokens this turn was generated under (0 = unrecorded)
 	raw: str | None = None  # raw completion incl. reasoning, when different from content
+	# The turn's reasoning record, first-class: whatever reasoning the provider returned (Anthropic thinking
+	# blocks incl. summarized ones; local <think> streams), with provenance marking completeness —
+	# "none" (no reasoning produced) | "withheld_or_summarized" (produced, but the provider returned a
+	# summary/redaction or nothing readable) | "full" (complete stream recorded verbatim). Flows into the
+	# episode JSON via to_json() and from there into any exported dataset rows built from episodes.
+	reasoning: str | None = None
+	reasoning_provenance: str = "none"
 
 
 @dataclass

@@ -25,10 +25,26 @@ import threading
 import time
 
 
+# Per-turn reasoning provenance marker values (``Completion.reasoning_provenance``):
+#   "none"                    — the provider produced no reasoning for this turn
+#   "withheld_or_summarized"  — the model reasoned, but the provider returned a summary, redacted blocks,
+#                               or nothing readable (Anthropic summarized/redacted thinking; OpenAI
+#                               reasoning models, which count reasoning tokens but withhold the stream)
+#   "full"                    — the complete reasoning stream is recorded verbatim (raw reasoning fields
+#                               on OpenAI-compatible providers; local-model ``<think>`` capture)
+REASONING_NONE = "none"
+REASONING_WITHHELD = "withheld_or_summarized"
+REASONING_FULL = "full"
+
+
 class Completion(str):
 	"""A completion string that also carries the call's **usage telemetry** as attributes: ``input_tokens`` /
 	``output_tokens`` (0 when the provider reported none), ``stop_reason`` (the provider's native stop/finish
-	reason, ``None`` when unreported), and ``batched`` (served via a provider batch API at discount pricing).
+	reason, ``None`` when unreported), ``batched`` (served via a provider batch API at discount pricing), and
+	the call's **reasoning record**: ``reasoning`` (whatever reasoning text the provider returned — Anthropic
+	thinking blocks including summarized ones, OpenAI-compatible ``reasoning``/``reasoning_content`` fields —
+	or ``None``) with ``reasoning_provenance`` marking how complete that record is (see the marker constants
+	above).
 
 	Subclassing ``str`` keeps the documented client contract — ``callable(...) -> str`` — fully intact for
 	existing callers and injected test clients, while letting ``APIParticipant`` read the telemetry off the
@@ -38,15 +54,56 @@ class Completion(str):
 	output_tokens: int
 	stop_reason: str | None
 	batched: bool
+	reasoning: str | None
+	reasoning_provenance: str
 
 	def __new__(cls, text: str, *, input_tokens: int = 0, output_tokens: int = 0,
-	            stop_reason: str | None = None, batched: bool = False) -> "Completion":
+	            stop_reason: str | None = None, batched: bool = False,
+	            reasoning: str | None = None, reasoning_provenance: str = REASONING_NONE) -> "Completion":
 		self = super().__new__(cls, text)
 		self.input_tokens = input_tokens
 		self.output_tokens = output_tokens
 		self.stop_reason = stop_reason
 		self.batched = batched
+		self.reasoning = reasoning
+		self.reasoning_provenance = reasoning_provenance
 		return self
+
+
+def anthropic_reasoning(content_blocks) -> tuple[str | None, str]:
+	"""Extract the reasoning record from an Anthropic ``content`` block list: ``(reasoning_text, provenance)``.
+
+	``thinking`` blocks are persisted verbatim as returned — but current Claude models return **summarized**
+	thinking over the API, and ``redacted_thinking`` blocks carry no readable text at all, so any
+	thinking-bearing response is marked ``withheld_or_summarized`` rather than ``full``: the model's actual
+	reasoning stream is longer than what the provider hands back. No thinking blocks → ``none``."""
+	thinking = [getattr(b, "thinking", "") for b in content_blocks
+	            if getattr(b, "type", None) == "thinking"]
+	redacted = any(getattr(b, "type", None) == "redacted_thinking" for b in content_blocks)
+	if not thinking and not redacted:
+		return None, REASONING_NONE
+	text = "\n\n".join(t for t in thinking if t) or None
+	return text, REASONING_WITHHELD
+
+
+def openai_reasoning(message, usage) -> tuple[str | None, str]:
+	"""Extract the reasoning record from an OpenAI-schema ``choices[0].message`` (+ ``usage``):
+	``(reasoning_text, provenance)``. Works with SDK objects and plain dicts (the batch-API path).
+
+	OpenRouter/DeepSeek-style ``reasoning`` / ``reasoning_content`` fields carry the model's raw reasoning
+	stream → ``full``. OpenAI's own reasoning models withhold the stream but count it in
+	``usage.completion_tokens_details.reasoning_tokens`` → ``withheld_or_summarized`` with no text."""
+	get = message.get if isinstance(message, dict) else lambda k, d=None: getattr(message, k, d)
+	text = get("reasoning") or get("reasoning_content") or None
+	if isinstance(text, str) and text.strip():
+		return text, REASONING_FULL
+	details = (usage.get("completion_tokens_details") if isinstance(usage, dict)
+	           else getattr(usage, "completion_tokens_details", None)) if usage is not None else None
+	rtok = (details.get("reasoning_tokens") if isinstance(details, dict)
+	        else getattr(details, "reasoning_tokens", 0)) if details is not None else 0
+	if rtok:
+		return None, REASONING_WITHHELD
+	return None, REASONING_NONE
 
 
 class _RetryingClient:
@@ -137,10 +194,12 @@ class AnthropicClient(_RetryingClient):
 		resp = self._client.messages.create(**kw)
 		text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 		usage = getattr(resp, "usage", None)
+		reasoning, provenance = anthropic_reasoning(resp.content)
 		return Completion(text,
 		                  input_tokens=getattr(usage, "input_tokens", 0) or 0,
 		                  output_tokens=getattr(usage, "output_tokens", 0) or 0,
-		                  stop_reason=getattr(resp, "stop_reason", None))
+		                  stop_reason=getattr(resp, "stop_reason", None),
+		                  reasoning=reasoning, reasoning_provenance=provenance)
 
 	def submit_batch(self, requests: list[dict], *, poll_interval: float = 30.0) -> "list[Completion]":
 		"""Anthropic **Message Batches API**: one ``messages.batches.create`` submits every request (tagged with a
@@ -163,11 +222,13 @@ class AnthropicClient(_RetryingClient):
 				raise RuntimeError(f"Anthropic batch request {entry.custom_id} did not succeed: {entry.result.type}")
 			msg = entry.result.message
 			usage = getattr(msg, "usage", None)
+			reasoning, provenance = anthropic_reasoning(msg.content)
 			texts[entry.custom_id] = Completion(
 				"".join(b.text for b in msg.content if getattr(b, "type", None) == "text"),
 				input_tokens=getattr(usage, "input_tokens", 0) or 0,
 				output_tokens=getattr(usage, "output_tokens", 0) or 0,
-				stop_reason=getattr(msg, "stop_reason", None), batched=True)
+				stop_reason=getattr(msg, "stop_reason", None), batched=True,
+				reasoning=reasoning, reasoning_provenance=provenance)
 		return [texts[f"req-{i}"] for i in range(len(requests))]
 
 
@@ -215,10 +276,12 @@ class _OpenAICompatClient(_RetryingClient):
 			model=model, messages=self._full_messages(system, messages), **kw)
 		choice = resp.choices[0]
 		usage = getattr(resp, "usage", None)
+		reasoning, provenance = openai_reasoning(choice.message, usage)
 		return Completion(choice.message.content or "",
 		                  input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
 		                  output_tokens=getattr(usage, "completion_tokens", 0) or 0,
-		                  stop_reason=getattr(choice, "finish_reason", None))
+		                  stop_reason=getattr(choice, "finish_reason", None),
+		                  reasoning=reasoning, reasoning_provenance=provenance)
 
 
 class OpenAIClient(_OpenAICompatClient):
@@ -265,11 +328,13 @@ class OpenAIClient(_OpenAICompatClient):
 			body = obj["response"]["body"]
 			choice = body["choices"][0]
 			usage = body.get("usage") or {}
+			reasoning, provenance = openai_reasoning(choice["message"], usage)
 			texts[obj["custom_id"]] = Completion(
 				choice["message"]["content"] or "",
 				input_tokens=usage.get("prompt_tokens", 0) or 0,
 				output_tokens=usage.get("completion_tokens", 0) or 0,
-				stop_reason=choice.get("finish_reason"), batched=True)
+				stop_reason=choice.get("finish_reason"), batched=True,
+				reasoning=reasoning, reasoning_provenance=provenance)
 		return [texts[f"req-{i}"] for i in range(len(requests))]
 
 

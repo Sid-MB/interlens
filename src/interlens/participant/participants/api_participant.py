@@ -204,6 +204,12 @@ class APIParticipant(Functional, Participant):
 		refusal = stop_reason in ("refusal", "content_filter")
 		metadata = {"provider": self.provider, "model": self.model_id,
 		            "n_tokens": tokens_out, "n_tokens_in": tokens_in, "stop_reason": stop_reason}
+		# The turn's reasoning record (see api_client marker constants): persisted whenever the provider
+		# produced any, so downstream turn records carry reasoning + its provenance first-class.
+		provenance = getattr(completion, "reasoning_provenance", None)
+		if provenance and provenance != "none":
+			metadata["reasoning"] = getattr(completion, "reasoning", None)
+			metadata["reasoning_provenance"] = provenance
 		if refusal:
 			metadata["refusal"] = True
 		if self.meter is not None:

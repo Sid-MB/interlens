@@ -96,3 +96,28 @@ def test_negotiation_task_builds_both_generators():
 	task = negotiation(n_instances=2, n_parties=3)
 	assert len(task.dataset) == 2
 	assert task.dataset[0].metadata["instance"]["payload"]["n_parties"] == 3
+
+
+def test_turn_reasoning_renders_as_content_block():
+	"""A turn carrying a reasoning record surfaces it as a first-class ContentReasoning block on the
+	assistant message (the model event inspect view renders), redacted=True when the provider withheld
+	or summarized the stream."""
+	from inspect_ai.model import ContentReasoning, ContentText
+
+	from interlens.arena.inspect.adapter import _turn_message
+
+	turn = {"seat": "Avery", "round": 1, "phase": "discuss", "content": "I propose 4.",
+	        "reasoning": "summarized thoughts", "reasoning_provenance": "withheld_or_summarized"}
+	msg = _turn_message(turn)
+	assert isinstance(msg.content, list)
+	reasoning = [c for c in msg.content if isinstance(c, ContentReasoning)]
+	text = [c for c in msg.content if isinstance(c, ContentText)]
+	assert reasoning and reasoning[0].reasoning == "summarized thoughts" and reasoning[0].redacted
+	assert text and "I propose 4." in text[0].text
+
+	full = _turn_message({**turn, "reasoning_provenance": "full"})
+	assert not [c for c in full.content if isinstance(c, ContentReasoning)][0].redacted
+
+	plain = _turn_message({"seat": "Avery", "round": 1, "phase": "discuss", "content": "hi",
+	                       "reasoning": None, "reasoning_provenance": "none"})
+	assert isinstance(plain.content, str)

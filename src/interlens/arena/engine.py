@@ -160,6 +160,10 @@ class EpisodeRun:
 		parsed, ok = self.state.get("_last_parse", (None, False))
 		tokens_out = int(message.metadata.get("n_tokens") or 0)
 		tokens_in = int(message.metadata.get("n_tokens_in") or 0)
+		# The turn's reasoning record: hosted providers set reasoning/reasoning_provenance in metadata; a
+		# locally parsed/stripped <think> stream is complete by construction ("full").
+		reasoning = message.metadata.get("reasoning") or think or None
+		provenance = message.metadata.get("reasoning_provenance") or ("full" if reasoning else "none")
 		self.ep.turns.append(TurnRecord(
 			idx=self._turn_idx, round=request.round, phase=request.phase, seat=request.seat,
 			content=text, parsed_action=parsed, parse_ok=ok,
@@ -167,6 +171,7 @@ class EpisodeRun:
 			stop_reason=message.metadata.get("stop_reason"),
 			cap=cap,
 			raw=(raw if raw != text or think else None),
+			reasoning=reasoning, reasoning_provenance=provenance,
 		))
 		self._turn_idx += 1
 		self.ep.tokens_in += tokens_in

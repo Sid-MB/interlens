@@ -357,6 +357,10 @@ class ModelParticipant(Functional, Participant):
 
 		content, parsed_think = self.split_reasoning(result.raw)
 		metadata = {"raw_completion": result.raw, "parsed_think": parsed_think, "n_tokens": result.n_tokens}
+		if parsed_think:
+			# a locally captured <think> stream is the model's complete reasoning, recorded verbatim
+			metadata["reasoning"] = parsed_think
+			metadata["reasoning_provenance"] = "full"
 		if steering is not None:
 			metadata["steering"] = steering.summary()
 		if return_logprobs:
@@ -431,10 +435,14 @@ class ModelParticipant(Functional, Participant):
 			keep = row[row != pad_id] if pad_id is not None else row
 			raw = self.tokenizer.decode(keep, skip_special_tokens=True)
 			content, parsed_think = self.split_reasoning(raw)
-			messages.append(Message(author=self.name, content=content, metadata={
+			metadata = {
 				"raw_completion": raw, "parsed_think": parsed_think, "n_tokens": int(keep.shape[0]),
 				"batched": True, "shared_prefill": shared_prefill,
-			}))
+			}
+			if parsed_think:
+				metadata["reasoning"] = parsed_think        # complete local <think> stream, verbatim
+				metadata["reasoning_provenance"] = "full"
+			messages.append(Message(author=self.name, content=content, metadata=metadata))
 		return messages
 
 	def _run_model(self, messages, schemas, steering, patch, return_logprobs, max_new_tokens=None):
