@@ -58,18 +58,21 @@ def _samples(scenario: Scenario, *, level: int, n_instances: int, seed0: int, cf
 
 @task
 def info_relay(level: int = 0, n_instances: int = 10, seed0: int = 1, arm: str = "team",
-               communication: str = "round_robin", n_rounds: int | None = None,
+               communication: str | None = None, n_rounds: int | None = None,
                framing: str | None = None, honest_persona: str | None = None,
                wrong_persona: str | None = None, turn_max_tokens: int = 2048,
                token_limit: int | None = None, messaging_turns: int = 24) -> Task:
 	"""The info-relay scenario (wrong-shard epistemics) as an Inspect task. ``communication`` selects the
-	published round-robin protocol or the autonomous messaging variant; the situational knobs mirror the
-	scenario's ``cfg``. ``token_limit`` (per sample) is Inspect's native enforcement of an episode budget."""
+	autonomous messaging variant (the scenario default) or the published round-robin protocol (the mode the
+	shipped v0 dataset used); the situational knobs mirror the scenario's ``cfg``. ``token_limit`` (per
+	sample) is Inspect's native enforcement of an episode budget."""
+	scenario = InfoRelay()
+	communication = communication or scenario.default_communication
 	cfg = {k: v for k, v in (("cell", "inspect"), ("n_rounds", n_rounds), ("framing", framing),
 	                         ("honest_persona", honest_persona), ("wrong_persona", wrong_persona))
 	       if v is not None}
 	return Task(
-		dataset=MemoryDataset(_samples(InfoRelay(), level=level, n_instances=n_instances,
+		dataset=MemoryDataset(_samples(scenario, level=level, n_instances=n_instances,
 		                               seed0=seed0, cfg=cfg)),
 		solver=arena_solver(arm=arm, communication=communication, turn_max_tokens=turn_max_tokens,
 		                    messaging_turns=messaging_turns),
@@ -85,10 +88,12 @@ def security_dilemma(level: int = 0, n_instances: int = 10, seed0: int = 1,
 	build/deescalate/attack waves with noisy intelligence; ``level`` sets the first-strike bonus and the
 	observation-noise probability. Team arm only (the game is irreducibly 2-party), round-robin protocol only
 	(a simultaneous-move payoff game has no sound free-messaging reduction)."""
+	scenario = SecurityDilemma()
 	return Task(
-		dataset=MemoryDataset(_samples(SecurityDilemma(), level=level, n_instances=n_instances,
+		dataset=MemoryDataset(_samples(scenario, level=level, n_instances=n_instances,
 		                               seed0=seed0, cfg={"cell": "inspect"})),
-		solver=arena_solver(arm="team", turn_max_tokens=turn_max_tokens),
+		solver=arena_solver(arm="team", communication=scenario.default_communication,
+		                    turn_max_tokens=turn_max_tokens),
 		scorer=scenario_scorer(),
 		token_limit=token_limit,
 	)
@@ -96,14 +101,17 @@ def security_dilemma(level: int = 0, n_instances: int = 10, seed0: int = 1,
 
 @task
 def coding_collab(level: int = 0, n_instances: int = 10, seed0: int = 1, arm: str = "team",
-                  communication: str = "round_robin", turn_max_tokens: int = 2048,
+                  communication: str | None = None, turn_max_tokens: int = 2048,
                   token_limit: int | None = None, messaging_turns: int = 24) -> Task:
 	"""The coding-collaboration scenario as an Inspect task: 3 seats jointly write one Python module against a
 	public pytest suite while each holds private style constraints; ``level`` sets how many constraints are
-	dealt. Scoring runs the sandboxed test suite + AST constraint checks. ``communication="messaging"`` runs
-	the autonomous mailbox variant; the latest complete ```python fence in the sends is the submission."""
+	dealt. Scoring runs the sandboxed test suite + AST constraint checks. The default messaging mode scores
+	the latest complete ```python fence in the sends as the submission; pass ``"round_robin"`` for the
+	published protocol (the mode the shipped v0 dataset used)."""
+	scenario = CodingCollab()
+	communication = communication or scenario.default_communication
 	return Task(
-		dataset=MemoryDataset(_samples(CodingCollab(), level=level, n_instances=n_instances,
+		dataset=MemoryDataset(_samples(scenario, level=level, n_instances=n_instances,
 		                               seed0=seed0, cfg={"cell": "inspect"})),
 		solver=arena_solver(arm=arm, communication=communication, turn_max_tokens=turn_max_tokens,
 		                    messaging_turns=messaging_turns),
@@ -114,7 +122,7 @@ def coding_collab(level: int = 0, n_instances: int = 10, seed0: int = 1, arm: st
 
 @task
 def distributed_longcontext(instances: str, task_name: str | None = None, n_instances: int | None = None,
-                            arm: str = "team", communication: str = "round_robin",
+                            arm: str = "team", communication: str | None = None,
                             token_limit: int | None = None) -> Task:
 	"""A distributed long-context task as an Inspect task. Instances embed megabytes of context and are built
 	offline (``interlens.arena.scenarios.dlc.build``); pass the saved bank as ``-T instances=/path/to/
@@ -130,7 +138,9 @@ def distributed_longcontext(instances: str, task_name: str | None = None, n_inst
 		raw = raw[:n_instances]
 	bank = [Instance.from_json(d) for d in raw]
 	scenario = dlc_scenario(task_name or bank[0].payload["task"], name=bank[0].scenario)
+	communication = communication or scenario.default_communication
 	if communication == "messaging":
+		# the scenario's NATIVE directed-messaging arm (replayable), not the generic mailbox variant
 		arm, communication = "team-msg", "round_robin"
 	samples = []
 	for instance in bank:
@@ -153,14 +163,17 @@ def distributed_longcontext(instances: str, task_name: str | None = None, n_inst
 
 @task
 def negotiation(level: int = 0, n_parties: int | None = None, n_instances: int = 10, seed0: int = 1,
-                arm: str = "team", coherent: bool = True, communication: str = "round_robin",
+                arm: str = "team", coherent: bool = True, communication: str | None = None,
                 n_rounds: int | None = None, stakes: str | None = None, personas: str | None = None,
                 turn_max_tokens: int = 2048, token_limit: int | None = None,
                 messaging_turns: int = 24) -> Task:
 	"""The negotiation scenario as an Inspect task. ``n_parties`` switches to the sweep generator (3-8 seats,
 	fixed deal space); otherwise the 6-party difficulty ladder at ``level`` (``coherent`` per the role-prior
-	table). ``stakes``/``personas``/``n_rounds`` mirror the scenario's situational config."""
+	table). ``communication`` defaults to the scenario's messaging mode; pass ``"round_robin"`` for the
+	published protocol (the mode the shipped v0 dataset used). ``stakes``/``personas``/``n_rounds`` mirror the
+	scenario's situational config."""
 	scenario = Negotiation()
+	communication = communication or scenario.default_communication
 	cfg = {k: v for k, v in (("cell", "inspect"), ("n_rounds", n_rounds), ("stakes", stakes),
 	                         ("personas", personas)) if v is not None}
 	if n_parties is not None:

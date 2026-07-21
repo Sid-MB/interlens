@@ -78,6 +78,9 @@ class SecurityDilemma(Scenario):
 	N_LEVELS = 5
 	PROVISIONAL_MARKS = (3, 6, 9)
 	has_solo = False
+	# a simultaneous-move payoff game has no sound free-messaging reduction (see arena_solver),
+	# so this scenario pins the published protocol instead of the package's messaging default
+	default_communication = "round_robin"
 
 	# ---------------------------------------------------------- instances --
 	def generate_instance(self, level: int, seed: int) -> Instance:
