@@ -82,6 +82,29 @@ class APIParticipant(Functional, Participant):
 	batch: bool = False  # route ``generate_batch`` through the provider's async batch API (anthropic/openai only)
 	client: object = None  # callable(system, messages, model, max_tokens, temperature) -> str
 
+	meter: object = None
+	"""Optional ``interlens.usage.UsageMeter``: every call this participant makes is reported into it (tokens,
+	dollars at the actual billing multiplier — batch-served turns bill at 0.5× — and refusal counts), so one
+	shared meter across participants gives a live, run-level spend ledger with reservation gating. Per-turn
+	usage is recorded in ``Message.metadata`` regardless; the meter adds the cross-conversation aggregate."""
+
+	turn_token_floor: int | None = None
+	"""Thinking-aware lower bound on an externally imposed per-turn cap. Models with adaptive or always-on
+	reasoning spend hidden thinking tokens **out of ``max_tokens``**: an innocently small per-turn cap (a
+	``TokenBudget(per_turn=500)``) then silently yields EMPTY visible turns — thinking consumes the whole
+	budget (observed at 58% empty turns in the arena experiments). Setting a floor (e.g. 2048) keeps every
+	turn generable: an external ``max_new_tokens`` below the floor is raised to it. The tradeoff is deliberate
+	— a budget's final turn may overshoot by up to the floor, which is measurable; an empty turn corrupts the
+	conversation, which is not. On long contexts adaptive thinking can outgrow ANY fixed floor — for models
+	that allow it, ``thinking="disabled"`` (or an explicit int budget) is the reliable control; the floor is
+	the guard for models whose thinking cannot be disabled."""
+
+	thinking: object = None
+	"""Reasoning control, Anthropic only: ``None`` keeps the model's default (adaptive thinking on current
+	Claude models — which spends from ``max_tokens``), ``"disabled"`` turns thinking off, an ``int`` sets an
+	explicit thinking budget, and a dict passes through verbatim. Non-Anthropic providers raise on a non-None
+	value rather than silently ignoring it."""
+
 	# Anthropic needs strictly alternating user/assistant turns, so reuse the same merge the local families use.
 	requires_alternating_roles: bool = True
 
@@ -117,10 +140,11 @@ class APIParticipant(Functional, Participant):
 
 		system, messages = self._split_view(view)
 		client = self.client or _default_client(self.provider)
-		max_tokens = max_new_tokens if max_new_tokens is not None else self.max_tokens
+		max_tokens = self._effective_cap(max_new_tokens)
+		kw = {"thinking": self.thinking} if self.thinking is not None else {}
 		text = client(system=system, messages=messages, model=self.model_id,
-		              max_tokens=max_tokens, temperature=self.temperature)
-		return Message(author=self.name, content=text, metadata={"provider": self.provider, "model": self.model_id})
+		              max_tokens=max_tokens, temperature=self.temperature, **kw)
+		return Message(author=self.name, content=str(text), metadata=self._usage_metadata(text))
 
 	def generate_batch(self, views: list[list[dict]], *, turn: int | None = None,
 	                   group_seed: int | None = None, max_new_tokens: int | None = None) -> list[Message]:
@@ -138,12 +162,13 @@ class APIParticipant(Functional, Participant):
 		if not views:
 			return []
 		client = self.client or _default_client(self.provider)
-		max_tokens = max_new_tokens if max_new_tokens is not None else self.max_tokens
+		max_tokens = self._effective_cap(max_new_tokens)
 		requests = []
 		for view in views:
 			system, messages = self._split_view(view)
 			requests.append(dict(system=system, messages=messages, model=self.model_id,
-			                     max_tokens=max_tokens, temperature=self.temperature))
+			                     max_tokens=max_tokens, temperature=self.temperature,
+			                     **({"thinking": self.thinking} if self.thinking is not None else {})))
 		if self.batch:
 			if not hasattr(client, "submit_batch"):
 				raise NotImplementedError(
@@ -152,13 +177,47 @@ class APIParticipant(Functional, Participant):
 			texts = client.submit_batch(requests)
 		else:
 			texts = [client(**r) for r in requests]
-		return [Message(author=self.name, content=t,
-		                metadata={"provider": self.provider, "model": self.model_id, "batched": True})
+		return [Message(author=self.name, content=str(t),
+		                metadata=self._usage_metadata(t) | {"batched": True})
 		        for t in texts]
+
+	def _effective_cap(self, max_new_tokens: int | None) -> int:
+		"""The output-token cap actually sent: the caller's ``max_new_tokens`` (else this participant's
+		``max_tokens``), raised to ``turn_token_floor`` when one is set — the thinking-aware guard against an
+		external per-turn cap starving a reasoning model's visible output (see the field docstring)."""
+		cap = max_new_tokens if max_new_tokens is not None else self.max_tokens
+		if self.turn_token_floor is not None:
+			cap = max(cap, self.turn_token_floor)
+		return cap
+
+	def _usage_metadata(self, completion) -> dict:
+		"""Per-turn usage metadata from a client return value, plus the ``meter`` report. Works with a plain
+		``str`` (an injected test client; usage reads as 0) or an ``api_client.Completion`` (real telemetry).
+		Records the same ``n_tokens`` key ``ModelParticipant`` uses, so ``TokenBudget`` counts hosted turns
+		natively, plus ``n_tokens_in`` / ``cost_usd`` / ``stop_reason`` / ``refusal`` for cost budgets and refusal
+		telemetry."""
+		tokens_in = int(getattr(completion, "input_tokens", 0) or 0)
+		tokens_out = int(getattr(completion, "output_tokens", 0) or 0)
+		stop_reason = getattr(completion, "stop_reason", None)
+		batched = bool(getattr(completion, "batched", False))
+		# "refusal" is Anthropic's native refusal stop; "content_filter" is the OpenAI-schema analogue.
+		refusal = stop_reason in ("refusal", "content_filter")
+		metadata = {"provider": self.provider, "model": self.model_id,
+		            "n_tokens": tokens_out, "n_tokens_in": tokens_in, "stop_reason": stop_reason}
+		if refusal:
+			metadata["refusal"] = True
+		if self.meter is not None:
+			mult = 0.5 if batched else 1.0  # provider batch APIs bill at half price
+			metadata["cost_usd"] = self.meter.add(self.model_id, tokens_in, tokens_out,
+			                                      price_multiplier=mult, refusal=refusal)
+			if batched:
+				metadata["price_multiplier"] = mult
+		return metadata
 
 	def __getstate__(self) -> dict:
 		# The client is a live SDK/network object (often unpicklable) and is reconstructed lazily per provider via
 		# ``_default_client`` — drop it on pickle. An injected test client is dropped too (tests run in-process).
+		# The meter survives pickling (UsageMeter re-creates its lock), so spawned workers keep reporting usage.
 		state = self.__dict__.copy()
 		state["client"] = None
 		return state

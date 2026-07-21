@@ -95,6 +95,7 @@ nav:
       - Interpretability: examples/07_interp.md
       - Rollouts & scale: examples/08_rollouts_and_scale.md
       - Advanced interp pipelines: examples/09_advanced_interp_pipelines.md
+      - Arena: examples/10_arena.md
   - API reference:
       # BEGIN generated reference nav — run scripts/gen_ref_pages.py to refresh; do not edit by hand
       - interlens:

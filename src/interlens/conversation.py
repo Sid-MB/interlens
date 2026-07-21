@@ -119,6 +119,15 @@ class Conversation(Functional):
 	"""Runtime-only middleware (**not** persisted): each hook vets / edits / denies a freshly generated message
 	before it is committed. Applied in order; default empty = pass-through. See ``hooks/``."""
 
+	communication: object = None
+	"""Optional ``CommunicationPolicy`` governing turn order and message visibility (see ``communication/``).
+	``None`` keeps the classic behavior: round-robin speaking order over the shared transcript. With a policy
+	installed, ``run`` asks it for each next speaker (``first=`` is then ignored — the policy owns scheduling),
+	the view pipeline filters transcript turns through ``policy.visible`` and appends ``policy.extra_segments``
+	(delivered mail, pending-message pings, protocol instructions), and every committed turn flows through
+	``policy.on_commit``. Policies are conversation-state: clones/branches get an independent deep copy.
+	Runtime-only (not persisted by ``save``), like ``message_hooks``."""
+
 	# --- rollout / data fields (dot-modifier sugar via @sugar_fields; storage is the ``_`` name) ---
 	_turns: int | None = None
 	"""Default number of turns for ``run``/``rollout`` when not overridden. Read/set via ``conv.turns()`` /
@@ -156,8 +165,13 @@ class Conversation(Functional):
 	def _after_set(self, original) -> None:
 		# A copy-on-write clone gets an INDEPENDENT transcript (so branches / per-row rollout copies diverge without
 		# corrupting each other) and no in-flight capture. Participants are shared by reference (zero GPU cost).
+		# A communication policy is conversation-state (mailboxes, scheduling counters) — deep-copied so clones
+		# never share delivery state.
 		self.transcript = self.transcript.copy()
 		self._pending_capture = None
+		if self.communication is not None:
+			import copy
+			self.communication = copy.deepcopy(self.communication)
 
 	@classmethod
 	def from_models(cls, models: tuple[ModelLike, ...], names: tuple[str, ...] = ("a", "b"),
@@ -215,6 +229,8 @@ class Conversation(Functional):
 
 		multiparty = len(self.participants) > 2
 		for message in (*self.transcript, *extra):
+			if self.communication is not None and not self.communication.visible(message, participant, self):
+				continue
 			is_other = message.author != participant.name
 			role = participant.others_role if is_other else participant.self_role
 			origin = "moderator" if message.author == self.moderator_name else "turn"
@@ -234,6 +250,9 @@ class Conversation(Functional):
 				content = f"{message.author}: {content}"
 				seg_author = None
 			segments.append(ViewSegment(role=role, content=content, origin=origin, author=seg_author))
+
+		if self.communication is not None:
+			segments.extend(self.communication.extra_segments(self, participant))
 
 		return segments
 
@@ -262,6 +281,8 @@ class Conversation(Functional):
 		if message is None:
 			return None  # a hook denied this turn; nothing is committed
 		self.transcript.messages.append(message)
+		if self.communication is not None:
+			self.communication.on_commit(message, self)
 		return message
 
 	def _apply_hooks(self, message):
@@ -327,12 +348,28 @@ class Conversation(Functional):
 		i = 0
 		while turns is None or i < turns:
 			cap = stop.turn_cap(self) if stop is not None else None
-			message = self.step(self.participants[(start + i) % n], max_new_tokens=self._turn_budget(start, i, cap))
+			if self.communication is not None:
+				# the communication policy owns scheduling; None = no one is due, which ends the run
+				speaker = self.communication.next_speaker(self)
+				if speaker is None:
+					break
+				message = self.step(speaker, max_new_tokens=self._cap_for(speaker, cap))
+			else:
+				message = self.step(self.participants[(start + i) % n],
+				                    max_new_tokens=self._turn_budget(start, i, cap))
 			i += 1
 			# A hook may have denied the turn (message is None); only a committed message is checked for stopping.
 			if message is not None and stop is not None and stop.should_stop(self, message):
 				break
 		return self.transcript
+
+	@staticmethod
+	def _cap_for(speaker: Participant, cap: int | None) -> int | None:
+		"""Bound a stop-condition ``turn_cap`` by ``speaker``'s own configured cap (policy-scheduled path)."""
+		if cap is None:
+			return None
+		own = getattr(speaker, "max_new_tokens", None)
+		return cap if own is None else min(own, cap)
 
 	def _turn_budget(self, start: int, i: int, cap: int | None) -> int | None:
 		"""Bound the next turn's ``max_new_tokens`` by a stop-condition ``cap`` AND the speaker's own configured cap

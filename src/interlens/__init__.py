@@ -45,6 +45,8 @@ from .interp import (
 	soft_embed, gumbel_softmax_tokens, LinearBridge,
 )
 from .tools import Tool, ToolCall, ToolResult, ToolRegistry, DEFAULT_REGISTRY
+from .communication import CommunicationPolicy, RoundRobinPolicy, DirectPipingPolicy, MessagingPolicy
+from .usage import UsageMeter, CostBudget, register_pricing, transcript_usage
 from .runner import (
 	available_devices, run, run_jobs, RunResult, RunReport,
 	register_analyzer, register_worker_init,
@@ -83,6 +85,14 @@ __all__ = [
 	"ElapsedTimeStopCondition",
 	"StopStringCondition",
 	"TokenBudget",
+	"CommunicationPolicy",
+	"RoundRobinPolicy",
+	"DirectPipingPolicy",
+	"MessagingPolicy",
+	"UsageMeter",
+	"CostBudget",
+	"register_pricing",
+	"transcript_usage",
 	"ActivationCache",
 	"CaptureSpec",
 	"SteeringSpec",
