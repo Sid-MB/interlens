@@ -47,7 +47,8 @@ def _gold(seed: int = 1) -> int:
 def test_round_robin_task_scores_correct_answer():
 	answer = f'My notes say things. ```json\n{{"answer": {_gold()}}}\n```'
 	model = get_model("mockllm/model", custom_outputs=_outputs(answer, 40))
-	log = inspect_eval(info_relay(n_instances=1), model=model, display="none")[0]
+	log = inspect_eval(info_relay(n_instances=1, communication="round_robin"), model=model,
+	                   display="none")[0]
 	assert log.status == "success"
 	sample = log.samples[0]
 	assert sample.scores["scenario_scorer"].value["success"] == 1.0
@@ -60,12 +61,15 @@ def test_round_robin_task_scores_correct_answer():
 	assert sample.store.get("arena:instance_id") == sample.id
 
 
-def test_messaging_mode_delivers_and_scores():
+def test_messaging_is_the_default_and_delivers_and_scores():
+	# messaging is the package default: no communication= argument here, and the scenario declares it
+	from interlens.arena.scenario import Scenario
+	assert Scenario.default_communication == "messaging"
 	text = ('Update. ```json\n{"send_message": {"recipient": "Blake", "content": "x-check", '
 	        '"priority": "high"}}\n```\n'
 	        f'Answer: ```json\n{{"answer": {_gold()}}}\n```')
 	model = get_model("mockllm/model", custom_outputs=_outputs(text, 60))
-	log = inspect_eval(info_relay(n_instances=1, communication="messaging", messaging_turns=8),
+	log = inspect_eval(info_relay(n_instances=1, messaging_turns=8),
 	                   model=model, display="none")[0]
 	assert log.status == "success"
 	sample = log.samples[0]
@@ -77,8 +81,8 @@ def test_messaging_mode_delivers_and_scores():
 def test_ten_concurrent_episodes_no_state_leakage():
 	"""The concurrency requirement: >=10 samples in flight through inspect eval, each episode isolated —
 	verified via instance/episode id integrity across the logs."""
-	log = inspect_eval(info_relay(n_instances=10), model="mockllm/model", max_samples=10,
-	                   display="none")[0]
+	log = inspect_eval(info_relay(n_instances=10, communication="round_robin"), model="mockllm/model",
+	                   max_samples=10, display="none")[0]
 	assert log.status == "success"
 	assert len(log.samples) == 10
 	episode_ids = {s.store.get("arena:episode_id") for s in log.samples}

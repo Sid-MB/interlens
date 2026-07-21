@@ -46,6 +46,14 @@ class Scenario(ABC):
 	name: str = ""
 	N_LEVELS: int = 5
 	has_solo: bool = True
+	default_communication: str = "messaging"
+	"""The communication mode task runners (e.g. the Inspect tasks) use when none is given. The package
+	default is the async messaging system (``send_message``/``read_message`` mailboxes with pings and the
+	priority scheduler — see ``interlens.communication.MessagingPolicy``); the round-robin published protocol
+	and direct piping remain available as explicit configs (``communication="round_robin"``, or a
+	``DirectPipingPolicy`` on a raw ``Conversation``). Note the shipped v0 transcript dataset was produced
+	under the round-robin protocol (recorded per episode in ``gen_config``), so use ``round_robin`` when
+	comparing against those cells."""
 
 	# ---------------------------------------------------------- instances --
 	@abstractmethod

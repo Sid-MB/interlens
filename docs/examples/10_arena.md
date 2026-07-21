@@ -71,19 +71,21 @@ result = rescore(scenario, instance, stored_episode_json)           # compare vs
 
 ## Communication styles
 
-The protocol mode (round-robin over a shared transcript) is each scenario's published default. Two other styles are core interlens machinery (see `interlens.communication`) and compose with the same scoring and persistence:
+**Async messaging is the package default** (`Scenario.default_communication = "messaging"`, used by the Inspect tasks when no mode is given): no shared transcript; autonomous agents exchange point-to-point mail via `send_message`/`read_message` (fenced-JSON actions for any participant type, or native tools via `policy.tools_for(name)`), with ping-driven scheduling (priority + a fairness tick). Sends/reads/deliveries are first-class transcript events. See `examples/arena_relay_messaging.py` for the relay task run in this mode.
 
+Two other styles remain available as explicit configs and compose with the same scoring and persistence (see `interlens.communication`):
+
+- **Round-robin protocol** (`communication="round_robin"`, or `EpisodePool.run_episode` directly): each scenario's published turn protocol over a shared transcript. **This is the comparability option**: the shipped v0 transcript dataset was produced under this protocol (recorded per episode in `gen_config`), so use it when comparing new runs against those cells — do not assume messaging-mode and protocol-mode scores are equivalent.
 - **Direct piping** (`DirectPipingPolicy`): one participant's output is the next one's input along a fixed chain — the natural two-agent dialogue framing, generalized. See `examples/arena_direct_piping.py`.
-- **Async messaging** (`MessagingPolicy`): no shared transcript; autonomous agents exchange point-to-point mail via `send_message`/`read_message` (fenced-JSON actions for any participant type, or native tools via `policy.tools_for(name)`), with ping-driven scheduling (priority + a fairness tick). Sends/reads/deliveries are first-class transcript events. See `examples/arena_relay_messaging.py` for the relay task run in this mode.
 
 ## Inspect integration (optional)
 
 With the extra installed (`pip install interlens[inspect]`), both scenarios run under [Inspect](https://inspect.aisi.org.uk/):
 
 ```bash
-inspect eval interlens.arena.inspect/info_relay --model anthropic/claude-sonnet-5 -T level=2
+inspect eval interlens.arena.inspect/info_relay --model anthropic/claude-sonnet-5 -T level=2   # messaging (default)
 inspect eval interlens.arena.inspect/negotiation --model openai/gpt-5 -T n_parties=8 -T arm=solo
-inspect eval interlens.arena.inspect/info_relay -T communication=messaging --model anthropic/claude-sonnet-5
+inspect eval interlens.arena.inspect/info_relay -T communication=round_robin --model anthropic/claude-sonnet-5   # published protocol, comparable with the v0 dataset
 ```
 
 Instance banks become samples (instance JSON + per-seat framings in sample metadata), the arena engine runs inside a fully-async solver (Inspect's `--max-samples` runs many episodes concurrently), the exact scenario scorers register as Inspect scorers (`success` accuracy + mean `primary`), and each seat turn is mirrored into the sample's message list so `inspect view` renders the multi-agent flow with seat attribution, structured actions as transcript events, and the outcome in the score view. Inspect's native `token_limit` carries episode budgets; the adapter adds per-sample dollar cost (`metadata["cost_usd"]`) computed from the same pricing as `UsageMeter`. Without the extra, `import interlens.arena.inspect` fails with a clear install hint — the base package never requires inspect-ai.

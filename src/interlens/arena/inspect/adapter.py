@@ -124,14 +124,16 @@ def _record_turns(state: TaskState, episode_json: dict) -> None:
 
 
 @solver
-def arena_solver(arm: str = "team", communication: str = "round_robin",
+def arena_solver(arm: str = "team", communication: str = "messaging",
                  turn_max_tokens: int = 2048, messaging_turns: int = 24):
 	"""Play one arena instance (from the sample's metadata) with the evaluated model in every seat.
 
-	``communication="round_robin"`` runs the scenario's published turn protocol through the arena engine;
-	``"messaging"`` runs the autonomous point-to-point variant — each seat gets its private framing and the
-	agents self-organize via ``send_message``/``read_message`` mailboxes (recorded as transcript events), with
-	the finalizer's fenced ``{"answer"}``/``{"proposal"}`` JSON scored exactly as in the protocol mode."""
+	The default ``communication="messaging"`` runs the autonomous point-to-point variant — each seat gets its
+	private framing and the agents self-organize via ``send_message``/``read_message`` mailboxes with pings and
+	the priority scheduler (recorded as transcript events), with the finalizer's fenced
+	``{"answer"}``/``{"proposal"}`` JSON scored exactly as in the protocol mode. ``"round_robin"`` runs the
+	scenario's published turn protocol through the arena engine — the mode the shipped v0 transcript dataset
+	was produced under, so use it when comparing against those cells."""
 
 	async def solve(state: TaskState, generate: Generate) -> TaskState:
 		scenario, instance, metadata = _instance_from_state(state)

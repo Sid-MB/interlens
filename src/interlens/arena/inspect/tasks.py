@@ -57,18 +57,21 @@ def _samples(scenario: Scenario, *, level: int, n_instances: int, seed0: int, cf
 
 @task
 def info_relay(level: int = 0, n_instances: int = 10, seed0: int = 1, arm: str = "team",
-               communication: str = "round_robin", n_rounds: int | None = None,
+               communication: str | None = None, n_rounds: int | None = None,
                framing: str | None = None, honest_persona: str | None = None,
                wrong_persona: str | None = None, turn_max_tokens: int = 2048,
                token_limit: int | None = None, messaging_turns: int = 24) -> Task:
 	"""The info-relay scenario (wrong-shard epistemics) as an Inspect task. ``communication`` selects the
-	published round-robin protocol or the autonomous messaging variant; the situational knobs mirror the
-	scenario's ``cfg``. ``token_limit`` (per sample) is Inspect's native enforcement of an episode budget."""
+	autonomous messaging variant (the scenario default) or the published round-robin protocol (the mode the
+	shipped v0 dataset used); the situational knobs mirror the scenario's ``cfg``. ``token_limit`` (per
+	sample) is Inspect's native enforcement of an episode budget."""
+	scenario = InfoRelay()
+	communication = communication or scenario.default_communication
 	cfg = {k: v for k, v in (("cell", "inspect"), ("n_rounds", n_rounds), ("framing", framing),
 	                         ("honest_persona", honest_persona), ("wrong_persona", wrong_persona))
 	       if v is not None}
 	return Task(
-		dataset=MemoryDataset(_samples(InfoRelay(), level=level, n_instances=n_instances,
+		dataset=MemoryDataset(_samples(scenario, level=level, n_instances=n_instances,
 		                               seed0=seed0, cfg=cfg)),
 		solver=arena_solver(arm=arm, communication=communication, turn_max_tokens=turn_max_tokens,
 		                    messaging_turns=messaging_turns),
@@ -79,14 +82,17 @@ def info_relay(level: int = 0, n_instances: int = 10, seed0: int = 1, arm: str =
 
 @task
 def negotiation(level: int = 0, n_parties: int | None = None, n_instances: int = 10, seed0: int = 1,
-                arm: str = "team", coherent: bool = True, communication: str = "round_robin",
+                arm: str = "team", coherent: bool = True, communication: str | None = None,
                 n_rounds: int | None = None, stakes: str | None = None, personas: str | None = None,
                 turn_max_tokens: int = 2048, token_limit: int | None = None,
                 messaging_turns: int = 24) -> Task:
 	"""The negotiation scenario as an Inspect task. ``n_parties`` switches to the sweep generator (3-8 seats,
 	fixed deal space); otherwise the 6-party difficulty ladder at ``level`` (``coherent`` per the role-prior
-	table). ``stakes``/``personas``/``n_rounds`` mirror the scenario's situational config."""
+	table). ``communication`` defaults to the scenario's messaging mode; pass ``"round_robin"`` for the
+	published protocol (the mode the shipped v0 dataset used). ``stakes``/``personas``/``n_rounds`` mirror the
+	scenario's situational config."""
 	scenario = Negotiation()
+	communication = communication or scenario.default_communication
 	cfg = {k: v for k, v in (("cell", "inspect"), ("n_rounds", n_rounds), ("stakes", stakes),
 	                         ("personas", personas)) if v is not None}
 	if n_parties is not None:
