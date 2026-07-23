@@ -5,6 +5,9 @@ Runnable, self-contained scripts (as opposed to the prose walkthroughs under [`d
 | Example | What it shows |
 | --- | --- |
 | [`gsm8k_benchmark_rollout.py`](gsm8k_benchmark_rollout.py) | Evaluate a **collaborative solver/critic conversation on a real benchmark** (GSM8K): ONE data-parameterized `Conversation` (`dataset_field` templates the question) expanded to one conversation per problem via `.data(...).rollout()`, graded in an `analyzer`, run with default multi-GPU + batched co-stepping. |
+| [`arena_negotiation_quickstart.py`](arena_negotiation_quickstart.py) | The **arena** end-to-end: generate solver-verified negotiation instances, run team + matched-compute solo arms with a hosted model under a hard dollar cap, score exactly, print the usage summary. |
+| [`arena_relay_messaging.py`](arena_relay_messaging.py) | The info-relay task on the **async messaging** communication style: autonomous agents, `send_message`/`read_message` mailboxes, ping-driven scheduling, scored by the scenario's exact scorer. |
+| [`arena_direct_piping.py`](arena_direct_piping.py) | **Direct piping** on scripted participants (no models/network): a 3-stage pipeline where each stage sees only its predecessor's output. |
 
 ```bash
 python examples/gsm8k_benchmark_rollout.py --n 50 --turns 3        # local model on one GPU
