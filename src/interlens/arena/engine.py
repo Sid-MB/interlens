@@ -52,6 +52,7 @@ from ..message import Message
 from ..stop import AnyStopCondition, StopCondition
 from ..transcript import Transcript
 from ..usage import UsageMeter
+from .oracles import OracleRecord
 from .scenario import Scenario
 from .schema import Episode, EpisodeStore, Instance, SeatRequest, TurnRecord, new_id
 from .views import extract_json, strip_think
@@ -90,10 +91,16 @@ class EpisodeRun:
 
 	def __init__(self, scenario: Scenario, instance: Instance, arm: str, participant, seed: int,
 	             store: EpisodeStore | None, *, cfg: dict | None = None, gen_config: dict | None = None,
-	             budget: StopCondition | list | None = None):
+	             budget: StopCondition | list | None = None,
+	             capture=None, steering=None, patch=None):
 		self.scenario = scenario
 		self.instance = instance
 		self.participant = participant
+		# Per-episode interp hooks threaded into each committed turn's generation (local models only; forked
+		# provisional probes are left clean). ``capture`` tags activations by this run's turn index.
+		self.capture = capture
+		self.steering = steering
+		self.patch = patch
 		cfg = dict(cfg or {})
 		self.ep = Episode(
 			episode_id=new_id(f"{scenario.name}-{arm}"),
@@ -184,14 +191,21 @@ class EpisodeRun:
 		return directive
 
 	def record_provisional(self, request: SeatRequest, message: Message, parsed, score) -> None:
-		self.ep.round_checkpoints.append({
-			"round": request.round, "seat": request.seat,
-			"provisional_action": parsed, "score": score,
-			"content": message.content,
-		})
+		self.ep.round_checkpoints.append(OracleRecord.provisional(
+			round=request.round, seat=request.seat,
+			provisional_action=parsed, score=score, content=message.content).to_json())
 		self.ep.tokens_in += int(message.metadata.get("n_tokens_in") or 0)
 		self.ep.tokens_out += int(message.metadata.get("n_tokens") or 0)
 		self.ep.cost_usd += float(message.metadata.get("cost_usd") or 0.0)
+
+	def annotate(self, request: SeatRequest) -> None:
+		"""Run the scenario's inline oracles over the turn just committed and append their typed
+		``OracleRecord``s to the episode's oracle log. A no-op unless the scenario overrides ``annotate_turn``
+		(pure-Python — no extra generation), so scenarios without an oracle stack are unaffected."""
+		if not self.ep.turns:
+			return
+		for record in self.scenario.annotate_turn(self.state, request, self.ep.turns[-1]) or []:
+			self.ep.round_checkpoints.append(record.to_json())
 
 	def score_provisional(self, message: Message) -> tuple:
 		parsed = extract_json(message.content)
@@ -254,19 +268,34 @@ class EpisodePool:
 		self.meter = meter
 		self._sem = asyncio.Semaphore(max_concurrent)  # concurrent EPISODES (generation width is the client's)
 
-	async def _generate(self, participant, request: SeatRequest, cap: int) -> Message:
-		return await asyncio.to_thread(participant.generate, request.view, max_new_tokens=cap)
+	async def _generate(self, participant, request: SeatRequest, cap: int, *,
+	                    capture=None, steering=None, patch=None, turn: int | None = None) -> Message:
+		kwargs: dict = {"max_new_tokens": cap}
+		if steering is not None:
+			kwargs["steering"] = steering
+		if patch is not None:
+			kwargs["patch"] = patch
+		if capture is not None:
+			kwargs["capture"] = capture
+			kwargs["turn"] = turn
+		return await asyncio.to_thread(lambda: participant.generate(request.view, **kwargs))
 
 	async def run_episode(self, scenario: Scenario, instance: Instance, arm: str, participant, *,
 	                      seed: int = 0, cfg: dict | None = None, gen_config: dict | None = None,
 	                      budget: StopCondition | list | None = None,
 	                      estimated_cost: float | None = None,
+	                      capture=None, steering=None, patch=None,
 	                      gate: Callable[[], bool] | None = None) -> Episode | None:
 		"""Play one episode to completion. Returns the ``Episode`` (status ``done`` or ``error``), or ``None``
 		when the episode never started: its cost reservation didn't fit under the meter's budget, the meter was
 		already exhausted, or ``gate()`` returned True. The launch gates are evaluated once the episode acquires
 		a concurrency slot (``max_concurrent`` bounds episodes in flight), so a queued episode really is stopped
-		by spend that accumulated while it waited — in-flight episodes finish, new ones don't start."""
+		by spend that accumulated while it waited — in-flight episodes finish, new ones don't start.
+
+		``capture`` / ``steering`` / ``patch`` are per-turn interp hooks threaded into every committed
+		generation (local ``ModelParticipant`` only — API/scripted participants raise on interp requests);
+		``capture`` (a ``CaptureRequest``) tags activations by this episode's turn index, so per-turn activation
+		capture *inside* a structured episode works. Forked provisional probes are left clean (no capture/steer)."""
 		async with self._sem:
 			if gate is not None and gate():
 				return None
@@ -277,7 +306,8 @@ class EpisodePool:
 					return None
 			try:
 				run = EpisodeRun(scenario, instance, arm, participant, seed, self.store,
-				                 cfg=cfg, gen_config=gen_config, budget=budget)
+				                 cfg=cfg, gen_config=gen_config, budget=budget,
+				                 capture=capture, steering=steering, patch=patch)
 				try:
 					while True:
 						requests = run.pending()
@@ -285,13 +315,19 @@ class EpisodePool:
 							break
 						for request in requests:
 							cap = run.turn_cap(request)
-							message = await self._generate(participant, request, cap)
+							message = await self._generate(participant, request, cap, capture=run.capture,
+							                               steering=run.steering, patch=run.patch,
+							                               turn=run._turn_idx)
 							directive = run.record_turn(request, message, cap=cap)
 							while directive and "retry" in directive and run.allow_retry(request):
 								retry = run.retry_request(request, message.content, directive["retry"])
 								cap = run.turn_cap(retry)
-								message = await self._generate(participant, retry, cap)
+								message = await self._generate(participant, retry, cap, capture=run.capture,
+								                               steering=run.steering, patch=run.patch,
+								                               turn=run._turn_idx)
 								directive = run.record_turn(retry, message, cap=cap)
+							# inline pure-Python oracle annotations of the committed turn (no extra generation)
+							run.annotate(request)
 						# forked provisional elicitations (state is never mutated by their responses)
 						for provisional in scenario.provisional_due(run.state):
 							provisional.episode_id = run.ep.episode_id
@@ -365,6 +401,7 @@ class BatchedEpisodePool:
 							retry_cap = run.turn_cap(retry)
 							retry_message = self._generate_batch(participant, [(retry_cap, retry)])[0]
 							run.record_turn(retry, retry_message, cap=retry_cap)
+						run.annotate(request)  # inline oracle annotations (no extra generation)
 					except Exception:
 						run.finalize(error=traceback.format_exc()[-2000:])
 						live.pop(run.ep.episode_id, None)

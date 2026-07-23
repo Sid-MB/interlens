@@ -38,12 +38,11 @@ to ``policy.events`` (JSON-serializable) *and* annotates the committed message's
 """
 from __future__ import annotations
 
-import json
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .policy import CommunicationPolicy
+from ..parsing import iter_fenced_json
 from ..tools.tool import Tool
 from ..view import ViewSegment
 
@@ -52,22 +51,13 @@ if TYPE_CHECKING:
 	from ..message import Message
 	from ..participant import Participant
 
-_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-
 PRIORITIES = ("normal", "high")
 
 
 def parse_json_actions(text: str) -> list[dict]:
-	"""All fenced JSON objects in ``text``, parsed (malformed fences are skipped, not fatal)."""
-	out = []
-	for candidate in _FENCE.findall(text or ""):
-		try:
-			obj = json.loads(candidate)
-		except json.JSONDecodeError:
-			continue
-		if isinstance(obj, dict):
-			out.append(obj)
-	return out
+	"""All fenced JSON objects in ``text``, parsed (malformed fences are skipped, not fatal). Thin alias for
+	:func:`interlens.parsing.iter_fenced_json`."""
+	return iter_fenced_json(text)
 
 
 @dataclass

@@ -30,8 +30,7 @@ Run both on smoke instances before a full rollout; each returns a report dict wi
 """
 from __future__ import annotations
 
-import re
-
+from ..parsing import first_think_block
 from .scenario import Scenario
 from .schema import Episode
 
@@ -65,9 +64,6 @@ def check_template_fidelity(tokenizer, views: list[list[dict]], **template_kwarg
 	return {"ok": not mismatches, "views": len(views), "mismatch_indices": mismatches}
 
 
-_THINK_FRAGMENT = re.compile(r"<think>(.*?)</think>", re.DOTALL)
-
-
 def check_reasoning_leak(episode: Episode | dict, *, fragment_length: int = 80) -> dict:
 	"""Scan a played episode for reasoning leakage: any turn whose raw completion contains a ``<think>`` block
 	whose content then appears verbatim in a LATER turn's visible content (meaning another seat saw it).
@@ -84,10 +80,10 @@ def check_reasoning_leak(episode: Episode | dict, *, fragment_length: int = 80) 
 		if not raw or "<think>" not in raw:
 			continue
 		think_turns += 1
-		match = _THINK_FRAGMENT.search(raw)
-		if not match:
+		block = first_think_block(raw)
+		if block is None:
 			continue
-		fragment = match.group(1).strip()[:fragment_length]
+		fragment = block.strip()[:fragment_length]
 		if not fragment:
 			continue
 		idx = _field(turn, "idx")

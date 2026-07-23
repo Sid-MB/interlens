@@ -23,9 +23,11 @@ events.
 """
 from __future__ import annotations
 
-import json
-import re
 from typing import Any
+
+from ..parsing import last_json, strip_think
+
+__all__ = ["build_view", "extract_json", "strip_think"]
 
 
 def build_view(seat: str, system: str, events: list[dict], phase_prompt: str) -> list[dict]:
@@ -55,51 +57,11 @@ def build_view(seat: str, system: str, events: list[dict], phase_prompt: str) ->
 
 
 # ---------------------------------------------------------------- parsing ---
-
-_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+# The fenced-JSON and think-stripping implementations live in ``interlens.parsing`` (one home for every parser
+# in the library). These names are the arena's stable call-through surface.
 
 
 def extract_json(text: str) -> Any | None:
-	"""The last fenced JSON object in ``text``, else the last balanced top-level ``{...}`` that parses."""
-	fenced = _FENCE.findall(text or "")
-	for candidate in reversed(fenced):
-		try:
-			return json.loads(candidate)
-		except json.JSONDecodeError:
-			pass
-	# fall back: scan for balanced objects
-	s = text or ""
-	best = None
-	depth = 0
-	start = None
-	for i, ch in enumerate(s):
-		if ch == "{":
-			if depth == 0:
-				start = i
-			depth += 1
-		elif ch == "}":
-			if depth > 0:
-				depth -= 1
-				if depth == 0 and start is not None:
-					try:
-						best = json.loads(s[start:i + 1])
-					except json.JSONDecodeError:
-						pass
-	return best
-
-
-def strip_think(text: str) -> tuple[str, str | None]:
-	"""Remove ``<think>...</think>`` blocks anywhere in ``text``. Returns ``(visible, think)``.
-
-	Stricter than the participant-level leading-block parse: a generation truncated mid-``<think>`` leaves an
-	*unterminated* block, whose reasoning must not leak into other seats' views — everything from the orphan
-	``<think>`` on is treated as reasoning."""
-	if not text:
-		return "", None
-	blocks = re.findall(r"<think>(.*?)</think>", text, re.DOTALL)
-	visible = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-	if "<think>" in visible:  # unterminated block: the tail is all reasoning
-		head, _, tail = visible.partition("<think>")
-		blocks.append(tail)
-		visible = head.strip()
-	return visible, ("\n".join(blocks).strip() if blocks else None)
+	"""The last fenced JSON object in ``text``, else the last balanced top-level ``{...}`` that parses.
+	Thin alias for :func:`interlens.parsing.last_json`."""
+	return last_json(text)

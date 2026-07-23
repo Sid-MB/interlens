@@ -106,6 +106,45 @@ outcome = replay_episode(scenario, instance, stored_episode_json)   # recompute 
 result = rescore(scenario, instance, stored_episode_json)           # compare vs the recorded outcome
 ```
 
+## Formal actions and per-turn oracles
+
+For scenarios that need *binding moves* rather than free text, `interlens.arena` ships a typed formal-action layer and a per-turn oracle layer.
+
+**Formal actions** (`interlens.arena.actions`): the package-deal move vocabulary — `Propose(deal)`, `Accept(offer_id)`, `Reject(offer_id)`, `Walk()` — plus an `OfferRegistry` (monotonic ids, standing-offer tracking, accept/reject votes) and one consolidated `parse_action`. `parse_action` distinguishes a **syntax** failure (no well-formed action could be read) from an **economic-legality** failure (well-formed but references a dead offer / an infeasible deal), so a scenario can retry once with specific feedback and log the two classes separately:
+
+```python
+from interlens.arena import parse_action, OfferRegistry, Propose, Accept, SYNTAX, LEGALITY
+
+registry = OfferRegistry()
+oid = registry.register(deal=(0, 2, 1, 0, 1), proposer="Avery", round=1)   # -> "O1" (Avery auto-accepts)
+
+result = parse_action(text, deal_decoder=my_issue_object_to_deal, standing=registry.standing_ids())
+if result.ok:
+    registry.apply(result.action, agent="Blake", round=2)   # Accept("O1") records Blake's vote
+else:
+    directive = result.retry_directive()   # {"retry": <specific message>, "error_kind": "syntax"|"legality"}
+```
+
+`deal_decoder` maps a model's `{"Site": "...", ...}` object to a `Deal = tuple[int, ...]` (option index per issue), returning `None` for an infeasible deal — keeping the action layer free of any specific game's issue set.
+
+**Oracles** (`interlens.arena.oracles`): an `Oracle` scores every action available to a seat and names the best; the arena records the seat's *regret* — `value(best) − value(chosen)`, the centipawn-loss analog. Two annotation paths write typed `OracleRecord`s into the episode's oracle log (`Episode.round_checkpoints`):
+
+- **inline** pure-Python oracles run post-`apply` with no extra generation — override `Scenario.annotate_turn` and return `interlens.arena.oracles.annotate(oracles, game, history, agent, legal, chosen_action=..., round=..., seat=..., turn_idx=...)`;
+- **forked** provisional elicitations re-ask the *model* to finalize now on a private view — the existing `Scenario.provisional_due` path, unchanged.
+
+```python
+from interlens.arena import Oracle, OracleVerdict
+
+class SolutionOracle(Oracle):
+    name = "solution"
+    def evaluate(self, game, history, agent, legal):
+        values = {a: surplus_if(game, a, agent) for a in legal}
+        best = max(values, key=values.get)
+        return OracleVerdict(action_values=values, best=best, flags=[...])
+```
+
+Each inline record carries `divergence` (per-turn regret), `chosen_value`/`best_value`, the full `verdict`, and any hard-violation `flags`; provisional records keep the `{round, seat, provisional_action, score, content}` shape, so older datasets still parse.
+
 ## Communication styles
 
 **Async messaging is the package default** (`Scenario.default_communication = "messaging"`, used by the Inspect tasks when no mode is given): no shared transcript; autonomous agents exchange point-to-point mail via `send_message`/`read_message` (fenced-JSON actions for any participant type, or native tools via `policy.tools_for(name)`), with ping-driven scheduling (priority + a fairness tick). Sends/reads/deliveries are first-class transcript events. See `examples/arena_relay_messaging.py` for the relay task run in this mode.

@@ -524,7 +524,7 @@ class InfoRelay(Scenario):
         if st["done"]:
             return []
         if st["arm"] == "solo":
-            return self._solo_requests(st)
+            return self.solo_requests(st)
         n_rounds = st["n_rounds"]
         si = TURN_ORDER[st["turn_idx"]]
         seat = st["seat_names"][si]
@@ -551,18 +551,18 @@ class InfoRelay(Scenario):
 
     def apply(self, st, req: SeatRequest, text: str) -> dict | None:
         if st["arm"] == "solo":
-            return self._solo_apply(st, req, text)
+            return self.solo_apply(st, req, text)
         parsed = extract_json(text)
         si = req.meta["si"]
         if req.phase == "final_answer":
             ans = _num(parsed.get("answer")) if isinstance(parsed, dict) else None
             st["_last_parse"] = (parsed, ans is not None)
             if ans is None:
-                if ("retry", req.round) not in st.get("_r", set()):
-                    st.setdefault("_r", set()).add(("retry", req.round))
-                    return {"retry": "That was not a valid answer. Reply with "
-                                     'ONLY a fenced JSON object: {"answer": '
-                                     "<number>}."}
+                directive = self.final_retry_directive(
+                    st, req, "That was not a valid answer. Reply with "
+                    'ONLY a fenced JSON object: {"answer": <number>}.')
+                if directive:
+                    return directive
                 st["answer"] = None
             else:
                 st["answer"] = ans
@@ -625,51 +625,47 @@ class InfoRelay(Scenario):
         return 1.0 if abs(ans - gold) <= TOL * abs(gold) else 0.0
 
     # ---------------------------------------------------------------- solo --
+    # The full-info solo reader runs on the shared ``Scenario`` solo scaffold; these hooks supply the relay's
+    # prompts and finalize semantics.
     SOLO_SYS = ("You are a careful solo analyst reviewing the combined private "
                 "notes of a 4-person team. The notes may conflict; decide which "
                 "figures to trust and answer the team's quantitative question.\n"
                 "Work step by step if useful. When confident, reply with only a "
                 'fenced JSON object: {"final": <number>}.')
 
-    def _solo_requests(self, st) -> list[SeatRequest]:
-        if st.get("budget_exhausted") and not st["done"]:
-            if st.get("_forced_final"):
-                st["done"] = True
-                return []
-            st["_forced_final"] = True
-            view = ([{"role": "system", "content": self.SOLO_SYS}]
-                    + st["solo_msgs"]
-                    + [{"role": "user", "content": "Token budget reached. Reply "
-                        'NOW with only the fenced JSON {"final": <number>}.'}])
-            return [SeatRequest("", "Reader", view, "solo_final", st["round"], meta={})]
-        if not st["solo_msgs"]:
-            names = st["seat_names"]
-            notes = "\n\n".join(f"{n}'s notes:\n{st['shards'][n]}" for n in names)
-            task = (f"{st['scene']}\n\n=== ALL TEAM NOTES (you see everything) ===\n"
-                    f"{notes}\n\nQuestion to answer: {st['question']}")
-            st["solo_msgs"] = [{"role": "user", "content": task}]
-        view = [{"role": "system", "content": self.SOLO_SYS}] + st["solo_msgs"]
-        return [SeatRequest("", "Reader", view, "solo_work", st["round"],
-                            max_tokens=st.get("solo_turn_cap", 900), meta={})]
+    def solo_system(self, st) -> str:
+        return self.SOLO_SYS
 
-    def _solo_apply(self, st, req, text) -> dict | None:
+    def solo_task(self, st) -> str:
+        names = st["seat_names"]
+        notes = "\n\n".join(f"{n}'s notes:\n{st['shards'][n]}" for n in names)
+        return (f"{st['scene']}\n\n=== ALL TEAM NOTES (you see everything) ===\n"
+                f"{notes}\n\nQuestion to answer: {st['question']}")
+
+    def solo_continue(self, st) -> str:
+        return 'Continue. When confident, output only the fenced JSON {"final": <number>}.'
+
+    def solo_final_prompt(self, st) -> str:
+        return 'Token budget reached. Reply NOW with only the fenced JSON {"final": <number>}.'
+
+    def solo_parse(self, st, text) -> tuple:
         parsed = extract_json(text)
-        st["_last_parse"] = (parsed, parsed is not None)
-        st["solo_msgs"].append({"role": "assistant", "content": text})
-        if isinstance(parsed, dict) and _num(parsed.get("final")) is not None:
-            st["answer"] = _num(parsed["final"])
-            st["finalized_round"] = st["round"]
-            st["done"] = True
-            return None
-        if req.phase == "solo_final":
-            st["answer"] = None
-            st["done"] = True
-            return None
-        st["solo_msgs"].append({"role": "user", "content":
-                                "Continue. When confident, output only the "
-                                'fenced JSON {"final": <number>}.'})
-        st["round"] += 1
-        return None
+        has_final = isinstance(parsed, dict) and _num(parsed.get("final")) is not None
+        answer = _num(parsed["final"]) if has_final else None
+        return parsed, parsed is not None, has_final, answer
+
+    def solo_finalize(self, st, answer, text) -> None:
+        st["answer"] = answer
+        st["finalized_round"] = st["round"]
+
+    def solo_give_up(self, st) -> None:
+        st["answer"] = None
+
+    # ------------------------------------------------------------ messaging --
+    def messaging_finalizable(self) -> bool:
+        """The protocol ends in the finalizer's single ``{"answer": ...}``, so a messaging episode reduces to
+        that final action (the deciding seat is the default first seat, the finalizer)."""
+        return True
 
     # -------------------------------------------------------------- scoring --
     def score(self, st) -> dict:

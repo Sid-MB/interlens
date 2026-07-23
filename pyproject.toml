@@ -33,6 +33,7 @@ keywords = ["llm", "interpretability", "multi-agent", "transformers", "activatio
 dependencies = [
     "torch",
     "transformers>=4.57,<5",
+    "numpy",   # arena.negotiation solvers/oracles use it directly; only transitively guaranteed via torch otherwise
 ]
 
 [project.optional-dependencies]

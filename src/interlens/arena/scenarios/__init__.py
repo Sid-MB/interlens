@@ -36,9 +36,10 @@ from .dlc import dlc_scenario
 from .longcontext import DistributedLongContext, TaskAdapter
 from .negotiation import Negotiation
 from .relay import InfoRelay
+from .scorable import ScorableNegotiation
 from .security import SecurityDilemma
 
-SCENARIOS = {s.name: s for s in (Negotiation, InfoRelay, SecurityDilemma, CodingCollab)}
+SCENARIOS = {s.name: s for s in (Negotiation, InfoRelay, SecurityDilemma, CodingCollab, ScorableNegotiation)}
 SCENARIOS.update({
 	"dlc_sniah": lambda: dlc_scenario("sniah"),
 	"dlc_oolong_pairs": lambda: dlc_scenario("oolong_pairs"),
@@ -47,5 +48,5 @@ SCENARIOS.update({
 	"dlc_bcp": lambda: dlc_scenario("bcp"),
 })
 
-__all__ = ["Negotiation", "InfoRelay", "SecurityDilemma", "CodingCollab",
+__all__ = ["Negotiation", "InfoRelay", "SecurityDilemma", "CodingCollab", "ScorableNegotiation",
            "DistributedLongContext", "TaskAdapter", "dlc_scenario", "SCENARIOS"]

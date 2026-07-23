@@ -341,7 +341,7 @@ class Negotiation(Scenario):
 		if st["done"]:
 			return []
 		if st["arm"] == "solo":
-			return self._solo_requests(st)
+			return self.solo_requests(st)
 		p = st["inst"].payload
 		rounds = st.get("n_rounds", N_TURN_ROUNDS)
 		if st["round"] > rounds:
@@ -421,7 +421,7 @@ class Negotiation(Scenario):
 
 	def apply(self, st, req: SeatRequest, text: str) -> dict | None:
 		if st["arm"] == "solo":
-			return self._solo_apply(st, req, text)
+			return self.solo_apply(st, req, text)
 		parsed = extract_json(text)
 		si = req.meta["si"]
 		n = self._n(st)
@@ -432,11 +432,12 @@ class Negotiation(Scenario):
 				deal = self._deal_from_json(st, parsed["proposal"])
 			st["_last_parse"] = (parsed, deal is not None)
 			if deal is None:
-				if ("retry", req.round) not in st.get("_r", set()):
-					st.setdefault("_r", set()).add(("retry", req.round))
-					return {"retry": "That was not a valid complete proposal. Reply with ONLY "
-					                 'a fenced JSON object {"proposal": {...}} covering all 5 '
-					                 "issues with exact option names."}
+				directive = self.final_retry_directive(
+					st, req, "That was not a valid complete proposal. Reply with ONLY "
+					'a fenced JSON object {"proposal": {...}} covering all 5 '
+					"issues with exact option names.")
+				if directive:
+					return directive
 				st["final_deal"] = None
 			else:
 				st["final_deal"] = deal
@@ -498,7 +499,11 @@ class Negotiation(Scenario):
 		return self._deal_primary(st, deal)
 
 	# ---------------------------------------------------------------- solo --
-	def _solo_sys(self, st) -> str:
+	# The full-info mediator baseline runs on the shared ``Scenario`` solo scaffold (solo_requests / solo_apply);
+	# these hooks supply only the negotiation-specific prompts and finalize semantics.
+	SOLO_SEAT = "Mediator"
+
+	def solo_system(self, st) -> str:
 		n = self._n(st)
 		return (f"You are a neutral mediator with FULL knowledge of all {n} parties' private "
 		        "score sheets and the shared acceptance threshold. Find the deal that maximizes "
@@ -509,52 +514,46 @@ class Negotiation(Scenario):
 		        'object: {"final": {"Site": ..., "PowerSource": ..., "WaterPlan": ..., '
 		        '"CommunityFund": ..., "Timeline": ...}}.')
 
-	def _solo_requests(self, st) -> list[SeatRequest]:
+	def solo_task(self, st) -> str:
 		p = st["inst"].payload
 		n = self._n(st)
-		if st.get("budget_exhausted") and not st["done"]:
-			# one last forced finalize
-			if st.get("_forced_final"):
-				st["done"] = True
-				return []
-			st["_forced_final"] = True
-			view = ([{"role": "system", "content": self._solo_sys(st)}]
-			        + st["solo_msgs"]
-			        + [{"role": "user", "content": "Token budget reached. Reply NOW with only "
-			            'the fenced JSON {"final": {...}}.'}])
-			return [SeatRequest("", "Mediator", view, "solo_final", st["round"], meta={})]
-		if not st["solo_msgs"]:
-			seats = st["seat_names"]
-			sheets = "\n\n".join(
-				f"{seats[i]} ({ROLES_POOL[i].split(' (')[0]}):\n{self._sheet_text(st, i)}"
-				for i in range(n))
-			task = (f"{self._rules(st)}\n\n=== ALL PRIVATE SHEETS (you see everything) ===\n"
-			        f"{sheets}\n\nShared acceptance threshold for every party: "
-			        f"{p['threshold']}.\nProposer: {seats[p['proposer']]}; veto party: "
-			        f"{seats[p['veto']]}.\nFind the passing deal maximizing total score.")
-			st["solo_msgs"] = [{"role": "user", "content": task}]
-		view = [{"role": "system", "content": self._solo_sys(st)}] + st["solo_msgs"]
-		return [SeatRequest("", "Mediator", view, "solo_work", st["round"],
-		                    max_tokens=st.get("solo_turn_cap", 900), meta={})]
+		seats = st["seat_names"]
+		sheets = "\n\n".join(
+			f"{seats[i]} ({ROLES_POOL[i].split(' (')[0]}):\n{self._sheet_text(st, i)}"
+			for i in range(n))
+		return (f"{self._rules(st)}\n\n=== ALL PRIVATE SHEETS (you see everything) ===\n"
+		        f"{sheets}\n\nShared acceptance threshold for every party: "
+		        f"{p['threshold']}.\nProposer: {seats[p['proposer']]}; veto party: "
+		        f"{seats[p['veto']]}.\nFind the passing deal maximizing total score.")
 
-	def _solo_apply(self, st, req, text) -> dict | None:
+	def solo_continue(self, st) -> str:
+		return 'Continue. When confident, output only the fenced JSON {"final": {...}}.'
+
+	def solo_final_prompt(self, st) -> str:
+		return 'Token budget reached. Reply NOW with only the fenced JSON {"final": {...}}.'
+
+	def solo_parse(self, st, text) -> tuple:
 		parsed = extract_json(text)
-		st["_last_parse"] = (parsed, parsed is not None)
-		st["solo_msgs"].append({"role": "assistant", "content": text})
-		if isinstance(parsed, dict) and isinstance(parsed.get("final"), dict):
-			st["final_deal"] = self._deal_from_json(st, parsed["final"])
-			st["finalized_by"] = "solo"
-			st["done"] = True
-			return None
-		if req.phase == "solo_final":
-			st["final_deal"] = None
-			st["done"] = True
-			return None
-		st["solo_msgs"].append({"role": "user", "content":
-		                        "Continue. When confident, output only the fenced JSON "
-		                        '{"final": {...}}.'})
-		st["round"] += 1
-		return None
+		has_final = isinstance(parsed, dict) and isinstance(parsed.get("final"), dict)
+		answer = self._deal_from_json(st, parsed["final"]) if has_final else None
+		return parsed, parsed is not None, has_final, answer
+
+	def solo_finalize(self, st, answer, text) -> None:
+		st["final_deal"] = answer
+		st["finalized_by"] = "solo"
+
+	def solo_give_up(self, st) -> None:
+		st["final_deal"] = None
+
+	# ------------------------------------------------------------ messaging --
+	def messaging_finalizable(self) -> bool:
+		"""The protocol ends in the proposer's single binding proposal, so a messaging episode reduces to that
+		final action."""
+		return True
+
+	def messaging_decider(self, st) -> str:
+		"""The proposer registers the final binding proposal, so its last fenced ``proposal`` decides."""
+		return st["seat_names"][st["inst"].payload["proposer"]]
 
 	# -------------------------------------------------------------- scoring --
 	def _deal_primary(self, st, deal) -> float:

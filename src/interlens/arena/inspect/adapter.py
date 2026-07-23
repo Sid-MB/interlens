@@ -201,12 +201,13 @@ def _run_messaging_episode(scenario, instance, cfg, loop, meter, turn_max_tokens
 	state = scenario.make_state(instance, "team", instance.seed, cfg=cfg)
 	from ..scenario import Scenario as _ScenarioBase
 	has_hook = type(scenario).score_from_messaging is not _ScenarioBase.score_from_messaging
-	if not has_hook and scenario.name not in ("e1_negotiation", "e5_relay"):
+	if not has_hook and not scenario.messaging_finalizable():
 		raise ValueError(
 			f"scenario {scenario.name!r} does not support communication='messaging': it neither implements "
-			"score_from_messaging nor ends in a single final answer/proposal action (e.g. the security "
-			"dilemma's simultaneous payoff game has no sound messaging reduction). For the distributed "
-			"long-context scenario use its native directed-messaging arm (arm='team-msg') instead.")
+			"score_from_messaging nor declares messaging_finalizable() (a protocol ending in a single final "
+			"answer/proposal action — e.g. the security dilemma's simultaneous payoff game has no sound "
+			"messaging reduction). For the distributed long-context scenario use its native directed-messaging "
+			"arm (arm='team-msg') instead.")
 	framings = scenario.seat_framings(state)
 	seats = [spec["name"] for spec in scenario.seat_specs(state)]
 	participants = tuple(
@@ -233,7 +234,7 @@ def _run_messaging_episode(scenario, instance, cfg, loop, meter, turn_max_tokens
 		from ...usage import transcript_usage
 		return episode_json, hook_outcome, transcript_usage(conv.transcript)
 	# extract the deciding seat's final structured action from its own turns (latest wins)
-	decider = seats[0] if scenario.name == "e5_relay" else seats[state["inst"].payload.get("proposer", 0)]
+	decider = scenario.messaging_decider(state)
 	final_action = None
 	for message in conv.transcript:
 		if message.author == decider:

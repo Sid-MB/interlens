@@ -175,7 +175,7 @@ class DistributedLongContext(Scenario):
 		if st["done"]:
 			return []
 		if st["arm"].startswith("solo"):
-			return self._solo_requests(st)
+			return self.solo_requests(st)
 		si = TURN_ORDER[st["turn_idx"]]
 		seat = st["seat_names"][si]
 		cap = self.adapter.discussion_cap
@@ -213,18 +213,18 @@ class DistributedLongContext(Scenario):
 
 	def apply(self, st, req: SeatRequest, text: str) -> dict | None:
 		if st["arm"].startswith("solo"):
-			return self._solo_apply(st, req, text)
+			return self.solo_apply(st, req, text)
 		parsed = extract_json(text)
 		si = req.meta["si"]
 		if req.phase == "final_answer":
 			ans = self.adapter.parse_answer(text, parsed)
 			st["_last_parse"] = (parsed, ans is not None)
 			if ans is None:
-				if ("retry", req.round) not in st.get("_r", set()):
-					st.setdefault("_r", set()).add(("retry", req.round))
-					return {"retry": "That was not a valid answer object. "
-					                 "Reply with ONLY the fenced JSON answer:\n"
-					                 + self.adapter.answer_instructions()}
+				directive = self.final_retry_directive(
+					st, req, "That was not a valid answer object. "
+					"Reply with ONLY the fenced JSON answer:\n" + self.adapter.answer_instructions())
+				if directive:
+					return directive
 				st["answer"] = None
 			else:
 				st["answer"] = ans
@@ -240,11 +240,12 @@ class DistributedLongContext(Scenario):
 				for m in msgs)
 			st["_last_parse"] = (parsed, bool(ok))
 			if not ok:
-				if ("retry", req.round, si) not in st.get("_r", set()):
-					st.setdefault("_r", set()).add(("retry", req.round, si))
-					return {"retry": "Invalid. Reply with ONLY fenced JSON: "
-					        '{"messages": [{"to": "<member name or all>", '
-					        '"content": "..."}]}'}
+				directive = self.final_retry_directive(
+					st, req, 'Invalid. Reply with ONLY fenced JSON: '
+					'{"messages": [{"to": "<member name or all>", "content": "..."}]}',
+					key=("retry", req.round, si))
+				if directive:
+					return directive
 				msgs = []
 			names = set(st["seat_names"])
 			for m in msgs or []:
@@ -303,65 +304,53 @@ class DistributedLongContext(Scenario):
 		return self.adapter.grade(ans, st["inst"].payload).get("primary", 0.0)
 
 	# ---------------------------------------------------------------- solo --
+	# The full-context solo reader runs on the shared ``Scenario`` solo scaffold; these hooks add the
+	# adapter-driven answer parsing, the per-task caps, and the hard 8-iteration ceiling.
 	SOLO_SYS = ("You are a careful analyst answering a question about a large "
 	            "body of text, which you hold in full. Work step by step if "
 	            "useful across turns. When confident, reply with ONLY the "
 	            "fenced JSON answer object:\n{answer_instructions}")
+	SOLO_CEILING = 8               # hard iteration ceiling for solo arms
 
 	def _solo_sys(self) -> str:
 		return self.SOLO_SYS.format(
 			answer_instructions=self.adapter.answer_instructions())
 
-	def _solo_requests(self, st) -> list[SeatRequest]:
-		if st.get("budget_exhausted") and not st["done"]:
-			if st.get("_forced_final"):
-				st["done"] = True
-				return []
-			st["_forced_final"] = True
-			view = ([{"role": "system", "content": self._solo_sys()}]
-			        + st["solo_msgs"]
-			        + [{"role": "user", "content": "Token budget reached. Reply "
-			            "NOW with ONLY the fenced JSON answer object:\n"
-			            + self.adapter.answer_instructions()}])
-			return [SeatRequest("", "Reader", view, "solo_final", st["round"],
-			                    max_tokens=st["inst"].payload.get(
-			                        "final_cap", self.adapter.final_cap),
-			                    meta={})]
-		if not st["solo_msgs"]:
-			p = st["inst"].payload
-			task = (f"=== THE FULL TEXT ===\n{''.join(p['shards'])}\n\n"
-			        f"=== QUESTION ===\n{p['question']}")
-			st["solo_msgs"] = [{"role": "user", "content": task}]
-		view = [{"role": "system", "content": self._solo_sys()}] + st["solo_msgs"]
-		cap = max(st.get("solo_turn_cap", self.adapter.solo_turn_cap),
-		          st["inst"].payload.get("final_cap", 0))
-		return [SeatRequest("", "Reader", view, "solo_work", st["round"],
-		                    max_tokens=cap, meta={})]
+	def solo_system(self, st) -> str:
+		return self._solo_sys()
 
-	def _solo_apply(self, st, req, text) -> dict | None:
+	def solo_task(self, st) -> str:
+		p = st["inst"].payload
+		return (f"=== THE FULL TEXT ===\n{''.join(p['shards'])}\n\n"
+		        f"=== QUESTION ===\n{p['question']}")
+
+	def solo_continue(self, st) -> str:
+		return ("Continue. When confident, reply with ONLY the fenced JSON answer object:\n"
+		        + self.adapter.answer_instructions())
+
+	def solo_final_prompt(self, st) -> str:
+		return ("Token budget reached. Reply NOW with ONLY the fenced JSON answer object:\n"
+		        + self.adapter.answer_instructions())
+
+	def solo_work_cap(self, st) -> int:
+		return max(st.get("solo_turn_cap", self.adapter.solo_turn_cap),
+		           st["inst"].payload.get("final_cap", 0))
+
+	def solo_final_cap(self, st) -> int:
+		return st["inst"].payload.get("final_cap", self.adapter.final_cap)
+
+	def solo_parse(self, st, text) -> tuple:
 		parsed = extract_json(text)
 		ans = self.adapter.parse_answer(text, parsed)
-		st["_last_parse"] = (parsed, ans is not None)
-		st["solo_msgs"].append({"role": "assistant", "content": text})
-		if ans is not None:
-			st["answer"] = ans
-			st["answer_raw"] = text
-			st["finalized_round"] = st["round"]
-			st["done"] = True
-			return None
-		if req.phase == "solo_final":
-			st["answer"] = None
-			st["done"] = True
-			return None
-		if st["round"] >= 8:            # hard iteration ceiling for solo arms
-			st["budget_exhausted"] = True
-			return None
-		st["solo_msgs"].append({"role": "user", "content":
-		                        "Continue. When confident, reply with ONLY the "
-		                        "fenced JSON answer object:\n"
-		                        + self.adapter.answer_instructions()})
-		st["round"] += 1
-		return None
+		return parsed, ans is not None, ans is not None, ans
+
+	def solo_finalize(self, st, answer, text) -> None:
+		st["answer"] = answer
+		st["answer_raw"] = text
+		st["finalized_round"] = st["round"]
+
+	def solo_give_up(self, st) -> None:
+		st["answer"] = None
 
 	# -------------------------------------------------------------- scoring --
 	def score(self, st) -> dict:

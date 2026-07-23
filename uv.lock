@@ -904,6 +904,8 @@ wheels = [
 name = "interlens"
 source = { editable = "." }
 dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "torch" },
     { name = "transformers" },
 ]
@@ -936,6 +938,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'api'", specifier = ">=0.112,<1" },
     { name = "datasets", marker = "extra == 'benchmarks'", specifier = ">=3" },
     { name = "inspect-ai", marker = "extra == 'inspect'", specifier = ">=0.3.248" },
+    { name = "numpy" },
     { name = "openai", marker = "extra == 'api'", specifier = ">=1.40" },
     { name = "torch" },
     { name = "transformers", specifier = ">=4.57,<5" },

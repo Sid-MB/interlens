@@ -95,7 +95,9 @@ class TurnRecord:
 	phase: str
 	seat: str
 	content: str            # think-stripped visible content
-	parsed_action: Any
+	parsed_action: Any      # the turn's parsed action — a SCENARIO-DEFINED structure (raw fenced JSON, an
+	                        # Action.to_json() dict, or a scenario's normalized action record); typed Any so each
+	                        # scenario owns its shape. parse_ok records whether it was well-formed for that scenario.
 	parse_ok: bool
 	n_tokens_out: int = 0
 	n_tokens_in: int = 0
@@ -126,7 +128,11 @@ class Episode:
 	cell: str = "base"      # sweep-cell id when the run varies situational config
 	cell_cfg: dict = field(default_factory=dict)
 	turns: list[TurnRecord] = field(default_factory=list)
-	round_checkpoints: list[dict] = field(default_factory=list)  # {round, seat, provisional_action, score, content}
+	# The episode's per-turn oracle log: each item is an ``arena.oracles.OracleRecord.to_json()`` dict — either
+	# a forked provisional probe ({round, seat, provisional_action, score, content}) or an inline oracle
+	# annotation (adds oracle/chosen_value/best_value/divergence/verdict). Stored as dicts (not the dataclass)
+	# so old records load unchanged; the field name stays for record compatibility.
+	round_checkpoints: list[dict] = field(default_factory=list)
 	outcome: dict = field(default_factory=dict)
 	rounds_used: int = 0
 	tokens_in: int = 0

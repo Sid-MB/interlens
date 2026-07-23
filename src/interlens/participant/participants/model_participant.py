@@ -15,9 +15,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Self
@@ -28,6 +26,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from ..participant import Participant
 from ...functional import Functional
 from ...message import Message
+from ...parsing import iter_tagged_json, split_leading_think
 from ...interp.activation_cache import ActivationRecord
 from ...interp.capture import capture_activations
 from ...interp.logprobs import token_logprobs
@@ -47,14 +46,6 @@ def dtype_to_str(dtype) -> str:
 def str_to_dtype(name) -> "torch.dtype":
 	"""``'bfloat16'`` -> ``torch.bfloat16`` (accepts a ``torch.dtype`` unchanged)."""
 	return name if isinstance(name, torch.dtype) else _DTYPES[name]
-
-# Matches a leading ``<think> ... </think>`` reasoning block emitted by thinking models (Qwen3, R1-style).
-# Kept as a base-class default; families whose delimiters differ override ``split_reasoning``.
-_THINK_RE = re.compile(r"^\s*<think>(.*?)</think>\s*", re.DOTALL)
-
-# Hermes/Qwen tool-call format: ``<tool_call>{"name": ..., "arguments": {...}}</tool_call>``.
-_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-
 
 def _common_prefix_len(cached, prompt_ids) -> int:
 	"""Length of the shared leading token run between a cached id list and the new prompt id tensor."""
@@ -302,12 +293,10 @@ class ModelParticipant(Functional, Participant):
 		return bool(self.kv_reuse)
 
 	def split_reasoning(self, text: str) -> tuple[str, str | None]:
-		"""Split a raw completion into ``(visible_content, parsed_think)``. Base handles the ``<think>...</think>``
-		convention; families with other delimiters override this."""
-		match = _THINK_RE.match(text)
-		if not match:
-			return text.strip(), None
-		return text[match.end():].strip(), match.group(1).strip()
+		"""Split a raw completion into ``(visible_content, parsed_think)``. Base handles the leading
+		``<think>...</think>`` convention (via :func:`interlens.parsing.split_leading_think`); families with
+		other delimiters override this."""
+		return split_leading_think(text)
 
 	def generate(self, view: list[dict], *, steering=None, capture=None, patch=None,
 	             return_logprobs: bool = False, turn: int | None = None,
@@ -543,17 +532,17 @@ class ModelParticipant(Functional, Participant):
 
 	def parse_tool_calls(self, text: str) -> list:
 		"""Parse tool calls out of a generation. Base handles the common Hermes/Qwen ``<tool_call>{json}</tool_call>``
-		format; families with other formats (Gemma's ```` ```tool_code ````, Llama's ``<|python_tag|>``) override
-		this. An unrecognized/absent call yields ``[]`` so the loop treats the output as a final message."""
+		format (JSON extraction via :func:`interlens.parsing.iter_tagged_json`); families with other formats
+		(Gemma's ```` ```tool_code ````, Llama's ``<|python_tag|>``) override this. An unrecognized/absent call
+		yields ``[]`` so the loop treats the output as a final message."""
 		from ...tools.tool_call import ToolCall
 
 		calls = []
-		for match in _TOOL_CALL_RE.finditer(text):
+		for data, raw in iter_tagged_json(text, "tool_call"):
 			try:
-				data = json.loads(match.group(1))
-				calls.append(ToolCall(name=data["name"], arguments=data.get("arguments", {}), raw=match.group(0)))
-			except (json.JSONDecodeError, KeyError) as exc:
-				logger.debug("dropping malformed tool call %r: %s", match.group(0), exc)
+				calls.append(ToolCall(name=data["name"], arguments=data.get("arguments", {}), raw=raw))
+			except KeyError as exc:
+				logger.debug("dropping malformed tool call %r: %s", raw, exc)
 				continue
 		return calls
 

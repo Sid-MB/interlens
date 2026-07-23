@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import torch
@@ -120,4 +121,6 @@ def conversation_from_models(
 def conversation_from_ids(ids: tuple[ModelLike, ...], **kwargs) -> Conversation:
 	"""Deprecated thin alias for :func:`conversation_from_models` / :meth:`Conversation.from_models`, kept for
 	back-compat. Prefer ``Conversation.from_models(models=..., ...)``."""
+	warnings.warn("conversation_from_ids is deprecated; use conversation_from_models (or "
+	              "Conversation.from_models) instead.", DeprecationWarning, stacklevel=2)
 	return conversation_from_models(ids, **kwargs)
