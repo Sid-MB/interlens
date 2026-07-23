@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import pytest
 
-from interlens import APIParticipant, Conversation, run, register_analyzer, dataset_field
+from interlens import APIParticipant, Conversation, ModelParticipant, run, register_analyzer, dataset_field
+from interlens.runner.batched import _batchable
 
 
 def _fake_client(system, messages, model, max_tokens, temperature):
@@ -97,6 +98,14 @@ def test_data_driven_rollout_per_row(tmp_path):
 	assert seeds["row_00000"] == "Q: one" and seeds["row_00002"] == "Q: three"
 	# the source row reaches the analyzer via conv.row (per-row side data, not leaked into the model view)
 	assert report.results["row_00001"].conversation.row["q"] == "two"
+
+
+def test_persistent_steering_forces_per_conv_path():
+	# A lazy model participant batches by default, but attaching a persistent ``steering`` must route it to the
+	# per-conv .step path (generate_batch applies no steering hooks, so batching would silently drop it).
+	p = ModelParticipant(name="a", hf_id="Qwen/Qwen2.5-0.5B-Instruct")
+	assert _batchable(p) is True
+	assert _batchable(p.set(steering=object())) is False   # sentinel stands in for a SteeringSpec
 
 
 def test_data_driven_rollout_streams_iterable_without_len():

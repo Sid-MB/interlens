@@ -55,8 +55,12 @@ def _batchable(participant) -> bool:
 	# ANY local ModelParticipant (base or any family subclass — qwen/gemma/llama/…) always batches locally: they
 	# all inherit ``generate_batch``, so the check is capability-based (isinstance), never a per-family allowlist a
 	# new family could silently fall out of. An APIParticipant batches only with batch=True (its provider async
-	# batch API). Tool loops take the per-conv path regardless (the batched path has no tools loop).
+	# batch API). Tool loops AND a persistent per-participant ``steering`` take the per-conv path regardless — the
+	# batched ``generate_batch`` has no tools loop and applies no steering hooks, so batching either would SILENTLY
+	# drop it; routing those participants to ``.step`` (which honours both) keeps the default correct.
 	if getattr(participant, "tools", ()):
+		return False
+	if getattr(participant, "steering", None) is not None:
 		return False
 	if isinstance(participant, ModelParticipant):
 		return True
