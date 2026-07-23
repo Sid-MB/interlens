@@ -425,3 +425,23 @@ def test_generated_game_oracle_annotation():
         verdict = orc.evaluate(game, [], agent, legal)
         assert verdict.best in legal or verdict.best is None
         assert all(a in legal for a in verdict.action_values)
+
+
+def test_oracle_verdicts_are_json_serializable():
+    # Regression: an inline oracle run must produce a JSON-serializable OracleVerdict (extra keyed by Action
+    # objects / numpy arrays / OpponentType would crash the engine's episode save).
+    import json
+    from interlens.arena.negotiation.generate import generate_game
+    from interlens.arena.negotiation.beliefs import BeliefOracle
+    from interlens.arena.negotiation.acceptance import ThresholdOracle
+    from interlens.arena.oracles import annotate
+    game, _ = generate_game(n_parties=5, n_issues=5, seed=2)
+    legal = [Propose(d) for d in game.space.deals()[:12]] + [Walk()]
+    agent = game.agents[0]
+    for orc in (BestResponseOracle(0), AcceptanceOracle(0), EquilibriumOracle(), ThresholdOracle(),
+                BeliefOracle(0)):
+        verdict = orc.evaluate(game, [], agent, legal)
+        json.dumps(verdict.to_json())                       # must not raise
+    recs = annotate([BestResponseOracle(0), AcceptanceOracle(0), EquilibriumOracle(), ThresholdOracle(),
+                     BeliefOracle(0)], game, [], agent, legal, chosen_action=legal[0], round=1, seat=agent)
+    json.dumps([r.to_json() for r in recs])                 # the full episode-record path

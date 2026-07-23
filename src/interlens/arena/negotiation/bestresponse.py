@@ -228,8 +228,9 @@ class BestResponseOracle(Oracle):
 
         best = max(values, key=values.get) if values else None
         vbest = values[best] if best is not None else 0.0
-        surplus_loss = {a: vbest - v for a, v in values.items()}
-        extra = {"surplus_loss": surplus_loss, "best_response_deal": tables.deals[best_deal],
+        # JSON-safe list (not an Action-keyed dict, which would break OracleVerdict.to_json / episode save)
+        surplus_loss = [{"action": a.to_json(), "loss": vbest - v} for a, v in values.items()]
+        extra = {"surplus_loss": surplus_loss, "best_response_deal": list(tables.deals[best_deal]),
                  "best_response_value": float(prop_vals[best_deal]), "continuation": cont_i,
                  "rounds_left": r_left}
         return make_verdict(values, best=best, flags=[], extra=extra)

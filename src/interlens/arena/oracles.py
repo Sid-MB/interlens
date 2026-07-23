@@ -58,6 +58,56 @@ def _de(value: Any) -> Any:
 	return value
 
 
+def _jsonify(value: Any) -> Any:
+	"""Recursively coerce an oracle's free-form ``beliefs`` / ``extra`` payload to JSON-safe data, so the
+	episode's oracle log stays ``json.dumps``-able (and ``dataclasses.asdict``-safe) no matter what an oracle
+	stashes there.
+
+	An ``Action`` becomes its ``to_json()``; a dict KEYED BY actions becomes the same ``[{"action", "value"}]``
+	list as ``action_values`` (a JSON object key can't be an object — this is the case that crashed a
+	best-response oracle's action-keyed ``surplus_loss``); any other non-string dict key is stringified;
+	lists/tuples recurse; primitives pass through."""
+	if isinstance(value, Action):
+		return value.to_json()
+	if isinstance(value, dict):
+		if value and all(isinstance(k, Action) for k in value):
+			return [{"action": k.to_json(), "value": _jsonify(v)} for k, v in value.items()]
+		return {(k if isinstance(k, str) else str(k)): _jsonify(v) for k, v in value.items()}
+	if isinstance(value, (list, tuple)):
+		return [_jsonify(v) for v in value]
+	return value
+
+
+def _as_action(value: Any) -> Action | None:
+	"""``value`` as an ``Action`` if it's a serialized action dict, else ``None``."""
+	if isinstance(value, dict):
+		try:
+			return action_from_json(value)
+		except ValueError:
+			return None
+	return None
+
+
+def _unjsonify(value: Any) -> Any:
+	"""Best-effort inverse of :func:`_jsonify` for ``from_json`` (round-trips where feasible): a serialized
+	action dict becomes its ``Action``; a list whose every element is exactly ``{"action", "value"}`` with a
+	valid serialized action becomes the action-keyed dict it came from (inverting the ``surplus_loss`` case);
+	other dicts/lists recurse. Stringified non-action keys (e.g. an original tuple key) stay strings — not every
+	coercion is reversible."""
+	if (isinstance(value, list) and value
+			and all(isinstance(x, dict) and set(x) == {"action", "value"} and _as_action(x["action"]) is not None
+			        for x in value)):
+		return {_as_action(x["action"]): _unjsonify(x["value"]) for x in value}
+	if isinstance(value, dict):
+		action = _as_action(value)
+		if action is not None:
+			return action
+		return {k: _unjsonify(v) for k, v in value.items()}
+	if isinstance(value, list):
+		return [_unjsonify(v) for v in value]
+	return value
+
+
 @dataclass
 class OracleVerdict:
 	"""One oracle's read of a decision point.
@@ -97,9 +147,11 @@ class OracleVerdict:
 		return best - chosen
 
 	def to_json(self) -> dict:
+		# beliefs/extra are free-form oracle payloads -> run them through _jsonify so an action-keyed dict (e.g. a
+		# best-response oracle's per-action surplus_loss) can't leave the record un-serializable.
 		return {"action_values": [{"action": _ser(a), "value": v} for a, v in self.action_values.items()],
-		        "best": _ser(self.best), "beliefs": self.beliefs, "flags": list(self.flags),
-		        "extra": dict(self.extra)}
+		        "best": _ser(self.best), "beliefs": _jsonify(self.beliefs), "flags": list(self.flags),
+		        "extra": _jsonify(self.extra)}
 
 	@staticmethod
 	def from_json(d: dict) -> "OracleVerdict":
@@ -110,8 +162,8 @@ class OracleVerdict:
 		episodes."""
 		action_values = {_de(item["action"]): item["value"] for item in d.get("action_values", [])}
 		return OracleVerdict(action_values=action_values, best=_de(d.get("best")),
-		                     beliefs=d.get("beliefs"), flags=list(d.get("flags", [])),
-		                     extra=dict(d.get("extra", {})))
+		                     beliefs=_unjsonify(d.get("beliefs")), flags=list(d.get("flags", [])),
+		                     extra=_unjsonify(d.get("extra", {})))
 
 
 class Oracle(ABC):

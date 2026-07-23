@@ -443,10 +443,10 @@ class BeliefOracle(Oracle):
         if offers:
             self.update_from_offers(offers, option_counts)
         beliefs = {str(opp): _belief_summary(st) for opp, st in self.states.items()}
-        extra = {
-            "induced": {opp: st.induced_distribution() for opp, st in self.states.items()},
-            "map_types": {opp: st.map_type() for opp, st in self.states.items()},
-        }
+        # keep extra small + JSON-safe: the full induced distribution (up to ~10^4 types x n opponents) is
+        # neither serializable nor cheap to dump per turn — the compact per-opponent summary lives in
+        # ``beliefs``; in-process consumers read the ``BeliefState`` posteriors directly.
+        extra = {"n_opponents": len(self.states)}
         return make_verdict({}, best=None, beliefs=beliefs, flags=[], extra=extra)
 
 

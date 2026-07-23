@@ -37,10 +37,37 @@ from __future__ import annotations
 import json
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Iterable, Iterator, Protocol, runtime_checkable
 
 import numpy as np
+
+
+def jsonify(obj):
+    """Recursively coerce an oracle-diagnostics payload to a JSON-serializable form so ``OracleVerdict.extra``
+    always survives ``to_json()`` / the engine's episode save. Handles: numpy arrays/scalars -> lists/py
+    scalars; objects with ``.to_json()`` (the typed actions) -> their json; other dataclasses (e.g.
+    ``OpponentType``) -> their fields; dicts with non-string keys (e.g. an ``{Action: value}`` map) -> a list
+    of ``{"key", "value"}`` entries; tuples/lists element-wise."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    to_json = getattr(obj, "to_json", None)
+    if callable(to_json):
+        try:
+            return to_json()
+        except Exception:
+            pass
+    if is_dataclass(obj) and not isinstance(obj, type):
+        return jsonify(asdict(obj))
+    if isinstance(obj, dict):
+        if all(isinstance(k, str) for k in obj):
+            return {k: jsonify(v) for k, v in obj.items()}
+        return [{"key": jsonify(k), "value": jsonify(v)} for k, v in obj.items()]
+    if isinstance(obj, (list, tuple, set)):
+        return [jsonify(x) for x in obj]
+    return obj
 
 Deal = tuple[int, ...]
 
@@ -148,7 +175,7 @@ def make_verdict(action_values, best=None, *, beliefs=None, flags=None, extra=No
     If the target dataclass has no ``extra`` field, the ``extra`` diagnostics are attached as a dynamic
     attribute (best-effort) so nothing is lost; ``beliefs``/``flags`` always map to the frozen fields."""
     flags = list(flags or [])
-    extra = dict(extra or {})
+    extra = jsonify(dict(extra or {}))   # keep extra JSON-serializable so to_json()/episode-save never crash
     try:
         v = OracleVerdict(action_values=action_values, best=best, beliefs=beliefs, flags=flags, extra=extra)
     except TypeError:

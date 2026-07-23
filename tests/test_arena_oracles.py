@@ -51,6 +51,49 @@ def test_verdict_to_json_serializes_action_keys():
 	assert j["best"] == {"action": "accept", "offer_id": "O1"} and j["beliefs"] == {"p": 0.7}
 
 
+def test_verdict_extra_with_action_keys_is_json_serializable():
+	"""Regression: a best-response oracle keys extra['surplus_loss'] by Action objects; to_json must still
+	produce a json.dumps-able (and dataclasses.asdict-safe) record — Action objects can't be JSON keys."""
+	import json
+	from interlens.arena.actions import Propose
+	v = OracleVerdict(action_values={Accept("O1"): 0.5, Walk(): 0.0}, best=Accept("O1"),
+	                  beliefs={"types": {("weight",): 0.5}},   # non-str keys in beliefs too
+	                  extra={"surplus_loss": {Accept("O1"): 0.0, Walk(): 0.5}, "best_deal": Propose(deal=(0, 1)),
+	                         "note": "ok"})
+	j = v.to_json()
+	json.dumps(j)                                              # crashed before the fix (Action objects as keys)
+	# an action-keyed sub-dict becomes the [{action, value}] list form, like action_values
+	sl = j["extra"]["surplus_loss"]
+	assert isinstance(sl, list)
+	assert {"action": {"action": "accept", "offer_id": "O1"}, "value": 0.0} in sl
+	assert j["extra"]["best_deal"] == {"action": "propose", "deal": [0, 1]}   # Action value -> its to_json
+	assert j["extra"]["note"] == "ok"
+	# the record that actually lands in round_checkpoints must also serialize
+	rec = OracleRecord.annotation(v, round=1, seat="Avery", oracle="bestresponse", chosen_action=Walk())
+	json.dumps(rec.to_json())
+	# round-trip: from_json inverts the action-keyed surplus_loss back to an Action-keyed dict
+	back = OracleVerdict.from_json(j)
+	assert back.extra["surplus_loss"] == {Accept("O1"): 0.0, Walk(): 0.5}
+	assert back.extra["best_deal"] == Propose(deal=(0, 1)) and back.extra["note"] == "ok"
+
+
+def test_extra_preserialized_action_list_passes_through():
+	"""oracles-strategies emits surplus_loss as an explicit already-serialized list
+	[{"action": a.to_json(), "loss": v}] (and compacts belief extra to a summary). The sanitizer must leave
+	that shape json-safe and INTACT (no double-wrapping), and one round-trip must be idempotent on it."""
+	import json
+	v = OracleVerdict(action_values={Accept("O1"): 0.5}, best=Accept("O1"),
+	                  extra={"surplus_loss": [{"action": Accept("O1").to_json(), "loss": 1.5},
+	                                          {"action": Walk().to_json(), "loss": 0.0}],
+	                         "n_opponents": 5})
+	j = v.to_json()
+	json.dumps(j)
+	assert j["extra"]["surplus_loss"] == [{"action": {"action": "accept", "offer_id": "O1"}, "loss": 1.5},
+	                                      {"action": {"action": "walk"}, "loss": 0.0}]
+	assert j["extra"]["n_opponents"] == 5
+	assert OracleVerdict.from_json(j).to_json()["extra"] == j["extra"]   # round-trip idempotent on their shape
+
+
 def test_verdict_json_round_trip_including_extra():
 	from interlens.arena.actions import Propose
 	v = OracleVerdict(action_values={Propose(deal=(0, 1)): 2.0, Accept("O1"): 0.5, Walk(): 0.0},
