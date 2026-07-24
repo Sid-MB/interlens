@@ -146,8 +146,16 @@ class ScorableNegotiation(Scenario):
 			"walked": [],                            # seats that WALKed, in order
 			"final_deal": None, "finalized_by": None, "final_offer": None, "final_votes": [],
 			"closing_offer": None, "turn_count": 0,
-			# rotating proposer: base start counterbalanced across seeds, advanced each round
-			"proposer_base": (spec.proposer + seed) % n,
+			# Preset protocol knobs (defaults preserve the multi-round rotating-proposer game exactly).
+			# single_shot: skip the regular round-robin entirely and go straight to the propose-then-vote forced
+			# final (the take-it-or-leave-it ultimatum shape -- one proposal, then the responders vote, done).
+			# fixed_proposer: the proposer seat does NOT rotate (and is not seed-counterbalanced), so the same
+			# seat opens every proposal round -- the "fixed proposer / responder-only vote" of the ultimatum.
+			"single_shot": cfg.get("single_shot", False),
+			"fixed_proposer": cfg.get("fixed_proposer", False),
+			# rotating proposer: base start counterbalanced across seeds, advanced each round -- unless a
+			# fixed-proposer preset pins it to the designated seat (no seed counterbalancing, no rotation).
+			"proposer_base": spec.proposer if cfg.get("fixed_proposer") else (spec.proposer + seed) % n,
 			# knobs (recorded in the episode's cell_cfg)
 			"cell": cfg.get("cell", "base"),
 			"rounds": cfg.get("rounds", spec.rounds),
@@ -189,9 +197,12 @@ class ScorableNegotiation(Scenario):
 	def _rotation(self, st, round_no: int) -> list[int]:
 		"""ALL seat indices in this round's speaking order (walked seats included — callers skip them). The
 		rotation start advances one seat per round (so the opener rotates) from ``proposer_base`` (itself
-		counterbalanced across seeds). Pure function of ``round_no``, so replay is exact."""
+		counterbalanced across seeds) — unless the ``fixed_proposer`` knob is set, in which case the start is
+		pinned to ``proposer_base`` every round (the ultimatum's non-rotating proposer). Pure function of
+		``round_no``, so replay is exact."""
 		n = st["spec"].n_parties
-		start = (st["proposer_base"] + (round_no - 1)) % n
+		advance = 0 if st.get("fixed_proposer") else (round_no - 1)
+		start = (st["proposer_base"] + advance) % n
 		return [(start + k) % n for k in range(n)]
 
 	def _active_order(self, st, round_no: int) -> list[int]:
@@ -317,7 +328,10 @@ class ScorableNegotiation(Scenario):
 		if len(self._active_idxs(st)) < 2:  # cannot negotiate alone: the game is over as a no-deal
 			return []
 		rounds = st["rounds"]
-		if st["round"] <= rounds:
+		# single_shot (ultimatum): no regular round-robin at all — fall straight through to the forced-final
+		# propose-then-vote below (the fixed proposer tables ONE offer, the responder(s) vote, done). The
+		# default game plays the regular rounds first, then the forced final.
+		if not st.get("single_shot") and st["round"] <= rounds:
 			si = self._next_mover(st)
 			if si is None:
 				return []  # transient: apply advances the round synchronously after the last mover

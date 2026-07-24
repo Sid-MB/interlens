@@ -342,24 +342,41 @@ def build_instance(game: GameSpec, analysis: dict, *, name: str, level: int, see
     return Instance(new_id(prefix), name, level, seed, game.to_json(), ceiling, floor, analysis)
 
 
+def game_at_level(level: int, seed: int, *, ladder: list[dict] | None = None,
+                  **overrides) -> tuple[GameSpec, dict]:
+    """The ``(GameSpec, analysis)`` at difficulty ``level`` from ``seed`` -- the level -> generator-knob mapping
+    shared by :func:`generate_instance` and the ``games.scorable`` preset, so the difficulty ladder and the
+    per-round discount default live in exactly one place (never re-defaulted at a call site).
+
+    Maps ``level`` through ``ladder`` (default :data:`INSTANCE_LADDER`, shrinking feasible set with level) to
+    :func:`generate_game` knobs -- the bank's per-round discount :data:`LADDER_DISCOUNT` (< 1, so interior
+    concession is rational rather than deadline brinkmanship [sandholm_vulkan1999]) plus the level's
+    feasible-fraction/dominated-target -- then generates the game and its enumeration-verified analysis.
+    ``**overrides`` win over the ladder knobs (e.g. ``discount=1.0`` for a brinkmanship-baseline arm, or
+    ``n_parties``/``n_issues``/``n_options``/``mix``/``info``). No ``Instance`` wrapping -- see
+    :func:`generate_instance` for that."""
+    ladder = ladder if ladder is not None else INSTANCE_LADDER
+    if not 0 <= level < len(ladder):
+        raise IndexError(f"level {level} out of range for a ladder of {len(ladder)} levels")
+    knobs = {"discount": LADDER_DISCOUNT, **ladder[level], **overrides}
+    return generate_game(seed=seed, **knobs)
+
+
 def generate_instance(level: int, seed: int, *, name: str = "scorable_negotiation",
                       ladder: list[dict] | None = None, **overrides) -> Instance:
     """Generate one solver-verified arena :class:`~interlens.arena.schema.Instance` at difficulty ``level`` from
     ``seed`` -- the bridge a ``ScorableNegotiation`` scenario's ``generate_instance`` delegates to.
 
     Maps ``level`` through ``ladder`` (default :data:`INSTANCE_LADDER`, shrinking feasible set with level) to
-    :func:`generate_game` knobs, generates the game plus its enumeration-verified analysis, and wraps them via
-    :func:`build_instance`. The bank ships with per-round discount :data:`LADDER_DISCOUNT` (< 1, so interior
-    concession is rational rather than deadline brinkmanship [sandholm_vulkan1999]); pass ``discount=1.0`` (or any
-    other knob) via ``**overrides`` to change it -- e.g. a brinkmanship-baseline ablation arm. Other overridable
-    knobs: ``n_parties``, ``n_issues``, ``n_options``, ``mix``, ``max_tries``, ``breakdown_risk``. ``name`` sets
-    ``Instance.scenario`` so a scenario passes ``self.name``. The payload is deterministic per ``(level, seed)``
-    (the instance id is fresh each call, per the arena convention)."""
-    ladder = ladder if ladder is not None else INSTANCE_LADDER
-    if not 0 <= level < len(ladder):
-        raise IndexError(f"level {level} out of range for a ladder of {len(ladder)} levels")
-    knobs = {"discount": LADDER_DISCOUNT, **ladder[level], **overrides}
-    game, analysis = generate_game(seed=seed, **knobs)
+    :func:`generate_game` knobs via :func:`game_at_level`, generates the game plus its enumeration-verified
+    analysis, and wraps them via :func:`build_instance`. The bank ships with per-round discount
+    :data:`LADDER_DISCOUNT` (< 1, so interior concession is rational rather than deadline brinkmanship
+    [sandholm_vulkan1999]); pass ``discount=1.0`` (or any other knob) via ``**overrides`` to change it -- e.g. a
+    brinkmanship-baseline ablation arm. Other overridable knobs: ``n_parties``, ``n_issues``, ``n_options``,
+    ``mix``, ``max_tries``, ``breakdown_risk``. ``name`` sets ``Instance.scenario`` so a scenario passes
+    ``self.name``. The payload is deterministic per ``(level, seed)`` (the instance id is fresh each call, per the
+    arena convention)."""
+    game, analysis = game_at_level(level, seed, ladder=ladder, **overrides)
     return build_instance(game, analysis, name=name, level=level, seed=seed)
 
 

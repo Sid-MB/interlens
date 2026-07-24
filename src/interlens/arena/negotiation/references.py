@@ -180,6 +180,49 @@ REFERENCES: dict[str, Reference] = {
         "Score-sheet descriptors: sparsity = % zero-valued options (23.7-43.0%), pairwise IoU of score "
         "functions (18.8-29.8%); welfare metrics USW/ESW/NSW.",
     ),
+    # --- game-preset anchors (games.py): the classic bargaining family the scorable formalism subsumes ---
+    "guth1982": Reference(
+        "guth1982",
+        "Guth, W., Schmittberger, R. & Schwarze, B. (1982). An experimental analysis of ultimatum bargaining. "
+        "Journal of Economic Behavior & Organization 3(4):367-388. DOI:10.1016/0167-2681(82)90011-7.",
+        "https://doi.org/10.1016/0167-2681(82)90011-7",
+        "The ultimatum game and its behavioral contrast to the subgame-perfect prediction: humans REJECT low "
+        "positive offers (modal offers ~50%, low offers punished), which a payoff-rational responder never "
+        "would -- the LLM-vs-rational gap the ultimatum preset probes.",
+    ),
+    "rubinstein1982": Reference(
+        "rubinstein1982",
+        "Rubinstein, A. (1982). Perfect Equilibrium in a Bargaining Model. Econometrica 50(1):97-109.",
+        "https://www.jstor.org/stable/1912531",
+        "Alternating-offers bargaining with a unique subgame-perfect equilibrium; the one-round (finite-horizon "
+        "T=1) limit is the ultimatum game -- SPE: the proposer keeps pie-epsilon, the responder accepts any "
+        "positive share (indifferent at 0, so keeps the whole pie under the >= 0 acceptance convention).",
+    ),
+    "baron_ferejohn1989": Reference(
+        "baron_ferejohn1989",
+        "Baron, D. P. & Ferejohn, J. A. (1989). Bargaining in Legislatures. American Political Science Review "
+        "83(4):1181-1206.",
+        "https://www.jstor.org/stable/1961664",
+        "The random-proposer, closed-rule, majority/unanimity divide-the-dollar model behind the divide_dollar "
+        "preset; the stationary equilibrium the equilibrium oracle mounts (see equilibrium.py).",
+    ),
+    "okada1996": Reference(
+        "okada1996",
+        "Okada, A. (1996). A Noncooperative Coalitional Bargaining Game with Random Proposers. Games and "
+        "Economic Behavior 16(1):97-108. DOI:10.1006/game.1996.0076.",
+        "https://doi.org/10.1006/game.1996.0076",
+        "The unanimity closed form the equilibrium oracle sanity-anchors on: proposer keeps 1 - delta(n-1)/n, "
+        "each responder gets delta/n, continuation value v_i = 1/n -- the divide_dollar preset's rational "
+        "reference.",
+    ),
+    "lewis2017": Reference(
+        "lewis2017",
+        "Lewis, M., Yarats, D., Dauphin, Y. N., Parikh, D. & Batra, D. (2017). Deal or No Deal? End-to-End "
+        "Learning for Negotiation Dialogues. EMNLP 2017, pp. 2443-2453. arXiv:1706.05125.",
+        "https://arxiv.org/abs/1706.05125",
+        "The bilateral, multi-issue, private-value item-division game (DoND) the bilateral_multiissue preset "
+        "reproduces via the scorable generator with n_parties=2, info='private'.",
+    ),
 }
 
 

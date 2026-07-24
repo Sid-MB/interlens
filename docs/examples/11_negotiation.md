@@ -31,6 +31,31 @@ spec.to_json()                 # round-trips via GameSpec.from_json — drops in
 
 `GameSpec.surplus_matrix()` is the dense `|D| × n` surplus array every solution concept consumes; `feasible_mask()` is the boolean mask of deals that pass the agreement rule (proposer + veto clear, and ≥ `min_accept` parties clear their threshold).
 
+## Swapping the game: presets
+
+The situation is a **swappable axis**, like the oracle stack — "two agents play the ultimatum game" is one call. `arena/negotiation/games.py` is a registry mapping a name to a literature-grounded **preset**: a factory returning `(GameSpec, analysis, protocol_cfg)`, the game plus its exact analysis plus the scenario knobs that turn the one `ScorableNegotiation` engine into that game. Presets are *parameterizations, not new engines* — the same deal space, oracle stack, annotation, and atlas run unchanged on any of them.
+
+```python
+from interlens.arena.negotiation import games
+
+games.PRESETS                                          # {'scorable', 'ultimatum', 'divide_dollar', 'bilateral_multiissue'}
+game, analysis, protocol_cfg = games.make_preset("ultimatum", pie=10, n_options=11)
+game.n_parties, analysis["deal_space_size"]            # 2, 11  (one split per option)
+protocol_cfg                                           # {'single_shot': True, 'fixed_proposer': True}
+
+# the arena bridge: a solver-verified Instance + the cfg to play it under (reuses generate.build_instance)
+instance, protocol_cfg = games.build_preset_instance("divide_dollar", n_parties=3, rule="majority")
+```
+
+| Preset | Game | Rational anchor |
+|---|---|---|
+| `scorable` (default) | the multi-party, multi-issue repaired game (§2 generator; a thin alias, defaults unchanged) | the §4 oracle stack |
+| `ultimatum` | take-it-or-leave-it N=2 pie split (J=1, τ=0, `rounds=1`, single-shot responder-only vote) | SPE: proposer keeps the pie, responder accepts any positive share (Güth et al. 1982 human-rejection contrast; Rubinstein 1982 §5) |
+| `divide_dollar` | N-party discrete-shares split, rotating proposer, multi-round, unanimity/majority | Baron–Ferejohn 1989 / Okada 1996 (`v_i = 1/n` — the equilibrium oracle's own anchor) |
+| `bilateral_multiissue` | DoND-style N=2, J-issue, private values (the generator at `n_parties=2`) | Lewis et al. 2017 lineage |
+
+`protocol_cfg` is passed as the scenario `cfg` (or merged into it) so the shared state machine runs the preset's protocol variant. `single_shot` skips the round-robin and goes straight to the propose→vote forced final; `fixed_proposer` pins the opener seat (no rotation) — both default off, so the standard multi-round game is unchanged. Majority vs unanimity is just `GameSpec.min_accept`. The experiment runner exposes all four as `run.py --game {scorable,ultimatum,divide_dollar,bilateral_multiissue}` (+ `--game-arg KEY=VALUE` preset knobs).
+
 ## Exact solutions & descriptors
 
 `solutions.analyze(space, sheets)` returns the full, JSON-serializable analysis every generated instance ships with — the normative benchmarks and the score-sheet descriptors that tell you whether the game is actually contestable.
