@@ -17,6 +17,8 @@ print(conv.transcript)
 
 See [`docs/examples`](docs/examples) for sample code.
 
+*[Documentation for LLMs](https://interlens.sidmb.com/llms-full.txt)!
+
 ## Install
 
 ```bash
