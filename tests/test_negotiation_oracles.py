@@ -423,8 +423,11 @@ def test_generated_game_oracle_annotation():
     for orc in (BestResponseOracle(0, discount=0.95), AcceptanceOracle(0, discount=0.95),
                 EquilibriumOracle(discount=0.95)):
         verdict = orc.evaluate(game, [], agent, legal)
-        assert verdict.best in legal or verdict.best is None
-        assert all(a in legal for a in verdict.action_values)
+        # `best` is among the SCORED actions (which may be a superset of `legal`: the best-response oracle also
+        # scores its own best-response proposal so a proposal turn's divergence is meaningful, even when the
+        # scenario passes only the chosen propose in `legal`).
+        assert verdict.best in verdict.action_values or verdict.best is None
+        assert all(a in verdict.action_values for a in legal)   # every passed legal action is scored
 
 
 def test_oracle_verdicts_are_json_serializable():

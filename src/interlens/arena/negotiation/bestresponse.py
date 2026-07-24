@@ -226,6 +226,17 @@ class BestResponseOracle(Oracle):
             else:
                 values[a] = cont_i
 
+        # When proposing is a legal move at this decision point, the agent could have tabled ANY deal, so score
+        # the oracle's OWN best-response proposal too. Otherwise ``best``/divergence range only over the actions
+        # in the passed ``legal`` set — which for a proposal turn is often just the single chosen ``Propose`` (the
+        # scenario deliberately does not enumerate the whole |D| proposal space into the record) — so a proposal
+        # turn trivially reads ~0 regret even when the chosen offer is far from best-response (the single-shot
+        # mis-scoring). The full proposal space is enumerated here (``prop_vals``), so the best-response deal is a
+        # sound extra candidate. Vote-only turns (no ``Propose`` legal) are untouched — the agent cannot propose.
+        if any(isinstance(a, Propose) for a in legal):
+            br_action = Propose(tuple(int(x) for x in tables.deals[best_deal]))
+            values.setdefault(br_action, float(prop_vals[best_deal]))
+
         best = max(values, key=values.get) if values else None
         vbest = values[best] if best is not None else 0.0
         # JSON-safe list (not an Action-keyed dict, which would break OracleVerdict.to_json / episode save)

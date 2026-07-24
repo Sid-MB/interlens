@@ -497,14 +497,32 @@ def game_tables(game) -> GameTables:
 
 
 def offer_registry(game, history) -> dict:
-    """Recover ``{offer_id: Deal}`` from the game/history. Prefers an explicit registry
-    (``history.offers`` / ``game.offers``); otherwise scans turns for ``Propose`` actions and assigns
-    sequential ids ``O1, O2, ...`` in order of appearance."""
+    """Recover ``{offer_id: Deal}`` from the game/history. Prefers an explicit registry, read as either an
+    ``offers`` ATTRIBUTE (``history.offers`` / ``game.offers``) or, when ``history`` is a mapping, an ``offers``
+    KEY -- the shape the scenario's per-turn history snapshot carries (``ScorableNegotiation._history_snapshot``
+    stores ``offers`` as a LIST of serialized ``Offer`` dicts, each with ``offer_id`` + ``deal``). The registry
+    may thus be a ``{id: offer}`` mapping OR a list of ``Offer.to_json()`` dicts / ``Offer`` objects. Falls back
+    to scanning turns for ``Propose`` actions, assigning sequential ids ``O1, O2, ...`` in order of appearance.
+
+    Getting this right is load-bearing: if the standing offers are lost, the acceptance / threshold /
+    best-response oracles value every ``Accept`` at the no-deal continuation instead of the offer's realized
+    surplus (the single-shot mis-scoring bug), so a rational accept reads as 0 regret AND 0 value."""
     for src in (history, game):
         reg = getattr(src, "offers", None)
+        if reg is None and isinstance(src, dict):
+            reg = src.get("offers")                          # scenario history snapshot: an `offers` key
         if isinstance(reg, dict) and reg:
             return {k: tuple(int(x) for x in getattr(v, "deal", v)) for k, v in reg.items()}
-    out: dict = {}
+        if isinstance(reg, list) and reg:                    # a list of Offer.to_json() dicts (or Offer objects)
+            out: dict = {}
+            for o in reg:
+                oid = o.get("offer_id") if isinstance(o, dict) else getattr(o, "offer_id", None)
+                deal = o.get("deal") if isinstance(o, dict) else getattr(o, "deal", None)
+                if oid is not None and deal is not None:
+                    out[str(oid)] = tuple(int(x) for x in deal)
+            if out:
+                return out
+    out = {}
     n = 0
     for turn in (history or []):
         act = getattr(turn, "action", None)

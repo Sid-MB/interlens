@@ -24,21 +24,26 @@ single-round (T=1) horizon the ultimatum runs at. The CPU end-to-end episode smo
 ScorableNegotiation, atlas machinery) live in the experiment tests, where the seating/annotate layer lives."""
 from __future__ import annotations
 
+import asyncio
 import json
 
 import numpy as np
 import pytest
 
 from interlens.arena.actions import Accept, Propose, Walk
+from interlens.arena.engine import EpisodePool
 from interlens.arena.negotiation import games
 from interlens.arena.negotiation._oracle_common import GameTables, NegotiationState
-from interlens.arena.negotiation.acceptance import AcceptanceOracle
+from interlens.arena.negotiation.acceptance import AcceptanceOracle, ThresholdOracle
 from interlens.arena.negotiation.bestresponse import BestResponseOracle
 from interlens.arena.negotiation.equilibrium import EquilibriumOracle, okada_closed_form
 from interlens.arena.negotiation.sheets import GameSpec
 from interlens.arena.negotiation.solutions import ir_mask, pareto_mask
 from interlens.arena.negotiation.strategies import TimeDependentPolicy
-from interlens.arena.schema import Instance
+from interlens.arena.scenarios.scorable import ScorableNegotiation
+from interlens.arena.schema import Instance, PERSONAS, new_id
+from interlens.message import Message
+from interlens.participant.participant import Participant
 
 
 class _Turn:
@@ -104,6 +109,42 @@ def test_ultimatum_analysis_ir_and_pareto():
     assert analysis["ir_pareto_fraction"] == 1.0
 
 
+def _ultimatum_scenario_state(pie: float = 10, n_options: int = 11):
+    """A fresh ``ScorableNegotiation`` + single-shot ultimatum state, ready at the fixed proposer's turn."""
+    game, _, protocol_cfg = games.make_preset("ultimatum", pie=pie, n_options=n_options)
+    scen = ScorableNegotiation()
+    inst = Instance(new_id("ult"), scen.name, 0, 0, payload=game.to_json(), ceiling=1.0, floor=0.0, solution={})
+    return scen, scen.make_state(inst, "moves_only", seed=0, cfg=protocol_cfg)
+
+
+def test_ultimatum_bare_label_decodes_and_registers():
+    # Regression (real Qwen3-4B bug): the model emits {"Split": "P5"}. Labels are now bare proposer-share tokens
+    # ("P0".."P10", no "/R" pair), so that exact emission decodes on the FIRST try and registers a live offer
+    # (the earlier "P5/R5" pair form made the model abbreviate to "P5" and fail the option lookup -> no_deal).
+    game, _, _ = games.make_preset("ultimatum", pie=10, n_options=11)
+    assert game.space.issues[0].options[:3] == ("P0", "P1", "P2")       # bare tokens, no "/R" suffix
+    assert game.space.parse({"Split": "P5"}) == (5,)                    # decodes to the proposer-keeps-5 split
+
+    scen, st = _ultimatum_scenario_state()
+    req = scen.next_requests(st)[0]                                     # the fixed proposer's single-shot turn
+    directive = scen.apply(st, req, '```json\n{"action": "propose", "deal": {"Split": "P5"}}\n```')
+    assert directive is None                                           # parsed + committed, no retry needed
+    assert st["legality_errors"] == 0 and st["final_offer"] is not None  # a live offer was registered
+
+
+def test_bad_deal_label_retry_echoes_valid_options():
+    # Regression: a bad option label must trigger ONE retry whose message ECHOES the offending issue's valid
+    # labels (AucArena-style feedback), not the generic "set every issue to a valid option" — otherwise a model
+    # just repeats the same bad token and wastes the turn (exactly what sank the first LLM smoke).
+    scen, st = _ultimatum_scenario_state()
+    req = scen.next_requests(st)[0]
+    directive = scen.apply(st, req, '```json\n{"action": "propose", "deal": {"Split": "P999"}}\n```')
+    assert directive and "retry" in directive
+    assert "Split" in directive["retry"]                               # names the offending issue
+    assert "P0" in directive["retry"] and "P10" in directive["retry"]   # lists its valid option labels
+    assert st["legality_errors"] == 1
+
+
 def test_ultimatum_pie_and_granularity_knobs():
     game, analysis, _ = games.make_preset("ultimatum", pie=20, n_options=21)
     assert analysis["deal_space_size"] == 21
@@ -146,6 +187,50 @@ def test_ultimatum_acceptance_oracle_degenerates_at_the_deadline():
     game, _, _ = games.make_preset("ultimatum", pie=10, n_options=11)
     tables = GameTables.from_game(game)
     assert AcceptanceOracle(1).reservation(tables, 0) == 0.0
+
+
+class _GiveAwaySeat(Participant):
+    """One scripted seat playing both roles of a single-shot ultimatum: the proposer gives the WHOLE pie away
+    (proposes P0, keeping nothing), the responder accepts it."""
+
+    self_role, others_role = "assistant", "user"
+
+    def __init__(self):
+        self.name, self.system_prompt, self.private_context = "give_away", None, ()
+
+    def generate(self, view, **kw):
+        if "none yet" in view[-1]["content"]:            # proposer: nothing live -> table P0
+            return Message(self.name, '```json\n{"action": "propose", "deal": {"Split": "P0"}}\n```')
+        return Message(self.name, '```json\n{"action": "accept", "offer_id": "P1"}\n```')   # responder: accept
+
+
+def test_single_shot_oracle_scoring_integration():
+    # Integration regression on the SCENARIO plumbing (not the oracle called directly). The direct-call SPE pins
+    # above passed while this path was broken, because the scenario feeds the oracle a history SNAPSHOT (whose
+    # live offers the oracle couldn't read -> Accept valued at the no-deal continuation) and only the single
+    # chosen Propose (so best-response `best` had nothing better to compare against -> ~0 regret on a proposal
+    # turn). A give-the-pie-away ultimatum makes both failures loud: SPE regret of P0 is the whole pie, and the
+    # responder that accepts the whole pie has surplus = pie, not 0.
+    game, _, protocol_cfg = games.make_preset("ultimatum", pie=10, n_options=11)
+    inst = Instance(new_id("ult"), ScorableNegotiation.name, 0, 0, payload=game.to_json(),
+                    ceiling=1.0, floor=0.0, solution={})
+    scen = ScorableNegotiation(oracles=[ThresholdOracle(), BestResponseOracle(0)])
+    ep = asyncio.run(EpisodePool(None).run_episode(scen, inst, "moves_only", _GiveAwaySeat(), seed=0,
+                                                   cfg=protocol_cfg))
+    assert ep.outcome["deal"] is True and ep.outcome["per_party_surplus"] == [0.0, 10.0]
+
+    proposer, responder = PERSONAS[0], PERSONAS[1]
+    br = {c["seat"]: c for c in ep.round_checkpoints if c.get("oracle") == "bestresponse"}
+    thr = {c["seat"]: c for c in ep.round_checkpoints if c.get("oracle") == "threshold"}
+    # the proposer gave the pie away -> best-response regret is the WHOLE pie (best = the keep-everything offer)
+    assert br[proposer]["chosen_value"] == pytest.approx(0.0)
+    assert br[proposer]["best_value"] == pytest.approx(10.0)
+    assert br[proposer]["divergence"] == pytest.approx(10.0)
+    # the responder accepted the whole pie -> its OWN surplus (10) is scored, not the no-deal continuation (0);
+    # accepting a positive-surplus offer is optimal, so its regret is 0
+    assert br[responder]["chosen_value"] == pytest.approx(10.0)
+    assert br[responder]["divergence"] == pytest.approx(0.0)
+    assert thr[responder]["chosen_value"] == pytest.approx(10.0)   # the same live offer, seen by every oracle
 
 
 # --------------------------------------------------------------------------------------------------------- #

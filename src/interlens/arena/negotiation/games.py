@@ -113,7 +113,10 @@ def ultimatum(*, pie: float = 10.0, n_options: int = 11, seed: int = 0) -> tuple
     unit = pie / (n_options - 1)
     prop_share = [o * unit for o in range(n_options)]
     resp_share = [pie - p for p in prop_share]
-    labels = tuple(f"P{_num(p)}/R{_num(r)}" for p, r in zip(prop_share, resp_share))
+    # Bare "P<share>" labels = the amount the PROPOSER keeps (the responder gets the rest of the pie, shown on the
+    # sheets). Short, unambiguous, copy-pasteable tokens: a small model that emits {"Split": "P5"} decodes on the
+    # first try (the earlier "P5/R5" pair form made models abbreviate to "P5" and fail the option lookup).
+    labels = tuple(f"P{_num(p)}" for p in prop_share)
     space = DealSpace((Issue("Split", labels),))
     sheets = (
         ScoreSheet("Proposer", (tuple(float(p) for p in prop_share),), threshold=0.0),

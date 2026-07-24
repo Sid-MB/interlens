@@ -169,6 +169,8 @@ class ScorableNegotiation(Scenario):
 			"personas": personas,
 			# invalid-action accounting (syntax/legality retried once; economic recorded, not retried)
 			"syntax_errors": 0, "legality_errors": 0, "economic_errors": 0,
+			"_deal_error": None,   # last propose decode error (issue + valid labels), echoed in the one retry
+
 			"_r": set(), "provisional_done": [],
 			# solo (base Scenario solo scaffold uses these)
 			"solo_msgs": [], "_forced_final": False,
@@ -360,17 +362,24 @@ class ScorableNegotiation(Scenario):
 		return []  # all votes in; apply() has resolved closure and set done
 
 	# ------------------------------------------------------------- parsing --
-	def _resolve_deal(self, spec: GameSpec, deal_named) -> tuple | None:
+	def _resolve_deal(self, spec: GameSpec, deal_named, st: dict | None = None) -> tuple | None:
 		"""The ``deal_decoder`` for :func:`parse_action`: map a ``{issue_name: option_label}`` object to a
 		``Deal`` via game-theory's case/space-tolerant ``DealSpace.parse`` (which raises on any missing/unknown/
 		duplicate issue or unknown option), returning ``None`` on failure so an incomplete/invalid package reads
 		as a legality error. A complete deal below a party's threshold still decodes fine — that is an economic
-		choice measured elsewhere, not a decode failure."""
+		choice measured elsewhere, not a decode failure.
+
+		When ``st`` is given (the live-parse path) the raiser's SPECIFIC message — the offending issue plus its
+		valid option labels, e.g. ``unknown option 'P5' for issue 'Split'; options: ['P0', ..., 'P10']`` — is
+		stashed on ``st['_deal_error']`` so :meth:`apply` can echo it in the one retry (AucArena-style feedback);
+		without it a model just repeats the same bad label and the turn is wasted."""
 		if not isinstance(deal_named, dict):
 			return None
 		try:
 			return spec.space.parse(deal_named)
-		except (ValueError, TypeError, KeyError):
+		except (ValueError, TypeError, KeyError) as e:
+			if st is not None:
+				st["_deal_error"] = str(e)
 			return None
 
 	# ------------------------------------------------------------- applying --
@@ -400,16 +409,20 @@ class ScorableNegotiation(Scenario):
 			st["_last_parse"] = (self._record(atype="none", message=message, thinking=thinking), True)
 			return self._commit(st, req, si, seat, chat, None, message, thinking)
 
-		result = parse_action(text, deal_decoder=lambda d: self._resolve_deal(st["spec"], d),
+		st["_deal_error"] = None
+		result = parse_action(text, deal_decoder=lambda d: self._resolve_deal(st["spec"], d, st),
 		                      standing=reg.standing_ids(), allowed=_PHASE_ALLOWED.get(req.phase))
 		if not result.ok:
 			if result.error_kind == LEGALITY:
 				st["legality_errors"] += 1
 			else:
 				st["syntax_errors"] += 1
-			st["_last_parse"] = (self._record(message=message, thinking=thinking,
-			                                  syntax_error=result.error), False)
-			directive = self._retry_once(st, req, result.error, result.error_kind)
+			# A propose whose deal failed to decode carries a SPECIFIC message (the offending issue + its valid
+			# option labels, from DealSpace.parse) — echo it so a model retries with a valid label instead of
+			# repeating the bad one; otherwise fall back to parse_action's generic message.
+			error = st.get("_deal_error") or result.error
+			st["_last_parse"] = (self._record(message=message, thinking=thinking, syntax_error=error), False)
+			directive = self._retry_once(st, req, error, result.error_kind)
 			if directive:
 				return directive
 			return self._commit(st, req, si, seat, chat, None, message, thinking)  # retry spent -> pass
