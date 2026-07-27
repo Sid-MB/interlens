@@ -15,9 +15,10 @@
 
 name: publish
 
-# Every push to main cuts a new release: auto-fix any missing AGPLv3 license headers (committed back to
-# main), bump the patch version, create+push a `vX.Y.Z` tag (the version is derived from it via hatch-vcs),
-# build, publish to PyPI via Trusted Publishing (OIDC — no token), and cut a GitHub Release. The tag is the
+# Every push to main cuts a new release: auto-fix any missing configured license headers (committed back to
+# main), bump the patch version, create a local `vX.Y.Z` tag (the version is derived from it via hatch-vcs),
+# build and attest the artifacts, push the tag, publish to PyPI via Trusted Publishing (OIDC — no token),
+# and cut a GitHub Release. The tag is the
 # source of truth. The header-fix commit can't cause a release loop: pushes made with the workflow's
 # GITHUB_TOKEN never trigger new workflow runs, and nothing else is committed back.
 #
@@ -31,6 +32,40 @@ on:
     paths:
       - 'src/**'
       - 'pyproject.toml'
+  workflow_call:
+    inputs:
+      license:
+        description: "Whether to fix and verify license headers using .licenserc.yaml."
+        required: false
+        default: true
+        type: boolean
+      publish:
+        description: "Whether to publish the built distributions to PyPI."
+        required: false
+        default: true
+        type: boolean
+      release:
+        description: "Whether to create a GitHub Release for the new tag."
+        required: false
+        default: true
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      license:
+        description: "Fix and verify license headers using .licenserc.yaml"
+        required: false
+        default: true
+        type: boolean
+      publish:
+        description: "Publish the built distributions to PyPI"
+        required: false
+        default: true
+        type: boolean
+      release:
+        description: "Create a GitHub Release for the new tag"
+        required: false
+        default: true
+        type: boolean
 
 # Serialize releases so two quick pushes can't race to claim the same version.
 concurrency:
@@ -54,12 +89,27 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Auto-fix missing AGPLv3 file headers instead of failing the release. Deliberately runs the SAME
+      # Native push events have an empty inputs context and retain the enabled defaults; called or manually dispatched runs use their typed inputs even when the caller was itself triggered by a push.
+      - name: Validate license configuration
+        env:
+          LICENSE_ENABLED: ${{ toJSON(inputs) == '{}' || inputs.license }}
+        run: |
+          if [ "$LICENSE_ENABLED" = "false" ] && [ -f .licenserc.yaml ]; then
+            echo "::error title=Conflicting license configuration::The license input is false, but .licenserc.yaml exists. Remove the file or enable license checks."
+            exit 1
+          fi
+          if [ "$LICENSE_ENABLED" = "true" ] && [ ! -f .licenserc.yaml ]; then
+            echo "::error title=Missing license configuration::The license input is true, but .licenserc.yaml is missing. Add a configuration based on https://github.com/Sid-MB/interlens/blob/main/.licenserc.yaml or disable license checks."
+            exit 1
+          fi
+
+      # Auto-fix missing configured file headers instead of failing the release. Deliberately runs the SAME
       # insert-license pre-commit hook devs use locally (see .pre-commit-config.yaml) rather than
       # License-Eye's fix mode, so CI and local hooks write byte-identical headers and can never fight
       # over formatting. The hook exits non-zero when it modifies files — the commit step below picks the
       # changes up, and the License-Eye gate re-verifies, so a real hook failure still stops the release.
-      - name: Fix missing license headers (same insert-license hook as local pre-commit)
+      - name: Fix missing license headers
+        if: ${{ toJSON(inputs) == '{}' || inputs.license }}
         run: |
           python -m pip install --upgrade pre-commit
           pre-commit run --all-files || true
@@ -67,23 +117,26 @@ jobs:
       # Push any fixed headers back to the branch that triggered the run before tagging, so the tag (and
       # the sdist/wheel built from this checkout) always points at a fully-headered tree.
       - name: Commit fixed headers back to the triggering branch
+        if: ${{ toJSON(inputs) == '{}' || inputs.license }}
         run: |
           if ! git diff --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -am "Add missing AGPLv3 license headers [auto]"
+            git commit -am "Add missing license headers [auto]"
             git push origin "HEAD:${{ github.ref_name }}"
           fi
 
-      # Gate the release on the AGPLv3 file headers: no tag, build, or publish happens unless every source
+      # Gate the release on the configured file headers: no tag, build, or publish happens unless every source
       # file now carries the header. Config lives in .licenserc.yaml; its paths mirror the pre-commit
       # hook's `files` patterns — keep the two in sync.
-      - name: Check AGPLv3 license headers
+      - name: Check license headers
+        if: ${{ toJSON(inputs) == '{}' || inputs.license }}
         uses: apache/skywalking-eyes/header@v0.8.0
         with:
           mode: check
 
-      - name: Compute next version and tag it
+      # Create the tag locally before building so hatch-vcs embeds the release version, but do not publish it yet; if the build or provenance attestation fails, the runner disappears with the local tag and the repository remains unchanged, allowing the release to be retried cleanly.
+      - name: Compute next version and create local tag
         id: bump
         run: |
           git fetch --tags --force
@@ -97,12 +150,19 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag "v$next"
-          git push origin "v$next"
 
       - name: Build sdist + wheel
         run: |
           python -m pip install --upgrade build
           python -m build
+
+      # Preserve the distributions for repository-local publishing jobs when publish is false and for inspection or recovery when this workflow publishes them.
+      - name: Upload built distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
 
       # GitHub-native SLSA provenance for the built artifacts (verify later with `gh attestation verify <file>`).
       - name: Attest build provenance
@@ -110,12 +170,18 @@ jobs:
         with:
           subject-path: "dist/*"
 
+      # Publish the already-validated tag only after the distributions build and attest successfully.
+      - name: Push release tag
+        run: git push origin "v${{ steps.bump.outputs.version }}"
+
       - name: Publish to PyPI
+        if: ${{ toJSON(inputs) == '{}' || inputs.publish }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           attestations: true   # upload PEP 740 attestations to PyPI (default under Trusted Publishing; explicit here)
 
       - name: Create GitHub Release
+        if: ${{ toJSON(inputs) == '{}' || inputs.release }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "v${{ steps.bump.outputs.version }}" dist/* --generate-notes
