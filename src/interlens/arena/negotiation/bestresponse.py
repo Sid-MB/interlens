@@ -174,13 +174,20 @@ class BestResponseOracle(Oracle):
         self.opp_proposal = opp_proposal
 
     # -- proposal values for the current round (agent as proposer) ----------------------------------------
-    def propose_values(self, tables: GameTables, cont: np.ndarray) -> np.ndarray:
+    def propose_values(self, tables: GameTables, cont: np.ndarray, agent: int | None = None) -> np.ndarray:
         """Expected value to ``agent`` of proposing each deal now, given the continuation vector ``cont``
         (full-info: ``cont`` is the length-n discounted continuation; belief: pass agent scalar via a length-n
-        vector with opponents' acceptance folded into ``accept_prob``)."""
+        vector with opponents' acceptance folded into ``accept_prob``).
+
+        ``agent`` is the PROPOSING seat; ``None`` falls back to the constructor's ``self.agent``. Pass it
+        explicitly whenever one oracle instance serves several seats — which is what a scenario's shared oracle
+        stack does (``BestResponseOracle(0)`` reused for every seat), and what :meth:`evaluate` now does with the
+        seat it resolved. Getting this wrong is silent: the acceptance mask and the surplus column both come from
+        this seat, so a stale seat prices every proposal from the wrong sheet while accept/reject/walk values
+        (computed from the resolved seat) stay correct."""
         S = tables.surplus
         n = tables.n_agents
-        i = self.agent
+        i = self.agent if agent is None else int(agent)
         others = [r for r in range(n) if r != i]
         if self.accept_prob is None:
             accept_mask = (np.all(S[:, others] >= cont[others][None, :], axis=1) if others
@@ -206,12 +213,12 @@ class BestResponseOracle(Oracle):
             V = value_to_go_full_info(tables, seq, T, disc)
             cont_vec = disc * V[min(t + 1, T + 1)]
         else:
-            opp_prop = self.opp_proposal or self._model_opp_proposals(tables, V_next=None)
+            opp_prop = self.opp_proposal or self._model_opp_proposals(tables, V_next=None, agent=agent)
             Vi = value_to_go_beliefs(tables, agent, seq, T, disc, self.accept_prob, opp_prop)
             cont_i = disc * Vi[min(t + 1, T + 1)]
             cont_vec = np.full(n, cont_i)      # only agent-column used downstream in belief mode
 
-        prop_vals = self.propose_values(tables, cont_vec)
+        prop_vals = self.propose_values(tables, cont_vec, agent)
         best_deal = int(np.argmax(prop_vals))
         cont_i = float(cont_vec[agent])
 
@@ -256,13 +263,15 @@ class BestResponseOracle(Oracle):
                  "rounds_left": r_left}
         return make_verdict(values, best=best, flags=[], extra=extra)
 
-    def _model_opp_proposals(self, tables: GameTables, V_next) -> dict:
+    def _model_opp_proposals(self, tables: GameTables, V_next, agent: int | None = None) -> dict:
         """Fallback opponent-proposal model (belief regime, no explicit ``opp_proposal`` given): each opponent
-        proposes the deal maximizing its own surplus among deals the *others* are most likely to accept."""
+        proposes the deal maximizing its own surplus among deals the *others* are most likely to accept.
+        ``agent`` (the deciding seat, whose own proposal is not modeled) defaults to ``self.agent``."""
         out: dict = {}
         n = tables.n_agents
+        me = self.agent if agent is None else int(agent)
         for p in range(n):
-            if p == self.agent:
+            if p == me:
                 continue
             others = [r for r in range(n) if r != p]
             if self.accept_prob is not None and others:

@@ -180,17 +180,26 @@ class AcceptanceOracle(Oracle):
         return 1.0 if d is None else float(d)
 
     # -- reusable scalar for strategies -------------------------------------------------------------------
-    def reservation(self, tables: GameTables, rounds_left: int, discount: float | None = None) -> float:
-        """The reservation surplus ``v_{rounds_left}`` given the belief-induced offer distribution."""
-        vals, ps = offer_surplus_pmf(tables, self.agent, self.accept_prob_fn)
+    def reservation(self, tables: GameTables, rounds_left: int, discount: float | None = None,
+                    agent: int | None = None) -> float:
+        """The reservation surplus ``v_{rounds_left}`` given the belief-induced offer distribution.
+
+        ``agent`` is the seat whose offer-surplus distribution sets the reservation; ``None`` falls back to the
+        constructor's ``self.agent``. Pass it whenever one instance serves several seats (a scenario's shared
+        oracle stack) — :meth:`evaluate` passes the seat it resolved, since a stale seat here would silently set
+        every party's stopping threshold from seat 0's sheet and so mis-flag ``premature_accept`` /
+        ``should_accept``."""
+        vals, ps = offer_surplus_pmf(tables, self.agent if agent is None else int(agent), self.accept_prob_fn)
         curve = reservation_values(vals, ps, max(rounds_left, 0), cost=self.cost,
                                    discount=self._disc(discount), flow=self.flow,
                                    outside_value=self.outside_value)
         return curve[-1]
 
-    def reservation_curve(self, tables: GameTables, T: int, discount: float | None = None) -> list:
-        """The full endogenous reservation curve ``tau_i(rounds_left)`` for ``rounds_left = 0..T``."""
-        vals, ps = offer_surplus_pmf(tables, self.agent, self.accept_prob_fn)
+    def reservation_curve(self, tables: GameTables, T: int, discount: float | None = None,
+                          agent: int | None = None) -> list:
+        """The full endogenous reservation curve ``tau_i(rounds_left)`` for ``rounds_left = 0..T``. ``agent`` as
+        in :meth:`reservation`."""
+        vals, ps = offer_surplus_pmf(tables, self.agent if agent is None else int(agent), self.accept_prob_fn)
         return reservation_values(vals, ps, T, cost=self.cost, discount=self._disc(discount), flow=self.flow,
                                   outside_value=self.outside_value)
 
@@ -207,7 +216,7 @@ class AcceptanceOracle(Oracle):
         tables = game_tables(game)
         offers = offer_registry(game, history)
         r_left = rounds_left(game, history)
-        v = self.reservation(tables, r_left, disc)
+        v = self.reservation(tables, r_left, disc, agent)
 
         values: dict = {}
         best_offer_surplus = -np.inf

@@ -145,6 +145,56 @@ def test_acceptance_oracle_flags_premature_accept():
     assert verdict.value_of(Accept("O1")) == pytest.approx(1.0)   # surplus of Y for p0
 
 
+def test_shared_acceptance_oracle_reservation_follows_the_resolved_seat():
+    """Regression: ONE ``AcceptanceOracle`` instance serving several seats must set each seat's reservation from
+    THAT seat's offer-surplus distribution.
+
+    ``reservation()`` used to read the constructor's ``self.agent`` while ``evaluate`` resolved the acting seat
+    into a local, so a scenario's shared stack (``AcceptanceOracle(0)`` reused for every seat — what
+    ``run.build_oracles`` builds) gave every party seat 0's stopping threshold, and with it seat 0's
+    ``premature_accept`` / ``should_accept`` flags. The invariant that pins it: shared == dedicated, per seat."""
+    game = _tiny_game()
+    hist = [Turn0("p1", Propose((1,)))]                       # p1 proposes Y -> registered O1
+    legal = [Accept("O1"), Reject("O1"), Walk()]
+    shared = AcceptanceOracle(0, discount=1.0)
+    per_seat = {}
+    for seat, name in ((0, "p0"), (1, "p1")):
+        dedicated = AcceptanceOracle(seat, discount=1.0)
+        got = shared.evaluate(game, hist, name, legal).to_json()
+        assert got == dedicated.evaluate(game, hist, name, legal).to_json(), f"seat {name} priced off-seat"
+        per_seat[name] = got
+    # the two seats must genuinely disagree on this game, or the assertion above proves nothing
+    assert per_seat["p0"] != per_seat["p1"]
+
+
+def test_shared_bestresponse_oracle_prices_proposals_from_the_resolved_seat():
+    """Regression: ONE ``BestResponseOracle`` instance serving several seats must value each seat's PROPOSALS from
+    that seat's sheet.
+
+    ``propose_values`` read the constructor's ``self.agent`` (the acceptance mask AND the surplus column), while
+    accept/reject/walk used the seat ``evaluate`` resolved — so a shared instance mixed two seats' value functions
+    in one verdict, silently and only on proposal rows. Pinned as shared == dedicated, per seat, plus the direct
+    ``propose_values(agent=)`` contract."""
+    game = _tiny_game()
+    legal = [Propose((0,)), Propose((1,)), Walk()]
+    shared = BestResponseOracle(0, discount=0.9)
+    per_seat = {}
+    for seat, name in ((0, "p0"), (1, "p1")):
+        dedicated = BestResponseOracle(seat, discount=0.9)
+        got = shared.evaluate(game, [], name, legal).to_json()
+        assert got == dedicated.evaluate(game, [], name, legal).to_json(), f"seat {name} priced off-seat"
+        per_seat[name] = got
+    assert per_seat["p0"] != per_seat["p1"]
+    # the direct contract: the seat argument, not the constructor's, selects the sheet (this comparison IS the
+    # old-vs-new behavior — the default-argument call is what every stored campaign verdict used)
+    tables = GameTables.from_game(game)
+    cont = np.zeros(tables.n_agents)
+    assert not np.allclose(shared.propose_values(tables, cont),
+                           shared.propose_values(tables, cont, agent=1))
+    assert np.allclose(shared.propose_values(tables, cont, agent=1),
+                       BestResponseOracle(1, discount=0.9).propose_values(tables, cont))
+
+
 def test_threshold_oracle_flags_wrong_deal():
     # A game where deal Z is below party 0's threshold: proposing/accepting it is an IR violation.
     space = DealSpace((Issue("I", ("X", "Y", "Z")),))
