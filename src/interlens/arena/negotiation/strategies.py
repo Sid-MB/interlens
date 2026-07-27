@@ -84,6 +84,9 @@ class NegotiationState:
         The offer id this seat is being asked to respond to (most recent live offer), if any.
     received : list[Deal]
         Opponent-proposed deals in order (feeds MiCRO / tit-for-tat / belief updates).
+    received_by_opponent : dict[int, list[Deal]]
+        The same public opponent offers, preserving proposer seat identity. Bayesian opponent modelling uses
+        this mapping; ``received`` remains the pooled compatibility view for policies that do not.
     my_offers : list[Deal]
         This seat's own past proposals in order.
     discount : float
@@ -107,6 +110,7 @@ class NegotiationState:
     offers: dict = field(default_factory=dict)
     standing: str | None = None
     received: list = field(default_factory=list)
+    received_by_opponent: dict = field(default_factory=dict)
     my_offers: list = field(default_factory=list)
     discount: float = 1.0
     tables: GameTables | None = None
@@ -129,13 +133,19 @@ class NegotiationState:
         """Build a state from a scenario-emitted ``negotiation_state`` block (see ``parse_negotiation_state``)
         plus the seat-bound context (``sheet``/``space``/``tables``/``discount``/``opponents``). The block
         carries only the dynamic fields — ``seat``, ``round``, ``deadline``, ``offers`` (``{id: [opt,...]}``),
-        ``standing`` (id or null), ``received``/``my_offers`` (lists of deals) — so a ``PolicyParticipant``
-        can read the scenario's authoritative offer registry straight from its view."""
+        ``standing`` (id or null), ``received``/``my_offers`` (lists of deals), and
+        ``received_by_opponent`` (``{seat_index: [deal, ...]}``) — so a ``PolicyParticipant`` can read the
+        scenario's authoritative offer registry straight from its view."""
         offers = {k: tuple(int(x) for x in v) for k, v in (block.get("offers") or {}).items()}
+        received_by_opponent = {
+            int(k): [tuple(int(x) for x in d) for d in deals]
+            for k, deals in (block.get("received_by_opponent") or {}).items()
+        }
         return cls(seat=int(block.get("seat", seat if seat is not None else 0)), sheet=sheet, space=space,
                    round=int(block.get("round", 1)), deadline=int(block.get("deadline", 1)),
                    offers=offers, standing=block.get("standing"),
                    received=[tuple(int(x) for x in d) for d in block.get("received", [])],
+                   received_by_opponent=received_by_opponent,
                    my_offers=[tuple(int(x) for x in d) for d in block.get("my_offers", [])],
                    discount=discount, tables=tables, opponents=tuple(opponents),
                    must_vote=bool(block.get("must_vote", False)))
@@ -546,7 +556,8 @@ class BayesianRationalPolicy(Policy):
             return ap
         belief = BeliefOracle(state.seat)
         option_counts = issue_sizes(state.space, [state.sheet])
-        offers = ({opp: list(state.received) for opp in state.opponents} if state.opponents else {})
+        offers = (state.received_by_opponent or
+                  ({opp: list(state.received) for opp in state.opponents} if state.opponents else {}))
         belief.update_from_offers(offers, option_counts)
         ap = np.ones((tables.n_deals, n))
         for opp, st in belief.states.items():

@@ -362,6 +362,68 @@ class ModelParticipant(Functional, Participant):
 
 		return Message(author=self.name, content=content, metadata=metadata)
 
+	def generate_step(self, view: list[dict], *, tool_schemas: list[dict] | None = None,
+	                  steering=None, capture=None, patch=None, return_logprobs: bool = False,
+	                  turn: int | None = None, max_new_tokens: int | None = None,
+	                  seat: str | None = None) -> Message:
+		"""Run one model generation without executing requested tools.
+
+		This is the policy/model boundary used by external agent runtimes such as Inspect and Control Tower:
+		``tool_schemas`` are rendered by the participant's native chat template, parsed calls are returned as
+		serializable dictionaries in ``Message.metadata["tool_calls"]``, and the caller remains responsible for
+		executing them. Keeping execution outside Interlens lets the outer runtime monitor, approve, replace, or
+		sandbox each action.
+
+		Args:
+			view: Flattened chat history as dictionaries with ``role`` and ``content``. Assistant tool calls and tool
+				results may use the standard ``tool_calls`` / ``tool_call_id`` fields.
+			tool_schemas: OpenAI-style function schemas available for this step. Pass ``None`` or ``[]`` to disable
+				tool calling; use schemas when the outer runtime must execute and observe calls itself.
+			steering: Optional activation steering applied during this generation. ``None`` uses the participant's
+				persistent ``steering`` setting.
+			capture: Optional activation-capture request for this generation.
+			patch: Optional activation patch applied during this generation.
+			return_logprobs: Whether to record generated-token log probabilities in message metadata.
+			turn: Optional turn index used to tag captured activations.
+			max_new_tokens: Per-call output cap. ``None`` uses the participant's configured ``max_new_tokens``.
+			seat: Optional arena seat identifier, accepted for parity with :meth:`generate`; local participants do not
+				otherwise use it.
+
+		Returns:
+			A visible ``Message`` with usage/reasoning metadata and zero or more parsed ``tool_calls``. Tools are never
+			executed by this method.
+		"""
+		del seat
+		if steering is None:
+			steering = self.steering
+		if self.seed is not None:
+			torch.manual_seed(self.seed)
+		if not view:
+			raise ValueError(
+				f"Participant {self.name!r} was asked to generate with an empty view — nothing to respond to.")
+
+		schemas = list(tool_schemas or [])
+		result = self._run_model(view, schemas or None, steering, patch, return_logprobs, max_new_tokens)
+		content, parsed_think = self.split_reasoning(result.raw)
+		calls = self.parse_tool_calls(result.raw) if schemas else []
+		metadata = {
+			"raw_completion": result.raw,
+			"parsed_think": parsed_think,
+			"n_tokens": result.n_tokens,
+			"n_tokens_in": result.prompt_len,
+			"tool_calls": [{"name": call.name, "arguments": call.arguments, "raw": call.raw} for call in calls],
+		}
+		if parsed_think:
+			metadata["reasoning"] = parsed_think
+			metadata["reasoning_provenance"] = "full"
+		if steering is not None:
+			metadata["steering"] = steering.summary()
+		if return_logprobs:
+			metadata.update(token_logprobs(result.scores, result.new_tokens))
+		if capture is not None:
+			self._capture(capture, result.full_ids, result.prompt_len, result.raw, parsed_think, turn)
+		return Message(author=self.name, content=content, metadata=metadata)
+
 	def generate_batch(self, views: list[list[dict]], *, turn: int | None = None,
 	                   group_seed: int | None = None, max_new_tokens: int | None = None) -> list[Message]:
 		"""Batched generation for many independent conversations that share THIS model (``throughput`` mode).

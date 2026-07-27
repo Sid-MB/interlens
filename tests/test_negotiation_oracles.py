@@ -31,7 +31,7 @@ from interlens.arena.negotiation.oracle_context import GameTables
 from interlens.arena.negotiation.strategies import NegotiationState
 
 from interlens.arena.negotiation.acceptance import AcceptanceOracle, ThresholdOracle, reservation_values
-from interlens.arena.negotiation.beliefs import BeliefState, FrequencyModel, OpponentType
+from interlens.arena.negotiation.beliefs import BeliefOracle, BeliefState, FrequencyModel, OpponentType
 from interlens.arena.negotiation.bestresponse import BestResponseOracle, value_to_go_full_info
 from interlens.arena.negotiation.equilibrium import (EquilibriumOracle, divide_the_dollar, okada_closed_form,
                                                      solve_equilibrium)
@@ -474,10 +474,37 @@ def test_policy_participant_reads_authoritative_state_block():
                           deadline=game.rounds, n_seats=2)
     # a scenario-emitted authoritative state block: p0 has a standing offer O7 (deal Z), round 2.
     block = '```json\n{"negotiation_state": {"seat": 1, "round": 2, "deadline": 3, ' \
-            '"offers": {"O7": [2]}, "standing": "O7", "received": [[2]], "my_offers": []}}\n```'
+            '"offers": {"O7": [2]}, "standing": "O7", "received": [[2]], ' \
+            '"received_by_opponent": {"0": [[2]]}, "my_offers": []}}\n```'
     state = p._state_from_view([{"role": "user", "content": block}])
     assert state.round == 2 and state.standing == "O7"
     assert state.offers["O7"] == (2,) and state.received == [(2,)]
+    assert state.received_by_opponent == {0: [(2,)]}
+
+
+def test_private_bayesian_policy_keeps_opponent_offer_histories_separate(monkeypatch):
+    """The composed policy must not replay the pooled offer list into every opponent posterior."""
+    space = DealSpace((Issue("I", ("X", "Y")),))
+    sheets = (
+        ScoreSheet("p0", ((1.0, 0.0),), 0.0),
+        ScoreSheet("p1", ((0.0, 1.0),), 0.0),
+        ScoreSheet("p2", ((1.0, 0.0),), 0.0),
+    )
+    policy = BayesianRationalPolicy()
+    state = NegotiationState(
+        seat=0, sheet=sheets[0], space=space, deadline=2, opponents=(1, 2),
+        received=[(0,), (1,)], received_by_opponent={1: [(0,)], 2: [(1,)]},
+    )
+    captured = {}
+    original = BeliefOracle.update_from_offers
+
+    def spy(self, offers, option_counts):
+        captured.update(offers)
+        return original(self, offers, option_counts)
+
+    monkeypatch.setattr(BeliefOracle, "update_from_offers", spy)
+    policy._accept_prob_table(state, policy._tables(state))
+    assert captured == {1: [(0,)], 2: [(1,)]}
 
 
 def test_generated_game_oracle_annotation():
