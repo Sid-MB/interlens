@@ -103,10 +103,22 @@ judge = APIParticipant(name="judge", provider="openai", model_id="gpt-5", max_to
 **OpenRouter** (`provider="openrouter"`) reaches any model behind [openrouter.ai](https://openrouter.ai) through one OpenAI-compatible endpoint — needs `OPENROUTER_API_KEY` and the `[api]` extra (`pip install "interlens[api]"`, which pulls `openai`):
 
 ```python
+from interlens import OpenRouterRouting
+
 judge = APIParticipant(name="judge", provider="openrouter",
                        model_id="meta-llama/llama-3.1-70b-instruct",   # or openai/gpt-5, anthropic/claude-sonnet-5, …
+                       openrouter_routing=OpenRouterRouting(
+                           upstream_provider="together",
+                           quantizations=("bf16",),
+                           data_collection="deny",
+                       ),
                        max_tokens=400)
 ```
+
+OpenRouter routing is fail-closed for research: a request must pin one upstream provider (fallbacks are disabled
+and parameter support is required), or explicitly opt into uncontrolled exploratory routing with
+`OpenRouterRouting.unpinned()`. Each returned turn records the requested routing object, actual upstream provider,
+resolved model, and generation ID in `Message.metadata`; a missing or mismatched provider aborts the turn.
 
 All providers share one retry/backoff + max-in-flight client, built lazily per provider.
 

@@ -44,7 +44,13 @@ def participant_to_dict(p) -> dict:
 		            max_tool_iters=p.max_tool_iters, kv_reuse=p.kv_reuse)
 	else:  # APIParticipant
 		base.update(kind="api", model_id=p.model_id, provider=p.provider, max_tokens=p.max_tokens,
-		            temperature=p.temperature, batch=p.batch)
+		            temperature=p.temperature, batch=p.batch,
+		            openrouter_routing=(
+			            {"upstream_provider": p.openrouter_routing.upstream_provider,
+			             "quantizations": list(p.openrouter_routing.quantizations),
+			             "data_collection": p.openrouter_routing.data_collection,
+			             "allow_unpinned": p.openrouter_routing.allow_unpinned}
+			            if p.openrouter_routing is not None else None))
 	return base
 
 
@@ -69,9 +75,17 @@ def participant_from_dict(data: dict, device="cuda", registry=None):
 			top_p=data.get("top_p", 0.95), seed=data.get("seed"), thinking=data.get("thinking", "auto"),
 			tools=tools, max_tool_iters=data.get("max_tool_iters", 4), kv_reuse=data.get("kv_reuse", "auto"))
 	if data["kind"] == "api":
-		from .participants.api_participant import APIParticipant
+		from .participants.api_participant import APIParticipant, OpenRouterRouting
+		routing_data = data.get("openrouter_routing")
+		routing = (OpenRouterRouting(
+			upstream_provider=routing_data.get("upstream_provider"),
+			quantizations=tuple(routing_data.get("quantizations", ())),
+			data_collection=routing_data.get("data_collection"),
+			allow_unpinned=routing_data.get("allow_unpinned", False))
+			if routing_data is not None else None)
 		return APIParticipant(name=data["name"], system_prompt=data.get("system_prompt"),
 		                      private_context=private_context, model_id=data["model_id"],
 		                      provider=data.get("provider", "anthropic"), max_tokens=data.get("max_tokens", 512),
-		                      temperature=data.get("temperature", 1.0), batch=data.get("batch", False))
+		                      temperature=data.get("temperature", 1.0), batch=data.get("batch", False),
+		                      openrouter_routing=routing)
 	raise ValueError(f"unknown participant kind {data.get('kind')!r}")

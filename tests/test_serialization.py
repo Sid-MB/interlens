@@ -24,6 +24,7 @@ import pytest
 
 from interlens import (
 	Transcript, ContextItem, Conversation, APIParticipant, ModelParticipant, ReasoningVisibility, ExecutionMode,
+	OpenRouterRouting,
 	dataset_field,
 )
 from interlens.participant.serialize import participant_to_dict, participant_from_dict
@@ -58,6 +59,15 @@ def test_api_participant_recipe_round_trip():
 	p2 = participant_from_dict(participant_to_dict(p))
 	assert isinstance(p2, APIParticipant)
 	assert p2.model_id == "claude-x" and p2.temperature == 0.3
+
+
+def test_openrouter_routing_recipe_round_trip():
+	p = APIParticipant(
+		name="judge", provider="openrouter", model_id="meta-llama/model",
+		openrouter_routing=OpenRouterRouting(
+			upstream_provider="together", quantizations=("bf16",), data_collection="deny"))
+	p2 = participant_from_dict(participant_to_dict(p))
+	assert p2.openrouter_routing == p.openrouter_routing
 
 
 def test_conversation_save_load_recipe(tmp_path):

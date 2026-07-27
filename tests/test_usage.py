@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import json
 import pickle
+from types import SimpleNamespace
 
 import pytest
 
-from interlens import APIParticipant, CostBudget, Conversation, TokenBudget, UsageMeter, transcript_usage
+from interlens import (
+	APIParticipant, CostBudget, Conversation, OpenRouterRouting, TokenBudget, UsageMeter, transcript_usage,
+)
 from interlens.participant.participants.api_client import Completion
 from interlens.usage import register_pricing
 
@@ -123,6 +126,92 @@ def test_api_participant_tolerates_plain_str_clients():
 	msg = p.generate([{"role": "user", "content": "hi"}])
 	assert msg.content == "plain"
 	assert msg.metadata["n_tokens"] == 0
+
+
+class _OpenRouterProbe:
+	def __init__(self, *, served_by="Together"):
+		self.served_by = served_by
+		self.calls = []
+
+	def __call__(self, **kwargs):
+		self.calls.append(kwargs)
+		return Completion("ok", upstream_provider=self.served_by,
+		                  response_model="meta-llama/llama-3.1-70b-instruct",
+		                  generation_id="gen-test")
+
+
+def test_openrouter_research_routing_is_pinned_and_auditable():
+	client = _OpenRouterProbe()
+	routing = OpenRouterRouting(
+		upstream_provider="together", quantizations=("bf16",), data_collection="deny")
+	p = APIParticipant(name="a", provider="openrouter",
+	                   model_id="meta-llama/llama-3.1-70b-instruct",
+	                   openrouter_routing=routing, client=client)
+	msg = p.generate([{"role": "user", "content": "hi"}])
+	assert client.calls[0]["provider_routing"] == {
+		"order": ["together"], "only": ["together"], "allow_fallbacks": False,
+		"require_parameters": True, "quantizations": ["bf16"], "data_collection": "deny"}
+	assert msg.metadata["upstream_provider"] == "Together"
+	assert msg.metadata["response_model"] == "meta-llama/llama-3.1-70b-instruct"
+	assert msg.metadata["generation_id"] == "gen-test"
+	assert msg.metadata["provider_routing"] == client.calls[0]["provider_routing"]
+
+
+def test_openrouter_client_sends_extension_in_extra_body_and_captures_identity():
+	from interlens.participant.participants.api_client import OpenRouterClient
+
+	class _Completions:
+		def __init__(self):
+			self.kwargs = None
+
+		def create(self, **kwargs):
+			self.kwargs = kwargs
+			message = SimpleNamespace(content="ok")
+			choice = SimpleNamespace(message=message, finish_reason="stop")
+			usage = SimpleNamespace(prompt_tokens=3, completion_tokens=2, completion_tokens_details=None)
+			return SimpleNamespace(
+				choices=[choice], usage=usage, provider="Together", model="model/resolved", id="gen-123")
+
+	completions = _Completions()
+	client = object.__new__(OpenRouterClient)  # skip real SDK/key initialization
+	client._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+	result = client._call_once(
+		None, [{"role": "user", "content": "hi"}], "model/requested", 20, 0.2,
+		provider_routing={"only": ["together"], "allow_fallbacks": False})
+	assert completions.kwargs["extra_body"] == {
+		"provider": {"only": ["together"], "allow_fallbacks": False}}
+	assert result.upstream_provider == "Together"
+	assert result.response_model == "model/resolved"
+	assert result.generation_id == "gen-123"
+
+
+def test_openrouter_uncontrolled_or_inconsistent_routing_fails_loudly():
+	no_routing = APIParticipant(
+		name="a", provider="openrouter", model_id="m", client=_OpenRouterProbe())
+	with pytest.raises(ValueError, match="explicit routing"):
+		no_routing.generate([{"role": "user", "content": "hi"}])
+
+	mismatch = APIParticipant(
+		name="a", provider="openrouter", model_id="m",
+		openrouter_routing=OpenRouterRouting(upstream_provider="together"),
+		client=_OpenRouterProbe(served_by="DeepInfra"))
+	with pytest.raises(RuntimeError, match="routing violation"):
+		mismatch.generate([{"role": "user", "content": "hi"}])
+
+	missing_metadata = APIParticipant(
+		name="a", provider="openrouter", model_id="m",
+		openrouter_routing=OpenRouterRouting(upstream_provider="together"),
+		client=lambda **kwargs: Completion("ok"))
+	with pytest.raises(RuntimeError, match="did not report"):
+		missing_metadata.generate([{"role": "user", "content": "hi"}])
+
+	# Unpinned routing remains available, but only by explicit opt-out and is still parameter-safe.
+	exploratory_client = _OpenRouterProbe(served_by="DeepInfra")
+	exploratory = APIParticipant(
+		name="a", provider="openrouter", model_id="m",
+		openrouter_routing=OpenRouterRouting.unpinned(), client=exploratory_client)
+	exploratory.generate([{"role": "user", "content": "hi"}])
+	assert exploratory_client.calls[0]["provider_routing"] == {"require_parameters": True}
 
 
 def test_turn_token_floor_raises_external_caps():

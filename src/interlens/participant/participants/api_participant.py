@@ -29,6 +29,58 @@ from ...message import Message
 # ``openrouter`` does not. This is the canonical list — both ``_CLIENT_CLASSES`` (runtime) and every ``provider``
 # field annotation derive from it.
 Provider = Literal["anthropic", "openai", "openrouter"]
+OpenRouterQuantization = Literal["int4", "int8", "fp4", "fp6", "fp8", "fp16", "bf16", "fp32", "unknown"]
+_OPENROUTER_QUANTIZATIONS = {"int4", "int8", "fp4", "fp6", "fp8", "fp16", "bf16", "fp32", "unknown"}
+
+
+@dataclass(frozen=True)
+class OpenRouterRouting:
+	"""Reproducible OpenRouter routing for research.
+
+	``upstream_provider`` is the OpenRouter provider slug (for example ``"together"`` or ``"deepinfra"``).
+	A pinned request sends both ``only=[slug]`` and ``order=[slug]``, disables fallbacks, and requires support
+	for every supplied generation parameter. ``quantizations`` should also be set for open-weight models when
+	the endpoint offers multiple precisions. ``data_collection="deny"`` excludes providers that may retain or
+	train on prompts.
+
+	Use :meth:`unpinned` only for exploratory traffic where provider variance is intentionally acceptable.
+	Requiring that explicit opt-out prevents an uncontrolled request from looking like a reproducible run.
+	"""
+
+	upstream_provider: str | None
+	quantizations: tuple[OpenRouterQuantization, ...] = ()
+	data_collection: Literal["allow", "deny"] | None = None
+	allow_unpinned: bool = False
+
+	def __post_init__(self) -> None:
+		if self.upstream_provider is not None and not self.upstream_provider.strip():
+			raise ValueError("OpenRouter upstream_provider must be a non-empty provider slug.")
+		if self.upstream_provider is None and not self.allow_unpinned:
+			raise ValueError(
+				"OpenRouter routing must pin an upstream_provider. For intentionally uncontrolled exploratory "
+				"traffic, use OpenRouterRouting.unpinned().")
+		unknown = set(self.quantizations) - _OPENROUTER_QUANTIZATIONS
+		if unknown:
+			raise ValueError(f"unknown OpenRouter quantization(s) {sorted(unknown)}; "
+			                 f"expected values from {sorted(_OPENROUTER_QUANTIZATIONS)}")
+		if self.data_collection not in (None, "allow", "deny"):
+			raise ValueError("data_collection must be None, 'allow', or 'deny'.")
+
+	@classmethod
+	def unpinned(cls, *, data_collection: Literal["allow", "deny"] | None = None) -> "OpenRouterRouting":
+		"""Explicitly opt into OpenRouter's variable default provider routing for exploratory, non-reproducible use."""
+		return cls(upstream_provider=None, data_collection=data_collection, allow_unpinned=True)
+
+	def request_dict(self) -> dict:
+		"""Return the exact OpenRouter ``provider`` request object."""
+		request = {"require_parameters": True}
+		if self.upstream_provider is not None:
+			request.update(order=[self.upstream_provider], only=[self.upstream_provider], allow_fallbacks=False)
+		if self.quantizations:
+			request["quantizations"] = list(self.quantizations)
+		if self.data_collection is not None:
+			request["data_collection"] = self.data_collection
+		return request
 
 # provider name -> client class in api_client. Each provider gets ONE process-wide shared client (retry/backoff +
 # a global max-in-flight cap), so the concurrency cap holds across every API participant in a rollout.
@@ -81,6 +133,9 @@ class APIParticipant(Functional, Participant):
 	temperature: float = 1.0
 	batch: bool = False  # route ``generate_batch`` through the provider's async batch API (anthropic/openai only)
 	client: object = None  # callable(system, messages, model, max_tokens, temperature) -> str
+	openrouter_routing: OpenRouterRouting | None = None
+	"""Required for ``provider="openrouter"``. Pin an upstream endpoint for research, or explicitly pass
+	``OpenRouterRouting.unpinned()`` for exploratory use where variable routing is acceptable."""
 
 	meter: object = None
 	"""Optional ``interlens.usage.UsageMeter``: every call this participant makes is reported into it (tokens,
@@ -142,8 +197,10 @@ class APIParticipant(Functional, Participant):
 		client = self.client or _default_client(self.provider)
 		max_tokens = self._effective_cap(max_new_tokens)
 		kw = {"thinking": self.thinking} if self.thinking is not None else {}
+		kw.update(self._routing_kwargs())
 		text = client(system=system, messages=messages, model=self.model_id,
 		              max_tokens=max_tokens, temperature=self.temperature, **kw)
+		self._validate_openrouter_response(text)
 		return Message(author=self.name, content=str(text), metadata=self._usage_metadata(text))
 
 	def generate_batch(self, views: list[list[dict]], *, turn: int | None = None,
@@ -168,7 +225,8 @@ class APIParticipant(Functional, Participant):
 			system, messages = self._split_view(view)
 			requests.append(dict(system=system, messages=messages, model=self.model_id,
 			                     max_tokens=max_tokens, temperature=self.temperature,
-			                     **({"thinking": self.thinking} if self.thinking is not None else {})))
+			                     **({"thinking": self.thinking} if self.thinking is not None else {}),
+			                     **self._routing_kwargs()))
 		if self.batch:
 			if not hasattr(client, "submit_batch"):
 				raise NotImplementedError(
@@ -177,6 +235,8 @@ class APIParticipant(Functional, Participant):
 			texts = client.submit_batch(requests)
 		else:
 			texts = [client(**r) for r in requests]
+		for text in texts:
+			self._validate_openrouter_response(text)
 		return [Message(author=self.name, content=str(t),
 		                metadata=self._usage_metadata(t) | {"batched": True})
 		        for t in texts]
@@ -189,6 +249,40 @@ class APIParticipant(Functional, Participant):
 		if self.turn_token_floor is not None:
 			cap = max(cap, self.turn_token_floor)
 		return cap
+
+	def _routing_kwargs(self) -> dict:
+		if self.provider != "openrouter":
+			if self.openrouter_routing is not None:
+				raise ValueError("openrouter_routing may only be set when provider='openrouter'.")
+			return {}
+		if self.openrouter_routing is None:
+			raise ValueError(
+				"OpenRouter requests require explicit routing so research cannot silently mix inference "
+				"providers. Pass OpenRouterRouting(upstream_provider='...') to pin one endpoint, or explicitly "
+				"pass OpenRouterRouting.unpinned() for exploratory traffic.")
+		return {"provider_routing": self.openrouter_routing.request_dict()}
+
+	@staticmethod
+	def _normalized_provider(value: str) -> str:
+		# OpenRouter accepts slugs (``google-vertex``) but reports display names (``Google Vertex``). Provider
+		# variants such as ``deepinfra/turbo`` still identify the same upstream before the slash.
+		return "".join(c for c in value.split("/", 1)[0].lower() if c.isalnum())
+
+	def _validate_openrouter_response(self, completion) -> None:
+		if self.provider != "openrouter" or self.openrouter_routing is None:
+			return
+		pinned = self.openrouter_routing.upstream_provider
+		if pinned is None:
+			return
+		served = getattr(completion, "upstream_provider", None)
+		if not served:
+			raise RuntimeError(
+				"OpenRouter did not report the upstream provider for a pinned request; refusing to record this "
+				"turn as research-safe because the routing constraint cannot be audited.")
+		if self._normalized_provider(served) != self._normalized_provider(pinned):
+			raise RuntimeError(
+				f"OpenRouter routing violation: requested upstream provider {pinned!r}, but response reports "
+				f"{served!r}. The turn was not committed.")
 
 	def _usage_metadata(self, completion) -> dict:
 		"""Per-turn usage metadata from a client return value, plus the ``meter`` report. Works with a plain
@@ -204,6 +298,11 @@ class APIParticipant(Functional, Participant):
 		refusal = stop_reason in ("refusal", "content_filter")
 		metadata = {"provider": self.provider, "model": self.model_id,
 		            "n_tokens": tokens_out, "n_tokens_in": tokens_in, "stop_reason": stop_reason}
+		if self.provider == "openrouter" and self.openrouter_routing is not None:
+			metadata["provider_routing"] = self.openrouter_routing.request_dict()
+			metadata["upstream_provider"] = getattr(completion, "upstream_provider", None)
+			metadata["response_model"] = getattr(completion, "response_model", None)
+			metadata["generation_id"] = getattr(completion, "generation_id", None)
 		# The turn's reasoning record (see api_client marker constants): persisted whenever the provider
 		# produced any, so downstream turn records carry reasoning + its provenance first-class.
 		provenance = getattr(completion, "reasoning_provenance", None)

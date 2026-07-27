@@ -44,7 +44,8 @@ class Completion(str):
 	the call's **reasoning record**: ``reasoning`` (whatever reasoning text the provider returned — Anthropic
 	thinking blocks including summarized ones, OpenAI-compatible ``reasoning``/``reasoning_content`` fields —
 	or ``None``) with ``reasoning_provenance`` marking how complete that record is (see the marker constants
-	above).
+	above). OpenAI-compatible responses also preserve ``upstream_provider``, ``response_model``, and
+	``generation_id`` when reported; these make OpenRouter routing auditable.
 
 	Subclassing ``str`` keeps the documented client contract — ``callable(...) -> str`` — fully intact for
 	existing callers and injected test clients, while letting ``APIParticipant`` read the telemetry off the
@@ -56,10 +57,15 @@ class Completion(str):
 	batched: bool
 	reasoning: str | None
 	reasoning_provenance: str
+	upstream_provider: str | None
+	response_model: str | None
+	generation_id: str | None
 
 	def __new__(cls, text: str, *, input_tokens: int = 0, output_tokens: int = 0,
 	            stop_reason: str | None = None, batched: bool = False,
-	            reasoning: str | None = None, reasoning_provenance: str = REASONING_NONE) -> "Completion":
+	            reasoning: str | None = None, reasoning_provenance: str = REASONING_NONE,
+	            upstream_provider: str | None = None, response_model: str | None = None,
+	            generation_id: str | None = None) -> "Completion":
 		self = super().__new__(cls, text)
 		self.input_tokens = input_tokens
 		self.output_tokens = output_tokens
@@ -67,6 +73,9 @@ class Completion(str):
 		self.batched = batched
 		self.reasoning = reasoning
 		self.reasoning_provenance = reasoning_provenance
+		self.upstream_provider = upstream_provider
+		self.response_model = response_model
+		self.generation_id = generation_id
 		return self
 
 
@@ -122,15 +131,18 @@ class _RetryingClient:
 	def _transient(self, exc) -> bool:
 		raise NotImplementedError
 
-	def _call_once(self, system, messages, model, max_tokens, temperature, thinking=None) -> "Completion":
+	def _call_once(self, system, messages, model, max_tokens, temperature, thinking=None,
+	               provider_routing=None) -> "Completion":
 		raise NotImplementedError
 
-	def __call__(self, system, messages, model, max_tokens, temperature, thinking=None) -> "Completion":
+	def __call__(self, system, messages, model, max_tokens, temperature, thinking=None,
+	             provider_routing=None) -> "Completion":
 		attempt = 0
 		while True:
 			try:
 				with self._sem:  # bound concurrent in-flight requests across all caller threads
-					return self._call_once(system, messages, model, max_tokens, temperature, thinking)
+					return self._call_once(system, messages, model, max_tokens, temperature, thinking,
+					                       provider_routing)
 			except Exception as exc:
 				attempt += 1
 				if attempt > self.max_retries or not self._transient(exc):
@@ -182,7 +194,10 @@ class AnthropicClient(_RetryingClient):
 			return thinking
 		raise ValueError(f"thinking must be None, 'disabled', an int budget, or a dict; got {thinking!r}")
 
-	def _call_once(self, system, messages, model, max_tokens, temperature, thinking=None) -> "Completion":
+	def _call_once(self, system, messages, model, max_tokens, temperature, thinking=None,
+	               provider_routing=None) -> "Completion":
+		if provider_routing is not None:
+			raise ValueError("provider_routing is OpenRouter-only; Anthropic does not accept it.")
 		# Newer models (e.g. Opus 4.8) DEPRECATE the `temperature` param and 400 if it is sent at all. Omit it when
 		# None so callers can opt out; pass it through otherwise.
 		kw = dict(model=model, system=system if system else self._anthropic.NOT_GIVEN, messages=messages,
@@ -264,7 +279,8 @@ class _OpenAICompatClient(_RetryingClient):
 	def _full_messages(system, messages) -> list[dict]:
 		return ([{"role": "system", "content": system}] if system else []) + list(messages)
 
-	def _call_once(self, system, messages, model, max_tokens, temperature, thinking=None) -> "Completion":
+	def _call_once(self, system, messages, model, max_tokens, temperature, thinking=None,
+	               provider_routing=None) -> "Completion":
 		if thinking is not None:
 			raise NotImplementedError(
 				f"{self._label} does not support the 'thinking' control (Anthropic-only); leave thinking=None.")
@@ -272,6 +288,10 @@ class _OpenAICompatClient(_RetryingClient):
 		kw = {self._tokens_param: max_tokens}
 		if temperature is not None:
 			kw["temperature"] = temperature
+		if provider_routing is not None:
+			# ``provider`` is an OpenRouter extension, not part of OpenAI's typed SDK surface. ``extra_body``
+			# preserves the exact routing object in the JSON request without relying on undocumented kwargs.
+			kw["extra_body"] = {"provider": provider_routing}
 		resp = self._client.chat.completions.create(
 			model=model, messages=self._full_messages(system, messages), **kw)
 		choice = resp.choices[0]
@@ -281,7 +301,10 @@ class _OpenAICompatClient(_RetryingClient):
 		                  input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
 		                  output_tokens=getattr(usage, "completion_tokens", 0) or 0,
 		                  stop_reason=getattr(choice, "finish_reason", None),
-		                  reasoning=reasoning, reasoning_provenance=provenance)
+		                  reasoning=reasoning, reasoning_provenance=provenance,
+		                  upstream_provider=getattr(resp, "provider", None),
+		                  response_model=getattr(resp, "model", None),
+		                  generation_id=getattr(resp, "id", None))
 
 
 class OpenAIClient(_OpenAICompatClient):
