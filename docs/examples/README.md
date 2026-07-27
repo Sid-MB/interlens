@@ -31,5 +31,7 @@ A `Conversation` (with lazy `Participant`s) is at once the serializable **recipe
 | 08 | [Rollouts & scale](08_rollouts_and_scale.md) | `conv.rollout`, data-driven rollouts (`dataset_field`), `interlens.run` (multi-lineup), `TokenBudget` (matched compute), multi-GPU, batched co-stepping, `analyzer`, checkpoint/resume |
 | 09 | [Advanced interp pipelines](09_advanced_interp_pipelines.md) | Causal tracing (capture→patch across branches), steering sweeps, probe-in-the-loop `analyze` |
 | 10 | [Arena](10_arena.md) | Scoreable multi-agent evaluations: scenarios with exact solvers/scorers, episode drivers, budgets + spend metering, communication styles, the Inspect integration |
+| 11 | [Scorable negotiation & oracles](11_negotiation.md) | Formal bargaining games, rational policy baselines, equilibrium/best-response/acceptance oracles, regret and divergence analysis |
+| 12 | [Control Tower](12_control_tower.md) | Use an Interlens local model as a Control Tower untrusted policy while preserving its monitorable tool boundary |
 
 Related: the pipeline **performance** profiler lives at [`tests/profile_pipeline.py`](https://github.com/Sid-MB/interlens/blob/main/tests/profile_pipeline.py); the family self-registry lives on [`ModelParticipant`](https://github.com/Sid-MB/interlens/blob/main/src/interlens/participant/participants/model_participant.py) (`MODEL_TYPES` + `for_model_type`), and model loading / chat-flag derivation in [`load.py`](https://github.com/Sid-MB/interlens/blob/main/src/interlens/loading/load.py).

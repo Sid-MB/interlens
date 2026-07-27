@@ -108,6 +108,23 @@ def test_tool_loop_respects_max_iters():
 	assert any("max_tool_iters" in str(e) for e in msg.metadata["tool_trail"])
 
 
+def test_generate_step_returns_tool_call_without_executing_it():
+	sp = _Scripted("alice", (CALC,), [
+		'<tool_call>{"name": "calculator", "arguments": {"expression": "21+21"}}</tool_call>',
+	])
+	msg = sp.generate_step(
+		[{"role": "user", "content": "21+21?"}],
+		tool_schemas=[CALC.schema],
+	)
+	assert msg.metadata["tool_calls"] == [{
+		"name": "calculator",
+		"arguments": {"expression": "21+21"},
+		"raw": '<tool_call>{"name": "calculator", "arguments": {"expression": "21+21"}}</tool_call>',
+	}]
+	assert "tool_trail" not in msg.metadata
+	assert sp._i == 1
+
+
 def test_participant_serializes_tool_names():
 	# A lazy (unloaded) participant serializes its tools by NAME (re-resolved from the registry on load); no weights.
 	p = ModelParticipant(name="a", hf_id="qwen2.5-0.5b", tools=(CALC,), max_tool_iters=3)

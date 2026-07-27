@@ -97,10 +97,75 @@ nav:
       - Advanced interp pipelines: examples/09_advanced_interp_pipelines.md
       - Arena: examples/10_arena.md
       - Scorable negotiation & oracles: examples/11_negotiation.md
+      - Control Tower: examples/12_control_tower.md
   - API reference:
       # BEGIN generated reference nav — run scripts/gen_ref_pages.py to refresh; do not edit by hand
       - interlens:
           - reference/interlens/index.md
+          - arena:
+              - reference/interlens/arena/index.md
+              - actions: reference/interlens/arena/actions.md
+              - engine: reference/interlens/arena/engine.md
+              - export: reference/interlens/arena/export.md
+              - gates: reference/interlens/arena/gates.md
+              - inspect:
+                  - reference/interlens/arena/inspect/index.md
+                  - adapter: reference/interlens/arena/inspect/adapter.md
+                  - tasks: reference/interlens/arena/inspect/tasks.md
+              - negotiation:
+                  - reference/interlens/arena/negotiation/index.md
+                  - acceptance: reference/interlens/arena/negotiation/acceptance.md
+                  - analysis:
+                      - reference/interlens/arena/negotiation/analysis/index.md
+                      - annotations: reference/interlens/arena/negotiation/analysis/annotations.md
+                      - cot_localize: reference/interlens/arena/negotiation/analysis/cot_localize.md
+                      - curves: reference/interlens/arena/negotiation/analysis/curves.md
+                      - episode_view: reference/interlens/arena/negotiation/analysis/episode_view.md
+                      - game_analysis: reference/interlens/arena/negotiation/analysis/game_analysis.md
+                      - metrics: reference/interlens/arena/negotiation/analysis/metrics.md
+                      - rollout: reference/interlens/arena/negotiation/analysis/rollout.md
+                      - surplus: reference/interlens/arena/negotiation/analysis/surplus.md
+                      - taxonomy: reference/interlens/arena/negotiation/analysis/taxonomy.md
+                  - beliefs: reference/interlens/arena/negotiation/beliefs.md
+                  - bestresponse: reference/interlens/arena/negotiation/bestresponse.md
+                  - equilibrium: reference/interlens/arena/negotiation/equilibrium.md
+                  - games: reference/interlens/arena/negotiation/games.md
+                  - generate: reference/interlens/arena/negotiation/generate.md
+                  - oracle_context: reference/interlens/arena/negotiation/oracle_context.md
+                  - policy_participant: reference/interlens/arena/negotiation/policy_participant.md
+                  - references: reference/interlens/arena/negotiation/references.md
+                  - sheets: reference/interlens/arena/negotiation/sheets.md
+                  - solutions: reference/interlens/arena/negotiation/solutions.md
+                  - space: reference/interlens/arena/negotiation/space.md
+                  - strategies: reference/interlens/arena/negotiation/strategies.md
+              - oracles: reference/interlens/arena/oracles.md
+              - ratchet: reference/interlens/arena/ratchet.md
+              - replay: reference/interlens/arena/replay.md
+              - scenario: reference/interlens/arena/scenario.md
+              - scenarios:
+                  - reference/interlens/arena/scenarios/index.md
+                  - coding: reference/interlens/arena/scenarios/coding.md
+                  - dlc:
+                      - reference/interlens/arena/scenarios/dlc/index.md
+                      - bcp: reference/interlens/arena/scenarios/dlc/bcp.md
+                      - build: reference/interlens/arena/scenarios/dlc/build.md
+                      - codeqa: reference/interlens/arena/scenarios/dlc/codeqa.md
+                      - oolong_pairs: reference/interlens/arena/scenarios/dlc/oolong_pairs.md
+                      - sniah: reference/interlens/arena/scenarios/dlc/sniah.md
+                  - longcontext: reference/interlens/arena/scenarios/longcontext.md
+                  - negotiation: reference/interlens/arena/scenarios/negotiation.md
+                  - priors: reference/interlens/arena/scenarios/priors.md
+                  - relay: reference/interlens/arena/scenarios/relay.md
+                  - scorable: reference/interlens/arena/scenarios/scorable.md
+                  - scorable_prompts: reference/interlens/arena/scenarios/scorable_prompts.md
+                  - security: reference/interlens/arena/scenarios/security.md
+              - schema: reference/interlens/arena/schema.md
+              - table: reference/interlens/arena/table.md
+              - views: reference/interlens/arena/views.md
+          - communication:
+              - reference/interlens/communication/index.md
+              - messaging: reference/interlens/communication/messaging.md
+              - policy: reference/interlens/communication/policy.md
           - context:
               - reference/interlens/context/index.md
               - context_policy: reference/interlens/context/context_policy.md
@@ -116,6 +181,9 @@ nav:
           - hooks:
               - reference/interlens/hooks/index.md
               - message_hook: reference/interlens/hooks/message_hook.md
+          - integrations:
+              - reference/interlens/integrations/index.md
+              - control_tower: reference/interlens/integrations/control_tower.md
           - interp:
               - reference/interlens/interp/index.md
               - activation_cache: reference/interlens/interp/activation_cache.md
@@ -132,6 +200,7 @@ nav:
               - load: reference/interlens/loading/load.md
               - model_cache: reference/interlens/loading/model_cache.md
           - message: reference/interlens/message.md
+          - parsing: reference/interlens/parsing.md
           - participant:
               - reference/interlens/participant/index.md
               - participant: reference/interlens/participant/participant.md
@@ -143,6 +212,7 @@ nav:
                   - llama: reference/interlens/participant/participants/llama.md
                   - model_participant: reference/interlens/participant/participants/model_participant.md
                   - qwen: reference/interlens/participant/participants/qwen.md
+                  - scripted_participant: reference/interlens/participant/participants/scripted_participant.md
               - role: reference/interlens/participant/role.md
               - serialize: reference/interlens/participant/serialize.md
           - reasoning_visibility: reference/interlens/reasoning_visibility.md
@@ -164,5 +234,6 @@ nav:
               - tool: reference/interlens/tools/tool.md
               - tool_call: reference/interlens/tools/tool_call.md
           - transcript: reference/interlens/transcript.md
+          - usage: reference/interlens/usage.md
           - view: reference/interlens/view.md
       # END generated reference nav
