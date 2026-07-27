@@ -137,7 +137,7 @@ class ScoreSheet:
 class GameSpec:
     """A complete negotiation game: the deal space, every party's private sheet, and the protocol knobs.
 
-    Beyond ``space``/``sheets`` the fields carry the protocol arms from DESIGN.md §3: ``rounds`` (round-robin
+    Beyond ``space``/``sheets`` the fields carry the protocol arms: ``rounds`` (round-robin
     rounds before a forced final), ``info`` (``"full"`` = sheets common knowledge, ``"private"`` = only a prior
     over types), ``chat`` (whether a public cheap-talk channel exists alongside formal moves), and the agreement
     structure -- ``proposer`` seat (a rotating-proposer scenario may ignore this default), ``veto`` (one seat, a
@@ -160,7 +160,7 @@ class GameSpec:
                                        # continuation values, McCall stopping) -- do not re-default it per oracle.
     breakdown_risk: float = 0.0        # per-round probability the negotiation exogenously breaks down in [0, 1);
                                        # 0.0 = none. Makes interior concession rational under a hard deadline
-                                       # (Sandholm-Vulkan 1999 warning; DESIGN §5g).
+                                       # (the Sandholm-Vulkan 1999 warning).
     constraint: str | None = None      # NAME of a structural deal predicate in CONSTRAINTS, or None. A NAME and
                                        # not a callable so the game round-trips through to_json/Instance.payload
                                        # -- a stored instance must rebuild the SAME game or replay is a lie.

@@ -65,7 +65,7 @@ def dominating_alternatives(x: Vec, candidates: Sequence[Vec]) -> list[Vec]:
 def pareto_frontier(surplus_vectors: Sequence[Vec]) -> list[tuple[float, ...]]:
 	"""The non-dominated subset of a set of surplus vectors (the discrete Pareto frontier).
 
-	O(|S|^2) brute force, exact at our enumerable deal-space scale (|D| ~ 243–3125, DESIGN.md §2). This is a
+	O(|S|^2) brute force, exact at an enumerable deal-space scale. This is a
 	fallback/utility for fixtures and audits — production frontiers are read from the precomputed
 	``Instance.solution``."""
 	pts = [tuple(float(v) for v in s) for s in surplus_vectors]

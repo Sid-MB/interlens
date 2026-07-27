@@ -21,5 +21,5 @@
 """Multi-issue, multi-party scorable negotiation: deal spaces, private score sheets, exact solution
 concepts, computable rational-agent oracles, and an executable strategy zoo.
 
-See ``experiments/rational_agents/DESIGN.md`` §4 (oracle stack) and
-``docs/lit/rational-oracles.md`` for the literature grounding behind each module."""
+Each module's docstring carries the primary citations for the algorithm it implements; ``references.py`` maps
+every citation key to its full reference."""

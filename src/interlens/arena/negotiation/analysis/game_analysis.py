@@ -243,7 +243,7 @@ def _feasible_scale(surplus_by_deal: dict, ir_deals: list, n: int) -> tuple[floa
 
 
 def _descriptors(surplus_by_deal: dict, ir_deals: list, frontier: list, sheets, n_issues: int) -> dict:
-	"""The DESIGN §2.1 score-sheet descriptors: feasibility, Pareto-slack, zero-option sparsity, pairwise IoU."""
+	"""The score-sheet descriptors: feasibility, Pareto-slack, zero-option sparsity, pairwise IoU."""
 	front_set = {tuple(v) for v in frontier}
 	ir_on_front = sum(1 for d in ir_deals if surplus_by_deal[d] in front_set)
 	n = len(sheets)

@@ -14,8 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # [rational_agents scaffold: oracles-strategies] 2026-07-23
-"""Banks-Duggan stationary-equilibrium oracle for the multilateral unanimity bargaining game — the
-theoretically-grounded multilateral reference no LLM negotiation benchmark ships.
+"""Banks-Duggan stationary-equilibrium oracle for the multilateral unanimity bargaining game.
 
 Model (random-proposer, closed rule, unanimity): Baron & Ferejohn, "Bargaining in Legislatures," APSR
 83(4):1181-1206, 1989; generalized to arbitrary alternative spaces / utilities by Banks & Duggan, "A

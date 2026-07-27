@@ -32,7 +32,7 @@ of Information and Job Search," QJE 84(1):113-126, 1970 — the reservation-wage
 ``delta=1, flow=0``. An optional outside-option floor follows Li, Giampapa & Sycara, IEEE SMC-C 36(1):31-44,
 2006 (reservation price = valuation - reservation utility; conservative order-statistic OU).
 
-DESIGN WARNING (Sandholm & Vulkan, "Bargaining with Deadlines," AAAI-99, pp. 44-51): with a firm common
+DEADLINE WARNING (Sandholm & Vulkan, "Bargaining with Deadlines," AAAI-99, pp. 44-51): with a firm common
 deadline and NO discounting, the unique sequential-equilibrium play is extreme brinkmanship — both wait until
 the earlier deadline, then the deadline-bound party concedes the whole surplus. So if the game's only
 impatience is a hard turn-count deadline, this oracle's "hold out" recommendation is rational but degenerate;

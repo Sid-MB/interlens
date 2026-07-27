@@ -99,7 +99,7 @@ class EpisodeAnnotation:
 
 
 # preference order for the "primary" per-turn regret oracle: the headline surplus-loss is the best-response /
-# equilibrium oracle (DESIGN §4 stack #4/#5), then acceptance, then solution — first present wins.
+# equilibrium oracle, then acceptance, then solution — first present wins.
 PRIMARY_ORACLES = ("bestresponse", "best_response", "equilibrium", "acceptance", "solution")
 
 

@@ -28,7 +28,7 @@ over the *type posterior* (rather than solving determinized full-information gam
 avoids strategy-fusion / non-locality bias — Frank & Basin, "Search in games with incomplete information,"
 AIJ 100(1-2):87-123, 1998; ISMCTS: Cowling, Powley & Whitehouse, IEEE TCIAIG 4(2):120-143, 2012.
 
-Protocol modeled (DESIGN §3): each round a (rotating) proposer offers a deal; all other seats accept/reject;
+Protocol modeled: each round a (rotating) proposer offers a deal; all other seats accept/reject;
 the deal closes iff *all* accept (unanimity); otherwise play continues to the next round with the discount
 ``delta``; after the deadline, no-deal pays surplus 0. Two regimes share one backward induction:
 

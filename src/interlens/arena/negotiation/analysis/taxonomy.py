@@ -15,7 +15,7 @@
 
 # [rational_agents restructure: phase-C] 2026-07-24 — moved up from experiments/rational_agents/analysis/:
 # negotiation-generic measurement, reusable by any experiment over this game family.
-"""The 12-row LLM-negotiation failure taxonomy as executable checks (divergence-training.md §5, DESIGN §5).
+"""The 12-row LLM-negotiation failure taxonomy as executable checks.
 
 Each check runs over (solved game, parsed episode, oracle annotation) and returns a ``CategoryResult`` (fired,
 rate, evidence). Rows are tiered by checkability: Tier 1 mechanical (1,2,6,8,9 — deterministic, though 2/6 need

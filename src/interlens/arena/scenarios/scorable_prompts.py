@@ -25,8 +25,7 @@ module fixes exactly ONE canonical wording, and every knob that changes the word
 editing the scenario. The scenario (:class:`~interlens.arena.scenarios.scorable.ScorableNegotiation`) holds a
 scaffold and calls its render methods; :data:`DEFAULT_SCAFFOLD` is the blessed default.
 
-Design rules baked in (each traceable to a peer-reviewed critique — see
-``experiments/rational_agents/docs/lit/benchmarks-scorable-games.md`` "Design Lessons"):
+Design rules baked in, each traceable to a peer-reviewed critique of the prior benchmarks:
 
 - **Structural channel separation** (Lesson 11): a turn is one fenced JSON object with three fields —
   ``scratchpad`` (private, never published), ``message`` (public cheap talk), ``action`` (the formal move).
@@ -262,6 +261,6 @@ class PromptScaffold:
 		return ('Continue. When confident, reply with ONLY {"action": "propose", "deal": {...}}.')
 
 
-# The one blessed wording. Experiments select this (or an explicit variant) via
-# experiments/rational_agents/prompts.py; the scenario defaults to it.
+# The one blessed wording; the scenario defaults to it. An experiment ablates prompt wording by constructing an
+# explicit PromptScaffold variant, never by editing this default.
 DEFAULT_SCAFFOLD = PromptScaffold()

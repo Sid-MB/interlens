@@ -296,7 +296,7 @@ def effective_discount(game, override=None) -> float:
 
 def proposer_sequence(game) -> list:
     """Per-round proposer seat indices. Uses ``game.proposer_sequence`` if present; else a rotation starting
-    at ``game.proposer`` (default 0) over ``range(n)`` — DESIGN §3 'rotating proposer'."""
+    at ``game.proposer`` (default 0) over ``range(n)`` — the rotating-proposer default."""
     seq = getattr(game, "proposer_sequence", None)
     if seq:
         return [int(x) for x in seq]

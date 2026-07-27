@@ -16,7 +16,7 @@
 # [rational_agents scaffold: oracles-strategies] 2026-07-23
 """Bayesian (and frequency-model fallback) belief oracle over an enumerated opponent-type grid.
 
-Literature grounding (see ``docs/lit/rational-oracles.md`` §4c):
+Literature grounding:
 
 - **Hypothesis space** = issue-weight rankings x per-issue evaluator shapes x reservation (tau) levels —
   Hindriks & Tykhonov, "Opponent modelling in automated multi-issue negotiation using Bayesian learning,"

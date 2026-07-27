@@ -19,13 +19,11 @@
 
 The generator draws private additive score sheets from an explicit issue-type mix, calibrates thresholds to a
 target acceptable-set size, and -- the central repair -- rejection-samples over seeds to hit a target fraction of
-acceptable deals that are Pareto-*dominated*. The prior benchmark had 80.5% of acceptable deals ON the frontier,
-making the game near-zero-sum the moment it was feasible [reproA2025]; leaving dominated-but-acceptable deals in
-play (target ~50-70% dominated) restores genuine room to negotiate. Every knob is documented; every generated
-game ships with a precomputed analysis dict (:func:`interlens.arena.negotiation.solutions.analyze`) whose
-descriptors are *verified by enumeration*, so a caller can always re-check what it got.
+acceptable deals that are Pareto-*dominated*, so the game is not near-zero-sum the moment it is feasible
+[reproA2025]. Every generated game ships with a precomputed analysis dict
+(:func:`interlens.arena.negotiation.solutions.analyze`) whose descriptors are *verified by enumeration*.
 
-Issue types (LAMEN / DESIGN.md §2.3), which shape the cross-party correlation of the value columns:
+Issue types (the ``mix`` / ``issue_types`` knobs), which shape the cross-party correlation of the value columns:
 
 - ``distributive`` -- opposed preferences (a fixed pie): parties split into camps with reversed option
   rankings and high weight, so acceptable deals get pushed onto the frontier (near-zero-sum).
@@ -35,10 +33,8 @@ Issue types (LAMEN / DESIGN.md §2.3), which shape the cross-party correlation o
   conceding an issue you don't care about to someone who does is a free logroll; failing to do so lands you at a
   dominated interior deal.
 
-The mix is thus the geometric lever on the dominated fraction (threshold calibration fixes the *size*
-independently), and seed rejection-sampling fine-tunes it. Semantic decorrelation (``decorrelate=True``) permutes
-each issue's option order and uses neutral labels so no public role text can leak preferences (Study A's
-communication-free baseline otherwise matched the full game) [reproA2025].
+So the mix is the geometric lever on the dominated fraction, while threshold calibration fixes the acceptable-set
+*size* independently.
 
 Example::
 

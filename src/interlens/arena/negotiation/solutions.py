@@ -20,8 +20,7 @@
 Everything here operates on the ``|D| x n`` utility matrix ``U`` (``sheets.utility_matrix``) and the reservation
 vector ``tau``; the analysis object is the surplus ``X = U - tau``. Because the space is enumerated, every
 concept is computed exactly (no sampling, no convex-hull approximation). Each function's docstring carries the
-primary citation by key -- full text in ``references.py`` (pulled from
-``experiments/rational_agents/docs/lit/rational-oracles.md`` §3).
+primary citation by key -- full text in ``references.py``.
 
 Two solution concepts are **exactly scale-invariant** and therefore the only ones defensible across arbitrary
 private score-sheet scales: the Nash Bargaining Solution (argmax of the surplus product) and Kalai-Smorodinsky
@@ -384,7 +383,7 @@ def all_solutions(space: DealSpace, sheets: tuple[ScoreSheet, ...] | list[ScoreS
 
 def analyze(space: DealSpace, sheets: tuple[ScoreSheet, ...] | list[ScoreSheet],
             acceptable_mask: np.ndarray | None = None) -> dict:
-    """The precomputed per-instance analysis dict every generated game ships with (DESIGN.md §2.5).
+    """The precomputed per-instance analysis dict every generated game ships with.
 
     Contains: ``deal_space_size`` |D|, ``n_parties``, ``pareto_count``, ``ir_count`` |IR|, ``ir_pareto_count``
     |IR∩Pareto|, ``ir_pareto_fraction`` |IR∩Pareto|/|IR| (how near-zero-sum the acceptable set is),

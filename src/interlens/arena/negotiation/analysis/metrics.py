@@ -38,7 +38,7 @@ from .episode_view import EpisodeView, TurnView
 from .annotations import EpisodeAnnotation
 
 # turns whose per-turn regret exceeds this (surplus units) are counted as divergence points — mismatch alone
-# over-labels since several actions are often near-optimal (DESIGN §5 / divergence-training §pipeline-a2)
+# over-labels since several actions are often near-optimal
 DEFAULT_REGRET_THRESHOLD = 1e-6
 
 

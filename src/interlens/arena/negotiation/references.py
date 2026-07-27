@@ -20,8 +20,7 @@
 Every algorithm in this package cites its primary source by a short key (e.g. ``[nash1950]``) in the relevant
 docstring; this module maps each key to the full citation (authors, year, title, venue, volume/pages, DOI) and
 a stable URL, so the citations live in exactly one place and the docstrings stay terse. Keys and page/section
-references were pulled from ``experiments/rational_agents/docs/lit/rational-oracles.md`` §3 (solution concepts)
-and the benchmark deep-dive; each was verified there against the fetched primary PDF.
+page and section references were verified against the fetched primary PDFs.
 
 Usage — the registry is bibliography DATA (no accessor API); read it directly::
 

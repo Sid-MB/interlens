@@ -17,14 +17,11 @@
 
 """Swappable game presets: name a classic bargaining situation, get a ready-to-play game in one call.
 
-The situation/game is a first-class swappable axis, like the oracle stack (DESIGN.md §4b): one registry maps a
-name to a literature-grounded **preset**, a factory that returns ``(GameSpec, analysis, protocol_cfg)`` -- the
-complete game spec, its enumeration-verified :func:`~interlens.arena.negotiation.solutions.analyze` dict, and the
-scenario protocol knobs that turn the shared ``ScorableNegotiation`` state machine into that specific game
-(single-shot / fixed-proposer / majority, etc.). Because the scorable formalism (discrete deal space + private
-additive score sheets + thresholds + an agreement rule) already subsumes the classic bargaining family, **presets
-are parameterizations, not new engines**: the same deal space, the same oracle stack (beliefs / acceptance /
-best-response / equilibrium), the same annotation/atlas layer all run UNCHANGED on any preset -- that is the point.
+A **preset** is a factory returning ``(GameSpec, analysis, protocol_cfg)`` — the game spec, its
+enumeration-verified :func:`~interlens.arena.negotiation.solutions.analyze` dict, and the scenario protocol knobs
+that turn the shared ``ScorableNegotiation`` state machine into that specific game (single-shot / fixed-proposer /
+majority). Presets are parameterizations, not new engines: the deal space, the oracle stack, and the annotation
+layer all run unchanged on any of them.
 
 Presets shipped:
 
@@ -53,8 +50,7 @@ Usage::
     from interlens.arena.scenarios import ScorableNegotiation
     ScorableNegotiation().make_state(instance, "moves_only", seed=0, cfg=protocol_cfg)   # single-shot ultimatum
 
-Every algorithm/preset cites its source by key (``references.py``): ultimatum SPE + human-rejection contrast
-[guth1982] / [rubinstein1982]; divide-the-dollar [baron_ferejohn1989] / [okada1996]; DoND lineage [lewis2017].
+Each preset's own docstring carries its citation keys; ``references.py`` maps every key to the full reference.
 The ``scorable`` alias re-uses the generator's defaults verbatim (never re-defaulted here).
 """
 from __future__ import annotations
@@ -219,7 +215,7 @@ def bilateral_multiissue(*, n_issues: int = 3, n_options: int = 5, info: str = "
 # ------------------------------------------------------------------------------------------ scorable --------
 def scorable(*, level: int = 0, seed: int = 0, ladder: list[dict] | None = None,
              **overrides) -> tuple[GameSpec, dict, dict]:
-    """The default multi-party, multi-issue **scorable** game (DESIGN.md §2) -- a thin alias to the existing
+    """The default multi-party, multi-issue **scorable** game -- a thin alias to the existing
     generator so the whole preset machinery has one uniform entry point.
 
     Delegates to :func:`~interlens.arena.negotiation.generate.game_at_level`, which maps the difficulty ``level``

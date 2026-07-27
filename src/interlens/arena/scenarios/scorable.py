@@ -17,8 +17,9 @@
 
 """ScorableNegotiation: the repaired multi-party, multi-issue scorable game — the *protocol* around a
 :class:`~interlens.arena.negotiation.sheets.GameSpec` (carried in ``Instance.payload``), built on the shared
-typed-action (:mod:`interlens.arena.actions`) and oracle (:mod:`interlens.arena.oracles`) layers. See DESIGN.md
-§3 and ``docs/lit/benchmarks-scorable-games.md`` "Design Lessons B" for the benchmark flaws it fixes.
+typed-action (:mod:`interlens.arena.actions`) and oracle (:mod:`interlens.arena.oracles`) layers. "Repaired"
+names the specific benchmark flaws it fixes, each called out at the code that fixes it: votes-not-arithmetic
+closure, structural channel separation, a restated deadline, and measured-not-blocked economic illegality.
 
 Each turn is one fenced JSON object with three channels — private ``scratchpad``, public ``message``, one
 binding ``action`` (``Propose`` a complete package -> a fresh offer id, ``Accept`` / ``Reject`` a live id,
@@ -699,7 +700,7 @@ class ScorableNegotiation(Scenario):
 	def _ceiling_surplus(self, st) -> float:
 		"""Exact max feasible joint surplus of the game (recomputed from the GameSpec, so it is independent of
 		how the generator populated ``Instance.ceiling``). Non-positive iff the IR set is empty — then no-deal is
-		the rational outcome (DESIGN §2)."""
+		the rational outcome."""
 		spec = st["spec"]
 		mask = spec.feasible_mask()
 		if not mask.any():

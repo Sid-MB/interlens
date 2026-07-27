@@ -19,7 +19,7 @@
 
 A negotiation is over ``J`` issues, each with a fixed list of discrete options. A **deal** picks one option per
 issue and is represented as a ``Deal`` -- a ``tuple[int, ...]`` of option indices, one per issue (the frozen
-cross-team contract, DESIGN.md §8). The whole deal space ``D = prod_j |options_j|`` is small enough
+cross-team contract). The whole deal space ``D = prod_j |options_j|`` is small enough
 (|D| ~ 243-3125 in the target regime) to enumerate exactly, which is what makes every normative benchmark in
 ``solutions.py`` exact rather than sampled.
 
