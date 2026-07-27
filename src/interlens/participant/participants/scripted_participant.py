@@ -62,7 +62,7 @@ class ScriptedParticipant(Participant):
 
     def generate(self, view: list[dict], *, steering=None, capture=None, patch=None,
                  return_logprobs: bool = False, turn: int | None = None,
-                 max_new_tokens: int | None = None) -> Message:
+                 max_new_tokens: int | None = None, seat: str | None = None) -> Message:
         """Return the next scripted message (cycled), ignoring ``view``. Raises on interp requests — a scripted
         participant has no model/activations to steer, capture, patch, or read logprobs from."""
         if steering is not None or capture is not None or patch is not None or return_logprobs:

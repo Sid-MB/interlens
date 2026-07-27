@@ -275,7 +275,9 @@ class EpisodePool:
 
 	async def _generate(self, participant, request: SeatRequest, cap: int, *,
 	                    capture=None, steering=None, patch=None, turn: int | None = None) -> Message:
-		kwargs: dict = {"max_new_tokens": cap}
+		# ``seat`` is always passed: a participant fronting several seats needs the request's own seat identity
+		# rather than having to recover it from the prompt wording.
+		kwargs: dict = {"max_new_tokens": cap, "seat": request.seat}
 		if steering is not None:
 			kwargs["steering"] = steering
 		if patch is not None:

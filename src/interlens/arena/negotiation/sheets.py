@@ -42,10 +42,36 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import combinations
+from typing import Callable
 
 import numpy as np
 
 from .space import Deal, DealSpace
+
+# --------------------------------------------------------------------------------------------------------- #
+# Structural deal constraints, by name.
+# --------------------------------------------------------------------------------------------------------- #
+# A ``GameSpec`` is a FLAT deal space: any option per issue is combinable with any other, and legality is a
+# threshold question. Some games add a STRUCTURAL rule the flat model cannot express -- the trust/investment
+# game's "the trustee may return at most 3x what was sent" (``r <= 3s``) is the canonical case, where the legal
+# range of one issue's option depends on another's.
+#
+# Such a rule is registered here by NAME and referenced by ``GameSpec.constraint``. It is a name rather than a
+# callable field so a spec survives ``to_json`` -> ``Instance.payload`` -> ``from_json`` unchanged: a lambda
+# would be silently dropped on save, and a reloaded instance would then describe a DIFFERENT (unconstrained)
+# game than the one that was played -- which the replay gate could not catch, because both sides would drop it.
+# A predicate takes a ``Deal`` (option indices, one per issue) and returns whether it is structurally legal;
+# ``GameSpec.feasible_mask`` ANDs it into the agreement rule, so it flows into the exact solution concepts, the
+# oracles, and the scenario's surplus ceiling with no further wiring.
+CONSTRAINTS: dict[str, "Callable[[Deal], bool]"] = {}
+
+
+def register_constraint(name: str, predicate: "Callable[[Deal], bool]") -> None:
+    """Register a structural deal predicate under ``name`` for ``GameSpec(constraint=name)``. Re-registering the
+    same name is an error -- two games silently sharing a name would make a stored instance ambiguous."""
+    if name in CONSTRAINTS:
+        raise ValueError(f"deal constraint {name!r} is already registered")
+    CONSTRAINTS[name] = predicate
 
 
 @dataclass(frozen=True)
@@ -135,6 +161,9 @@ class GameSpec:
     breakdown_risk: float = 0.0        # per-round probability the negotiation exogenously breaks down in [0, 1);
                                        # 0.0 = none. Makes interior concession rational under a hard deadline
                                        # (Sandholm-Vulkan 1999 warning; DESIGN §5g).
+    constraint: str | None = None      # NAME of a structural deal predicate in CONSTRAINTS, or None. A NAME and
+                                       # not a callable so the game round-trips through to_json/Instance.payload
+                                       # -- a stored instance must rebuild the SAME game or replay is a lie.
     meta: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -157,6 +186,7 @@ class GameSpec:
             raise ValueError(f"discount must be in (0, 1], got {self.discount}")
         if not 0.0 <= self.breakdown_risk < 1.0:
             raise ValueError(f"breakdown_risk must be in [0, 1), got {self.breakdown_risk}")
+        self.constraint_fn()               # fail fast on an unregistered constraint name, not at analysis time
 
     @property
     def veto_seats(self) -> list[int]:
@@ -191,9 +221,13 @@ class GameSpec:
 
     def feasible_mask(self, U: np.ndarray | None = None) -> np.ndarray:
         """Boolean ``(|D|,)`` mask of deals that pass this game's agreement rule: the ``proposer`` clears its
-        threshold, the ``veto`` seat (if any) clears its threshold, and at least ``min_accept`` parties clear
-        theirs (``min_accept=None`` => all ``n`` => plain unanimity / the IR set). Pass a precomputed ``U`` to
-        avoid rebuilding it."""
+        threshold, the ``veto`` seat (if any) clears its threshold, at least ``min_accept`` parties clear theirs
+        (``min_accept=None`` => all ``n`` => plain unanimity / the IR set), AND the deal satisfies this game's
+        ``constraint`` (if it declares one). Pass a precomputed ``U`` to avoid rebuilding it.
+
+        Because every exact solution concept, the oracles, and the scenario's surplus ceiling all read this
+        mask, a constraint declared here flows into all of them for free — it is the single definition of "may
+        this deal close?". :meth:`feasible` is the single-deal form of the same rule."""
         if U is None:
             U = self.utility_matrix()
         clears = U >= self.thresholds                       # (|D|, n) bool
@@ -202,7 +236,26 @@ class GameSpec:
         ok &= clears[:, self.proposer]
         for v in self.veto_seats:
             ok &= clears[:, v]
+        predicate = self.constraint_fn()
+        if predicate is not None:
+            ok &= np.fromiter((predicate(d) for d in self.space.enumerate()), dtype=bool, count=self.space.size)
         return ok
+
+    def constraint_fn(self) -> "Callable[[Deal], bool] | None":
+        """This game's structural deal predicate, resolved from the ``constraint`` NAME via
+        :data:`CONSTRAINTS`, or ``None`` when it declares none. Raises ``KeyError`` for an unregistered name."""
+        if self.constraint is None:
+            return None
+        try:
+            return CONSTRAINTS[self.constraint]
+        except KeyError:
+            raise KeyError(f"unknown deal constraint {self.constraint!r}; registered: {sorted(CONSTRAINTS)}"
+                           ) from None
+
+    def feasible(self, deal: Deal) -> bool:
+        """Whether ONE deal may close under this game's agreement rule — the single-deal counterpart of
+        :meth:`feasible_mask` (it indexes that mask, so the two can never disagree)."""
+        return bool(self.feasible_mask()[self.space.index_of(tuple(deal))])
 
     def to_json(self) -> dict:
         """JSON-ready dict of the whole game (drops straight into ``Instance.payload``)."""
@@ -217,6 +270,7 @@ class GameSpec:
             "min_accept": self.min_accept,
             "discount": self.discount,
             "breakdown_risk": self.breakdown_risk,
+            "constraint": self.constraint,
             "meta": self.meta,
         }
 
@@ -234,6 +288,7 @@ class GameSpec:
             min_accept=d.get("min_accept"),
             discount=d.get("discount", 1.0),
             breakdown_risk=d.get("breakdown_risk", 0.0),
+            constraint=d.get("constraint"),
             meta=d.get("meta", {}),
         )
 

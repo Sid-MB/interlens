@@ -42,6 +42,7 @@ import numpy as np
 
 from ..actions import Accept, Action, LEGALITY, OfferRegistry, Propose, Reject, SYNTAX, Walk, parse_action
 from ..negotiation.sheets import GameSpec
+from ..negotiation.solutions import egalitarian_welfare, gini, welfare
 from ..oracles import Oracle, annotate as annotate_oracles
 from ...parsing import last_json
 from ..scenario import Scenario
@@ -732,8 +733,11 @@ class ScorableNegotiation(Scenario):
 		else:
 			surpluses = [0.0] * n
 			realized = [0.0] * n
-		usw = float(sum(realized))
-		esw = float(min(realized)) if realized else 0.0
+		usw = welfare(realized)
+		esw = egalitarian_welfare(realized)
+		# NSW keeps this scenario's own clamp-then-multiply convention (a below-threshold party contributes 0 to
+		# the product, not a sign flip), which differs from solutions.nash_welfare's strict-IR "any non-positive
+		# party => 0"; the clamped form is what the stored outcomes carry.
 		nsw = float(np.prod([max(x, 0.0) for x in realized])) if deal is not None else 0.0
 		ir_violations = [st["seat_names"][i] for i in range(n)
 		                 if deal is not None and st["seat_names"][i] not in walked and surpluses[i] < 0]
@@ -747,7 +751,8 @@ class ScorableNegotiation(Scenario):
 			"finalized_by": st.get("finalized_by"), "empty_ir": empty_ir,
 			"arm": st["arm"], "info": spec.info, "chat": self._chat_enabled(st) if st["arm"] != "solo" else False,
 			"cell": st.get("cell", "base"),
-			"usw": round(usw, 4), "esw": round(esw, 4), "nsw": round(nsw, 4), "gini": round(_gini(realized), 4),
+			"usw": round(usw, 4), "esw": round(esw, 4), "nsw": round(nsw, 4),
+			"gini": round(gini(realized, shift_negative=True), 4),
 			"per_party_surplus": [round(x, 4) for x in surpluses],
 			"realized_surplus": [round(x, 4) for x in realized],
 			"walked": list(st["walked"]), "ir_violations": ir_violations, "n_ir_violations": len(ir_violations),
@@ -775,16 +780,3 @@ def _json(obj) -> str:
 	import json
 	return json.dumps(obj, ensure_ascii=False)
 
-
-def _gini(xs: list[float]) -> float:
-	"""Gini coefficient of a surplus vector (shifted to be non-negative first; 0 = perfectly equal)."""
-	x = np.array(xs, dtype=float)
-	if x.size == 0:
-		return 0.0
-	x = x - min(x.min(), 0.0)  # shift so the minimum is >= 0 (surpluses can be negative)
-	s = x.sum()
-	if s <= 0:
-		return 0.0
-	x = np.sort(x)
-	m = x.size
-	return float((2 * np.sum(np.arange(1, m + 1) * x) - (m + 1) * s) / (m * s))

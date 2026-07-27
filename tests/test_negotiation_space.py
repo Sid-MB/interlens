@@ -25,7 +25,8 @@ import math
 import numpy as np
 import pytest
 
-from interlens.arena.negotiation.sheets import (GameSpec, ScoreSheet, pairwise_iou, sparsity, surplus_matrix,
+from interlens.arena.negotiation.sheets import (GameSpec, ScoreSheet, pairwise_iou, register_constraint,
+                                                sparsity, surplus_matrix,
                                                 utility_matrix)
 from interlens.arena.negotiation.space import DealSpace, Issue
 
@@ -144,6 +145,26 @@ def test_gamespec_feasible_mask_rules():
     assert maj.feasible_mask().sum() == 4
     veto = GameSpec(sp, (a, b, c), proposer=0, veto=1, min_accept=2)  # must include veto=B -> North only -> 2
     assert veto.feasible_mask().sum() == 2
+
+
+def test_gamespec_constraint_narrows_the_feasible_set_and_round_trips():
+    """A structural constraint expresses what the flat threshold model cannot: it must remove deals the
+    agreement rule would otherwise ADMIT, ride through to_json/from_json (a stored instance has to rebuild the
+    same game, or replay is a lie), and agree with the single-deal `feasible`."""
+    register_constraint("test_site_must_be_north", lambda d: d[0] == 0)
+    sp = _space()                                     # 6 deals: Site in {North(0), South(1), East(2)} x Fund
+    a = ScoreSheet("A", ((1, 1, 1), (0, 0)), 0.0)     # everyone clears every deal, so thresholds gate nothing
+    b = ScoreSheet("B", ((1, 1, 1), (0, 0)), 0.0)
+    free = GameSpec(sp, (a, b), proposer=0)
+    assert free.feasible_mask().sum() == 6            # unconstrained: the whole space is feasible
+    bound = GameSpec(sp, (a, b), proposer=0, constraint="test_site_must_be_north")
+    assert bound.feasible_mask().sum() == 2           # the constraint alone removed 4 otherwise-feasible deals
+    assert bound.feasible((0, 1)) and not bound.feasible((2, 1))     # single-deal form agrees with the mask
+    back = GameSpec.from_json(json.loads(json.dumps(bound.to_json())))
+    assert back.constraint == "test_site_must_be_north"
+    assert (back.feasible_mask() == bound.feasible_mask()).all()     # survives the instance round-trip
+    with pytest.raises(KeyError):                                    # an unregistered name fails fast, at build
+        GameSpec(sp, (a, b), proposer=0, constraint="never_registered")
 
 
 def test_gamespec_json_roundtrip_is_plain_json():

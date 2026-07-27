@@ -52,14 +52,20 @@ class Participant(ABC):
 	@abstractmethod
 	def generate(self, view: list[dict], *, steering=None, capture=None, patch=None,
 	             return_logprobs: bool = False, turn: int | None = None,
-	             max_new_tokens: int | None = None) -> Message:
+	             max_new_tokens: int | None = None, seat: str | None = None) -> Message:
 		"""Produce this participant's next message given ``view`` — the conversation flattened to
 		``[{"role", "content"}]`` from this participant's perspective. Returns a ``Message`` it authored.
 
 		Interp options apply to local-model participants: ``steering`` (a ``SteeringSpec``), ``capture`` (a
 		``CaptureRequest``), ``patch`` (a ``Patch``), and ``return_logprobs``; ``turn`` is the message index used
 		to tag captured activations. Participants that can't honor an interp request (e.g. API-backed) must raise
-		rather than silently ignore it — a failed capture/steer must fail loudly."""
+		rather than silently ignore it — a failed capture/steer must fail loudly.
+
+		``seat`` is WHICH SEAT this turn is being spoken for, passed by the arena engine straight from
+		``SeatRequest.seat`` (``None`` outside the arena, e.g. a plain ``Conversation``). Most participants ignore
+		it — the view already addresses them — but a participant that fronts several seats needs to know which one
+		it is answering as, and reading that from the request is exact where recovering it from the prompt text is
+		guesswork that breaks whenever the wording changes."""
 		...
 
 	def finalize_view(self, segments: list[ViewSegment]) -> list[dict]:

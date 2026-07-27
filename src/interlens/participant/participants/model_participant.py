@@ -300,7 +300,7 @@ class ModelParticipant(Functional, Participant):
 
 	def generate(self, view: list[dict], *, steering=None, capture=None, patch=None,
 	             return_logprobs: bool = False, turn: int | None = None,
-	             max_new_tokens: int | None = None) -> Message:
+	             max_new_tokens: int | None = None, seat: str | None = None) -> Message:
 		# Fall back to this participant's default steering when the call didn't pass its own (per-call wins).
 		if steering is None:
 			steering = self.steering

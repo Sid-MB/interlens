@@ -81,7 +81,7 @@ class InspectModelParticipant(Participant):
 
 	def generate(self, view: list[dict], *, steering=None, capture=None, patch=None,
 	             return_logprobs: bool = False, turn: int | None = None,
-	             max_new_tokens: int | None = None) -> Message:
+	             max_new_tokens: int | None = None, seat: str | None = None) -> Message:
 		if steering is not None or capture is not None or patch is not None or return_logprobs:
 			raise NotImplementedError(
 				f"InspectModelParticipant {self.name!r} has no local model: interp requests are unavailable.")

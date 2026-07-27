@@ -59,17 +59,7 @@ def make_instance(spec: GameSpec) -> Instance:
 	                payload=spec.to_json(), ceiling=1.0, floor=0.0, solution={})
 
 
-# --- a view-aware scripted seat (one participant plays every seat) ----------------------------------------
-
-def _seat_of(view: list[dict]) -> str:
-	system = view[0]["content"]
-	if "neutral mediator" in system:
-		return "Mediator"
-	for name in PERSONAS:
-		if f"You are {name}" in system:
-			return name
-	raise AssertionError(f"could not identify seat from system prompt: {system[:120]!r}")
-
+# --- a scripted seat (one participant plays every seat, dispatching on the engine-passed seat) --------------
 
 class JsonSeat(Participant):
 	"""One participant that plays every seat, emitting the scenario's fenced-JSON action decided by a per-seat
@@ -83,10 +73,11 @@ class JsonSeat(Participant):
 		self.decide = decide
 
 	def generate(self, view, *, steering=None, capture=None, patch=None, return_logprobs=False,
-	             turn=None, max_new_tokens=None) -> Message:
+	             turn=None, max_new_tokens=None, seat: str | None = None) -> Message:
 		if steering is not None or capture is not None or patch is not None or return_logprobs:
 			raise NotImplementedError("JsonSeat has no model")
-		obj = self.decide(_seat_of(view), view)
+		assert seat is not None, "the arena engine must pass the seat identity"
+		obj = self.decide(seat, view)
 		return Message(self.name, "```json\n" + json.dumps(obj) + "\n```")
 
 

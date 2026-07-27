@@ -109,7 +109,7 @@ class PolicyParticipant(Participant):
     # ---------------------------------------------------------------------------------------------------- #
     def generate(self, view: list[dict], *, steering=None, capture=None, patch=None,
                  return_logprobs: bool = False, turn: int | None = None,
-                 max_new_tokens: int | None = None) -> Message:
+                 max_new_tokens: int | None = None, seat: str | None = None) -> Message:
         """Reconstruct the negotiation state from ``view``, ask the bound policy for an action, and return it
         as a fenced-JSON message (the same envelope LLM seats emit). Raises on any interp request — a
         pure-Python seat has no model to steer/capture/patch or read logprobs from."""

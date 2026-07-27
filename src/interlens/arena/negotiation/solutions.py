@@ -40,14 +40,99 @@ per-instance descriptor dict.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .sheets import ScoreSheet, pairwise_iou, sparsity, utility_matrix
 from .space import Deal, DealSpace
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
 _TOL = 1e-9
+
+
+# --- welfare & inequality scalars -------------------------------------------------------------------------
+# Given ONE realized surplus vector ``x = (u_i(deal) - tau_i)``, how good is it? These are the scalar
+# EVALUATORS, the counterpart to the argmax SOLVERS below (which pick the deal maximizing each): a scenario
+# scores an episode's outcome with them, and the analysis layer aggregates them into a run's atlas. One home, so
+# a run's reported welfare and the frontier it is compared against can never drift apart.
+#
+# Surplus units throughout, so parties on private point scales stay commensurable. Written in plain Python
+# rather than numpy: these are called on n-element vectors (n ~ 2-6), and the exact summation order is part of
+# the recorded numbers.
+
+def welfare(x: "Sequence[float]") -> float:
+    """Utilitarian social welfare ``USW = sum x_i``. NOT scale-invariant across parties — meaningful on
+    normalized surpluses, and reported alongside ESW/NSW rather than alone [reproB_tmlr]."""
+    return float(sum(x))
+
+
+def egalitarian_welfare(x: "Sequence[float]") -> float:
+    """Egalitarian (Rawlsian) welfare ``ESW = min x_i`` — "is any single party's interest being ignored". The
+    quantity discrete-KS maximizes, up to per-party normalization. ``0.0`` for an empty vector."""
+    return float(min(x)) if len(x) else 0.0
+
+
+def nash_welfare(x: "Sequence[float]") -> float:
+    """Nash social welfare ``NSW = prod x_i`` when every surplus is strictly positive, else ``0.0``.
+
+    The Nash objective is ``argmax prod x_i`` over strictly-IR deals, so a party at or below its threshold is by
+    convention outside the Nash set and contributes zero rather than a negative or spurious product — matching
+    the discrete-NBS convention in :func:`max_nash_welfare_index`."""
+    if len(x) == 0:
+        return 0.0
+    prod = 1.0
+    for xi in x:
+        if xi <= 0:
+            return 0.0
+        prod *= float(xi)
+    return prod
+
+
+def nash_geomean(x: "Sequence[float]") -> float:
+    """Geometric mean of surpluses ``NSW^(1/n)``, in surplus units (``0.0`` if any party is non-positive, per the
+    Nash convention above). The readable display form: raw ``prod x_i`` explodes with ``n`` (a 6-party game runs
+    to 1e10) while the geometric mean stays on the same scale as USW/ESW, so cells compare at a glance."""
+    n = len(x)
+    if n == 0 or any(xi <= 0 for xi in x):
+        return 0.0
+    return math.exp(sum(math.log(float(xi)) for xi in x) / n)
+
+
+def gini(x: "Sequence[float]", *, shift_negative: bool = False) -> float:
+    """Gini coefficient of the surplus distribution (0 = perfectly equal, →1 = maximally unequal).
+
+    Mean-absolute-difference form ``G = sum_ij |x_i - x_j| / (2 n sum_k x_k)``, which is the standard Gini and is
+    algebraically identical to the sorted-rank form on non-negative data.
+
+    Gini is only defined for a non-negative distribution with positive total, and a surplus vector can be
+    negative when a party accepted below its threshold (an IR violation). ``shift_negative`` selects the policy
+    for that case, because the two callers want different things and the choice changes the number:
+
+    - ``False`` (default) — report ``nan`` when the total is non-positive, and take negatives at face value.
+      "Undefined" is surfaced as undefined rather than silently reported as perfect equality. This is the
+      analysis-layer policy.
+    - ``True`` — translate the vector so its minimum is at 0 first, and return ``0.0`` for a non-positive total.
+      Always yields a number, at the cost of measuring the *shifted* distribution's inequality. This is the
+      per-episode outcome policy.
+
+    The two agree exactly whenever every surplus is non-negative."""
+    n = len(x)
+    if n == 0:
+        return 0.0 if shift_negative else float("nan")
+    xs = [float(v) for v in x]
+    if shift_negative:
+        xs = [v - min(min(xs), 0.0) for v in xs]
+    total = sum(xs)
+    if total <= 0:
+        return 0.0 if shift_negative else float("nan")
+    mad = sum(abs(a - b) for a in xs for b in xs)
+    return mad / (2.0 * n * total)
 
 
 # --- masks and reference points --------------------------------------------------------------------------

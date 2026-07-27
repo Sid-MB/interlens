@@ -169,13 +169,43 @@ class Episode:
 		        "cost_usd": round(self.cost_usd, 6), "by_seat": by_seat}
 
 
-class EpisodeStore:
-	"""Per-episode JSON persistence, written atomically on every update so a crash loses at most one turn.
+class JsonRecordStore:
+	"""A directory tree of JSON records, one file per record, written atomically.
 
-	Layout: ``{root}/{scenario}/{cell}/{arm}/{model_short}/L{level}/{episode_id}.json``."""
+	The persistence shared by every arena record store: a ``root``, an atomic ``save`` (write a sibling ``.tmp``
+	then ``os.replace``, so a crash mid-write leaves the previous file intact rather than a truncated one), and a
+	sorted recursive ``load_all``. Subclasses supply only what actually differs — :meth:`path` (the on-disk
+	layout) and, optionally, ``indent`` (pretty-print) — so a new store is a few lines and inherits the crash
+	safety instead of re-deriving it.
+
+	Records are duck-typed: anything with a ``to_json()`` method can be saved."""
+
+	indent: int | None = None       # None = compact (large machine-read records); an int pretty-prints
 
 	def __init__(self, root: str | Path):
 		self.root = Path(root)
+
+	def path(self, record) -> Path:
+		"""The file ``record`` is stored at, creating its parent directory. Subclasses define the layout."""
+		raise NotImplementedError
+
+	def save(self, record) -> Path:
+		"""Write ``record.to_json()`` atomically to :meth:`path` and return that path."""
+		p = self.path(record)
+		tmp = p.with_suffix(".tmp")
+		tmp.write_text(json.dumps(record.to_json(), ensure_ascii=False, indent=self.indent))
+		os.replace(tmp, p)
+		return p
+
+	def load_all(self, pattern: str = "**/*.json") -> list[dict]:
+		"""Every stored record under ``root`` matching ``pattern``, as raw dicts, in sorted path order."""
+		return [json.loads(f.read_text()) for f in sorted(self.root.glob(pattern))]
+
+
+class EpisodeStore(JsonRecordStore):
+	"""Per-episode JSON persistence, written atomically on every update so a crash loses at most one turn.
+
+	Layout: ``{root}/{scenario}/{cell}/{arm}/{model_short}/L{level}/{episode_id}.json``."""
 
 	def path(self, ep: Episode) -> Path:
 		model_short = ep.model.split("/")[-1].replace(".", "-")
@@ -184,15 +214,9 @@ class EpisodeStore:
 		p.mkdir(parents=True, exist_ok=True)
 		return p / f"{ep.episode_id}.json"
 
-	def save(self, ep: Episode) -> None:
-		p = self.path(ep)
-		tmp = p.with_suffix(".tmp")
-		tmp.write_text(json.dumps(ep.to_json(), ensure_ascii=False))
-		os.replace(tmp, p)
-
 	def load_all(self, scenario: str | None = None) -> list[dict]:
-		pattern = f"{scenario}/**/*.json" if scenario else "**/*.json"
-		return [json.loads(f.read_text()) for f in sorted(self.root.glob(pattern))]
+		"""Every stored episode, or only those of one ``scenario`` (the top layout level)."""
+		return super().load_all(f"{scenario}/**/*.json" if scenario else "**/*.json")
 
 	def summary(self) -> str:
 		"""A printable run-usage summary aggregated over every stored episode: episode counts, token totals,

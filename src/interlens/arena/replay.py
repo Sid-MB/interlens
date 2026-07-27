@@ -42,11 +42,17 @@ class ReplayError(RuntimeError):
 	"""A stored turn could not be matched to the state machine's pending request."""
 
 
-def replay_episode(scenario: Scenario, instance: Instance, episode: dict) -> dict:
+def replay_episode(scenario: Scenario, instance: Instance, episode: dict, *, on_turn=None) -> dict:
 	"""Feed a stored episode's turns back through ``scenario`` and return the recomputed outcome dict.
 
 	``episode`` is the stored JSON record (``Episode.to_json()`` shape; the arena experiments' records load
-	directly). The instance must be the one the episode was played on (``episode['instance_id']``)."""
+	directly). The instance must be the one the episode was played on (``episode['instance_id']``).
+
+	``on_turn`` is an optional ``callable(state, request, turn) -> None`` invoked after each turn is applied,
+	while ``state`` still holds that turn's post-move context. It is the hook for POST-HOC per-turn work —
+	re-running oracles over a stored episode, reconstructing intermediate ledgers, extracting a support map at
+	turn *k* — so an analysis layer gets the scenario's own state machine instead of hand-rolling this loop
+	against private helpers. Its return value is ignored; raising aborts the replay."""
 	cfg = {k: v for k, v in (episode.get("cell_cfg") or {}).items() if k != "personas_resolved"}
 	try:
 		state = scenario.make_state(instance, episode["arm"], episode["seed"], cfg=cfg or None)
@@ -55,6 +61,8 @@ def replay_episode(scenario: Scenario, instance: Instance, episode: dict) -> dic
 	for turn in episode["turns"]:
 		request = _match_request(scenario, state, turn)
 		scenario.apply(state, request, turn["content"])
+		if on_turn is not None:
+			on_turn(state, request, turn)
 	outcome = scenario.score(state)
 	# the same post-scoring refinement the engine applies live (e.g. the distributed long-context
 	# truncation/capitulation outcome classes) — pure in (state, turns, outcome), so it replays exactly
