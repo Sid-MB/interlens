@@ -31,9 +31,10 @@ restated each turn, one canonical prompt scaffold with variants behind flags
 retry-with-specific-feedback then a pass; an economic (below-own-threshold) move is MEASURED, never blocked.
 
 Arms ``moves_chat`` / ``moves_only`` / ``team`` / ``solo`` cross the game's FULL/PRIVATE info; ultimatum-style
-single-shot / fixed-proposer / majority variants ride on cfg knobs. Scoring is in surplus units (``u_i-tau_i``):
-realized surplus, welfare (USW/ESW/NSW/Gini), IR violations, deal/no-deal, normalized by the exact max-feasible
-joint surplus; per-turn normative regret comes from the pluggable ``oracles=`` (each turn -> an
+single-shot / fixed-proposer / majority variants ride on cfg knobs. Each seat's surplus is normalized by its
+own maximum available surplus before aggregation, so ``primary`` is invariant to positive affine rescaling of
+any party's utility. Raw surplus welfare remains in explicitly named audit fields. Per-turn normative regret
+comes from the pluggable ``oracles=`` (each turn ->
 :class:`OracleRecord` via :meth:`annotate_turn`). A pure state machine (state is a pure function of the action
 sequence), so stored episodes replay and rescore exactly (``arena/replay.py``).
 """
@@ -697,36 +698,52 @@ class ScorableNegotiation(Scenario):
 		return st.get("solo_turn_cap", 1024)
 
 	# -------------------------------------------------------------- scoring --
-	def _ceiling_surplus(self, st) -> float:
-		"""Exact max feasible joint surplus of the game (recomputed from the GameSpec, so it is independent of
-		how the generator populated ``Instance.ceiling``). Non-positive iff the IR set is empty — then no-deal is
-		the rational outcome."""
+	def _score_geometry(self, st) -> dict:
+		"""Raw and per-seat-normalized surplus geometry, cached because it is fixed for an episode."""
+		if "_score_geometry" in st:
+			return st["_score_geometry"]
 		spec = st["spec"]
+		x = spec.surplus_matrix()
 		mask = spec.feasible_mask()
-		if not mask.any():
-			return 0.0
-		return float(spec.surplus_matrix().sum(axis=1)[mask].max())
+		capacities = x.max(axis=0)
+		valid = bool(mask.any()) and bool(np.all(capacities > 1e-9))
+		z = x / capacities[None, :] if valid else np.zeros_like(x)
+		geometry = {
+			"feasible": bool(mask.any()),
+			"capacities": capacities,
+			"normalized_ceiling": float(z[mask].sum(axis=1).max()) if valid else 0.0,
+			"raw_ceiling": float(x[mask].sum(axis=1).max()) if mask.any() else 0.0,
+		}
+		st["_score_geometry"] = geometry
+		return geometry
+
+	def _ceiling_surplus(self, st) -> float:
+		"""Maximum feasible sum after normalizing each seat by its own available surplus."""
+		return self._score_geometry(st)["normalized_ceiling"]
 
 	def _deal_primary(self, st, deal, walked: set) -> float:
-		"""Realized-joint-surplus / max-feasible-joint-surplus for a formed ``deal`` (walked parties realize 0 —
-		their BATNA). Unclamped, so an all-agreed but value-destroying deal reads below 0."""
+		"""Scale-invariant normalized joint surplus divided by its exact feasible maximum."""
 		if deal is None:
 			return 0.0
-		ceiling = self._ceiling_surplus(st)
+		geometry = self._score_geometry(st)
+		ceiling = geometry["normalized_ceiling"]
 		if ceiling <= 1e-9:
 			return 0.0  # empty-IR game: any formed deal is irrational (see score() for the no-deal reward)
 		spec = st["spec"]
-		realized = sum(0.0 if st["seat_names"][i] in walked else spec.sheets[i].surplus(deal)
-		               for i in range(spec.n_parties))
-		return realized / ceiling
+		realized = np.array([
+			0.0 if st["seat_names"][i] in walked else spec.sheets[i].surplus(deal)
+			for i in range(spec.n_parties)
+		], dtype=float)
+		return float((realized / geometry["capacities"]).sum() / ceiling)
 
 	def score(self, st) -> dict:
 		spec = st["spec"]
 		reg = st["registry"]
 		deal = st["final_deal"]
 		walked = set(st["walked"])
-		ceiling = self._ceiling_surplus(st)
-		empty_ir = ceiling <= 1e-9
+		geometry = self._score_geometry(st)
+		ceiling = geometry["normalized_ceiling"]
+		empty_ir = not geometry["feasible"]
 		n = spec.n_parties
 		if deal is not None:
 			surpluses = [spec.sheets[i].surplus(deal) for i in range(n)]
@@ -736,6 +753,9 @@ class ScorableNegotiation(Scenario):
 			realized = [0.0] * n
 		usw = welfare(realized)
 		esw = egalitarian_welfare(realized)
+		normalized = [realized[i] / geometry["capacities"][i] for i in range(n)]
+		normalized_usw = welfare(normalized)
+		normalized_esw = egalitarian_welfare(normalized)
 		# NSW keeps this scenario's own clamp-then-multiply convention (a below-threshold party contributes 0 to
 		# the product, not a sign flip), which differs from solutions.nash_welfare's strict-IR "any non-positive
 		# party => 0"; the clamped form is what the stored outcomes carry.
@@ -743,21 +763,28 @@ class ScorableNegotiation(Scenario):
 		ir_violations = [st["seat_names"][i] for i in range(n)
 		                 if deal is not None and st["seat_names"][i] not in walked and surpluses[i] < 0]
 		if empty_ir:
-			primary, success = (1.0, True) if deal is None else (0.0, False)
+			primary, raw_primary, success = (1.0, 1.0, True) if deal is None else (0.0, 0.0, False)
 		else:
-			primary = usw / ceiling if deal is not None else 0.0
+			primary = normalized_usw / ceiling if deal is not None else 0.0
+			raw_primary = usw / geometry["raw_ceiling"] if deal is not None and geometry["raw_ceiling"] > 1e-9 else 0.0
 			success = deal is not None
 		out = {
 			"primary": round(primary, 4), "success": bool(success), "deal": deal is not None,
+			"normalized_primary": round(primary, 4), "raw_primary": round(raw_primary, 4),
 			"finalized_by": st.get("finalized_by"), "empty_ir": empty_ir,
 			"arm": st["arm"], "info": spec.info, "chat": self._chat_enabled(st) if st["arm"] != "solo" else False,
 			"cell": st.get("cell", "base"),
 			"usw": round(usw, 4), "esw": round(esw, 4), "nsw": round(nsw, 4),
 			"gini": round(gini(realized, shift_negative=True), 4),
+			"normalized_usw": round(normalized_usw, 4), "normalized_esw": round(normalized_esw, 4),
+			"normalized_gini": round(gini(normalized, shift_negative=True), 4),
 			"per_party_surplus": [round(x, 4) for x in surpluses],
 			"realized_surplus": [round(x, 4) for x in realized],
+			"normalized_realized_surplus": [round(x, 6) for x in normalized],
+			"surplus_capacities": [round(float(x), 4) for x in geometry["capacities"]],
 			"walked": list(st["walked"]), "ir_violations": ir_violations, "n_ir_violations": len(ir_violations),
-			"ceiling_surplus": round(ceiling, 4),
+			"normalized_ceiling_surplus": round(ceiling, 6),
+			"ceiling_surplus": round(geometry["raw_ceiling"], 4),
 			"syntax_errors": st["syntax_errors"], "legality_errors": st["legality_errors"],
 			"economic_errors": st["economic_errors"],
 		}
@@ -780,4 +807,3 @@ class ScorableNegotiation(Scenario):
 def _json(obj) -> str:
 	import json
 	return json.dumps(obj, ensure_ascii=False)
-

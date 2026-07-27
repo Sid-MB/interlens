@@ -139,6 +139,32 @@ def test_deal_forms_by_unanimous_vote():
 	assert out["deal_named"] == {"Site": "North", "Fund": "High"}
 
 
+def test_primary_is_invariant_to_per_party_positive_affine_rescaling():
+	base = make_game()
+	scales = (2.0, 7.0, 0.5)
+	offsets = (100.0, -30.0, 11.0)
+	scaled_sheets = []
+	for sheet, a, b in zip(base.sheets, scales, offsets):
+		values = [list(row) for row in sheet.values]
+		for j, row in enumerate(values):
+			values[j] = [a * value + (b if j == 0 else 0.0) for value in row]
+		scaled_sheets.append(ScoreSheet(sheet.agent, tuple(tuple(row) for row in values),
+		                               threshold=a * sheet.threshold + b))
+	scaled = GameSpec(base.space, tuple(scaled_sheets), rounds=base.rounds, info=base.info, chat=base.chat,
+	                  proposer=base.proposer, veto=base.veto, min_accept=base.min_accept)
+	scenario = ScorableNegotiation()
+	base_state = scenario.make_state(make_instance(base), "moves_chat", seed=0)
+	scaled_state = scenario.make_state(make_instance(scaled), "moves_chat", seed=0)
+	deal = (0, 2)  # North, High
+	assert scenario._deal_primary(base_state, deal, set()) == pytest.approx(
+		scenario._deal_primary(scaled_state, deal, set()))
+	base_state["final_deal"] = scaled_state["final_deal"] = deal
+	base_out, scaled_out = scenario.score(base_state), scenario.score(scaled_state)
+	assert base_out["primary"] == scaled_out["primary"]
+	assert base_out["normalized_realized_surplus"] == scaled_out["normalized_realized_surplus"]
+	assert "raw_primary" in base_out and "ceiling_surplus" in base_out
+
+
 def test_ir_violation_recorded_but_not_blocked():
 	# (North, Low): Beta scores 0 < threshold 5 — accepting it is an IR violation that must be MEASURED, not
 	# blocked or retried (Design Lesson 12).
