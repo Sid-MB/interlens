@@ -157,6 +157,8 @@ class DealSpace:
 
     def _issue_index(self, name: str) -> int:
         """Issue position for a name, tolerant of surrounding whitespace and case."""
+        if not isinstance(name, str):
+            raise ValueError(f"issue name must be a string, got {name!r}")
         norm = name.strip().casefold()
         for j, iss in enumerate(self.issues):
             if iss.name.strip().casefold() == norm:
@@ -167,6 +169,8 @@ class DealSpace:
         """Index of an option ``label`` within an issue (given by position or name), tolerant of surrounding
         whitespace and case on both. Raises ``ValueError`` if the label matches no option."""
         j = issue if isinstance(issue, int) else self._issue_index(issue)
+        if not isinstance(label, str):
+            raise ValueError(f"option label for issue {self.issues[j].name!r} must be a string, got {label!r}")
         norm = label.strip().casefold()
         for o, opt in enumerate(self.issues[j].options):
             if opt.strip().casefold() == norm:

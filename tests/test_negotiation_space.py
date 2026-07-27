@@ -72,6 +72,10 @@ def test_parse_is_tolerant_inverse_of_named():
         sp.parse({"Site": "Nowhere", "Fund": "1M"})       # unknown option
     with pytest.raises(ValueError):
         sp.parse({"Site": "East"})                        # missing an issue
+    with pytest.raises(ValueError, match="option label.*must be a string"):
+        sp.parse({"Site": 2, "Fund": "1M"})               # malformed model JSON must become a clean parse failure
+    with pytest.raises(ValueError, match="issue name must be a string"):
+        sp.parse({0: "East", "Fund": "1M"})               # non-string JSON-ish key must not leak AttributeError
 
 
 def test_space_and_issue_json_roundtrip():
