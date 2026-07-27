@@ -27,7 +27,8 @@ from interlens import Conversation, RoundRobinPolicy
 from interlens.arena.actions import Accept, Propose, Reject, Walk, parse_action
 from interlens.arena.negotiation.space import DealSpace, Issue
 from interlens.arena.negotiation.sheets import GameSpec, ScoreSheet
-from interlens.arena.negotiation._oracle_common import GameTables, NegotiationState
+from interlens.arena.negotiation.oracle_context import GameTables
+from interlens.arena.negotiation.strategies import NegotiationState
 
 from interlens.arena.negotiation.acceptance import AcceptanceOracle, ThresholdOracle, reservation_values
 from interlens.arena.negotiation.beliefs import BeliefState, FrequencyModel, OpponentType
@@ -36,7 +37,7 @@ from interlens.arena.negotiation.equilibrium import (EquilibriumOracle, divide_t
                                                      solve_equilibrium)
 from interlens.arena.negotiation.strategies import (ACTime, TimeDependentPolicy, ToughPolicy,
                                                     BayesianRationalPolicy)
-from interlens.participant.participants.policy_participant import PolicyParticipant
+from interlens.arena.negotiation.policy_participant import PolicyParticipant
 
 
 # --------------------------------------------------------------------------------------------------------- #
@@ -263,9 +264,10 @@ def test_policy_participant_round_trips_mini_negotiation():
 
     msgs = [m for m in conv.transcript if m.author in ("p0", "p1")]
     assert msgs[0].author == "p0" and msgs[1].author == "p1"
-    # the proposer emitted a parseable Propose; the accepter referenced its offer id and Accepted.
-    a0 = parse_action(msgs[0].content)
-    a1 = parse_action(msgs[1].content)
+    # the proposer emitted a parseable Propose; the accepter referenced its offer id and Accepted. Deals go on
+    # the wire by issue/option NAME (``action_message(action, space)``), so decode them the way a seat does.
+    a0 = parse_action(msgs[0].content, deal_decoder=accepter._decode_deal)
+    a1 = parse_action(msgs[1].content, deal_decoder=accepter._decode_deal)
     assert a0.ok and isinstance(a0.action, Propose)
     assert a1.ok and isinstance(a1.action, Accept)
     assert a1.action.offer_id == "O1"            # the id the accepter derived for the standing offer
@@ -373,7 +375,7 @@ def test_exploitability_nonnegative():
 
 
 def test_oracles_read_game_discount():
-    from interlens.arena.negotiation._oracle_common import effective_discount
+    from interlens.arena.negotiation.oracle_context import effective_discount
 
     class G:                     # bare game-like object
         discount = 0.8

@@ -23,11 +23,11 @@ a stable URL, so the citations live in exactly one place and the docstrings stay
 references were pulled from ``experiments/rational_agents/docs/lit/rational-oracles.md`` §3 (solution concepts)
 and the benchmark deep-dive; each was verified there against the fetched primary PDF.
 
-Usage::
+Usage — the registry is bibliography DATA (no accessor API); read it directly::
 
-    from interlens.arena.negotiation.references import ref, cite
-    ref("nash1950").url                # -> 'https://www.jstor.org/stable/1907266'
-    print(cite("nash1950", "ks1975"))  # a two-line block for a module/function header
+    from interlens.arena.negotiation.references import REFERENCES
+    REFERENCES["nash1950"].url         # -> 'https://www.jstor.org/stable/1907266'
+    str(REFERENCES["ks1975"])          # "<citation> <url> — <note>" for a header line
 """
 from __future__ import annotations
 
@@ -226,15 +226,5 @@ REFERENCES: dict[str, Reference] = {
 }
 
 
-def ref(key: str) -> Reference:
-    """Look up one reference by key; raises ``KeyError`` with the available keys if the key is unknown."""
-    try:
-        return REFERENCES[key]
-    except KeyError:
-        raise KeyError(f"unknown citation key {key!r}; known keys: {sorted(REFERENCES)}") from None
-
-
-def cite(*keys: str) -> str:
-    """Render the given keys as an indented multi-line block, one ``[key] full-citation url`` per line, for
-    pasting into a module or function header."""
-    return "\n".join(f"  [{k}] {ref(k)}" for k in keys)
+# NB: this module is pure bibliography DATA — the ``REFERENCES`` dict is the master list every algorithm module
+# cites by key in its docstring (the literature-grounding mandate). It intentionally exposes no accessor API.

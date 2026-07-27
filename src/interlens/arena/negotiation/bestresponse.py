@@ -44,11 +44,11 @@ the ``O(n * |types| * |D|)`` acceptance-probability tensor once. Sub-second at t
 """
 from __future__ import annotations
 
-import json
 
 import numpy as np
 
-from ._oracle_common import (Accept, GameTables, Oracle, Propose, Reject, Walk, current_round,
+from ..actions import action_key
+from .oracle_context import (Accept, GameTables, Oracle, Propose, Reject, Walk, current_round,
                              effective_discount, game_tables, make_verdict, n_agents, offer_registry,
                              proposer_sequence, rounds_left, seat_index)
 
@@ -240,11 +240,12 @@ class BestResponseOracle(Oracle):
             br_action = Propose(tuple(int(x) for x in tables.deals[best_deal]))
             values.setdefault(br_action, float(prop_vals[best_deal]))
 
-        # Canonical action order so the stored verdict is reproducible: ``legal`` can arrive in PYTHONHASHSEED
-        # order (Accept/Reject offer ids come off a set), which otherwise leaks into ``action_values``,
-        # ``surplus_loss``, AND the tie-break in ``best`` — making the annotation nondeterministic run-to-run.
-        # Sorting by the serialized action fixes the order at the oracle without touching the values themselves.
-        values = {a: values[a] for a in sorted(values, key=lambda a: json.dumps(a.to_json(), sort_keys=True))}
+        # Deterministic TIE-BREAK: several actions routinely share the argmax value, and `max` would otherwise
+        # return whichever the caller happened to list first. Ordering the candidates canonically makes `best`
+        # a function of the legal SET, not of its order. (Distinct from where the legal set's own order comes
+        # from — that is fixed at its source, `OfferRegistry.standing_ids`; this rule owns only the tie-break,
+        # which no registry can decide, and which is why `evaluate` is order-invariant for any caller.)
+        values = {a: values[a] for a in sorted(values, key=action_key)}
 
         best = max(values, key=values.get) if values else None
         vbest = values[best] if best is not None else 0.0

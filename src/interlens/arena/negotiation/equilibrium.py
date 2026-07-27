@@ -47,7 +47,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ._oracle_common import (GameTables, Oracle, Propose, current_round, effective_discount, game_tables,
+from .oracle_context import (GameTables, Oracle, Propose, current_round, effective_discount, game_tables,
                              make_verdict, proposer_sequence, seat_index, softmax)
 
 _NEG = -1e18

@@ -19,8 +19,8 @@
 ``parse_action``'s single JSON-extraction-and-validation path with its syntax-vs-legality error classes."""
 from __future__ import annotations
 
-from interlens.arena.actions import (Accept, LEGALITY, Offer, OfferRegistry, ParsedTurn, ParseResult, Propose,
-                                     Reject, SYNTAX, Turn, Walk, action_from_json, parse_action, parse_turn)
+from interlens.arena.actions import (Accept, LEGALITY, Offer, OfferRegistry, ParseResult, Propose,
+                                     Reject, SYNTAX, Walk, action_from_json, parse_action)
 
 
 def fence(obj: str) -> str:
@@ -38,11 +38,6 @@ def test_action_json_round_trip_and_hashable():
 	assert len({Accept("O1"), Accept("O1"), Walk()}) == 2
 
 
-def test_turn_channel_separation():
-	turn = Turn(agent="Avery", thinking="private", action=Accept("O1"), message="I'm in.")
-	assert turn.agent == "Avery" and turn.action == Accept("O1") and turn.message == "I'm in."
-
-
 # ---------------------------------------------------------------- registry ---
 
 def test_registry_monotonic_ids_and_proposer_autoaccept():
@@ -51,7 +46,10 @@ def test_registry_monotonic_ids_and_proposer_autoaccept():
 	b = reg.register((1, 1), "Blake", round=1)
 	assert (a, b) == ("O1", "O2")
 	assert reg.get(a).accepts == {"Avery"}          # proposing implies supporting your own offer
-	assert reg.standing_ids() == {"O1", "O2"}
+	# a LIST in registration order, not a set: the legal-action set (and so the stored verdict) is built from it,
+	# and set iteration order varies with PYTHONHASHSEED
+	assert reg.standing_ids() == ["O1", "O2"]
+	assert reg.register((0, 1), "Casey", round=2) == "O3" and reg.standing_ids() == ["O1", "O2", "O3"]
 
 
 def test_registry_votes_and_withdraw():
@@ -141,29 +139,3 @@ def test_parse_action_accepts_nested_and_aliased_forms():
 	assert r.ok and r.action == Propose(deal=(0, 1))
 	# "move" alias for the action key, "kind" alias for the type
 	assert parse_action(fence('{"move": {"kind": "walk"}}')).action == Walk()
-
-
-# --------------------------------------------------------------- parse_turn ---
-
-def test_parse_turn_separates_message_and_action():
-	pt = parse_turn(fence('{"message": "I offer this", "action": {"type": "propose", "deal": [0, 2]}}'))
-	assert isinstance(pt, ParsedTurn) and pt.ok
-	assert pt.message == "I offer this" and pt.action == Propose(deal=(0, 2))
-	assert pt.thinking is None            # <think> is stripped upstream, never reaches the public parse
-
-
-def test_parse_turn_pure_cheap_talk_is_legal():
-	pt = parse_turn(fence('{"message": "just talking, no move yet"}'))
-	assert pt.ok and pt.action is None and pt.message == "just talking, no move yet"
-	# ...unless an action is required at this phase
-	pt2 = parse_turn(fence('{"message": "stalling"}'), require_action=True)
-	assert not pt2.ok and pt2.error_kind == SYNTAX and pt2.message == "stalling"
-
-
-def test_parse_turn_malformed_action_surfaces_error_and_retry():
-	pt = parse_turn(fence('{"message": "hi", "action": {"type": "accept"}}'), standing={"O1"})
-	assert not pt.ok and pt.error_kind == SYNTAX          # accept without offer_id
-	assert pt.retry_directive() == {"retry": pt.error, "error_kind": SYNTAX}
-	# legality: accept of a dead offer
-	pt2 = parse_turn(fence('{"action": {"type": "accept", "offer_id": "O9"}}'), standing={"O1"})
-	assert not pt2.ok and pt2.error_kind == LEGALITY

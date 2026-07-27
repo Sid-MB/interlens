@@ -16,7 +16,7 @@
 # [rational_agents scaffold: oracles-strategies] 2026-07-23 — package seeded minimally by T3.
 # Deliberately NO eager submodule imports: this package is co-authored (game-theory owns
 # space/sheets/solutions/generate/references.py; oracles-strategies owns beliefs/acceptance/
-# bestresponse/equilibrium/strategies.py + _oracle_common.py), and eager imports would fail
+# bestresponse/equilibrium/strategies.py + oracle_context.py), and eager imports would fail
 # while a sibling's file is still absent. Import submodules explicitly, e.g.
 # ``from interlens.arena.negotiation.beliefs import BeliefOracle``. Convenience re-exports can be
 # added here at integration time once every sibling module has landed.

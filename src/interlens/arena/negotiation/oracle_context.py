@@ -14,11 +14,18 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # [rational_agents scaffold: oracles-strategies] 2026-07-23
-"""Shared plumbing for the negotiation oracle stack (beliefs / acceptance / bestresponse / equilibrium /
-strategies), written once: the ``|D|×n`` utility/surplus tables (:class:`GameTables`), the structured
-:class:`NegotiationState` a policy reads, turn-context readers over the (loose) history/offer-registry shapes,
-and the ``make_verdict`` constructor. The typed actions and the ``Oracle`` ABC / ``OracleVerdict`` are imported
-from interlens-core (``arena/actions.py``, ``arena/oracles.py``).
+# [rational_agents restructure: phase-AB] 2026-07-24 — narrowed from _oracle_common.py to the decision-point
+# context the four numeric oracles genuinely share (NegotiationState moved to strategies.py, the parallel
+# action serializer/parser deleted in favour of arena.actions + interlens.parsing).
+"""The per-decision-point context the negotiation oracles share, written once.
+
+The four numeric oracles (beliefs / acceptance / bestresponse / equilibrium) each need the same three things at
+a decision point, so they live here rather than in any one of them: the ``|D|×n`` utility/surplus tables
+(:class:`GameTables`, built once per game and cached on it by :func:`game_tables`), READERS that recover the
+turn context — standing offers, round, rounds left, continuation discount, proposer rotation — from the loose
+history/offer-registry shapes a scenario emits, and the :func:`make_verdict` constructor. The typed actions and
+the ``Oracle`` ABC / ``OracleVerdict`` are imported from interlens-core (``arena/actions.py``,
+``arena/oracles.py``); the structured state a *policy* reads is ``strategies.NegotiationState``.
 
 A *game* is duck-typed: any object exposing ``.space`` and seat-indexed ``.sheets`` works, plus optionally
 ``.rounds`` / ``.info`` / ``.discount`` / ``.proposer`` / ``.veto`` (the real one is
@@ -26,9 +33,7 @@ A *game* is duck-typed: any object exposing ``.space`` and seat-indexed ``.sheet
 """
 from __future__ import annotations
 
-import json
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable
 
 import numpy as np
@@ -37,9 +42,6 @@ import numpy as np
 # import cycle — the arena action/oracle layer does not import the negotiation package). ``_jsonify`` is the ONE
 # JSON-coercion for oracle diagnostics, owned by ``arena.oracles`` and reused here by ``make_verdict``.
 from ..actions import Accept, Propose, Reject, Walk
-# Name-based action (de)serialization lives next to the action types in ``arena.actions``; re-exported here so
-# the negotiation stack's consumers (e.g. PolicyParticipant) keep one import site.
-from ..actions import action_to_json, action_to_message_content, deal_from_json  # noqa: F401
 from ..oracles import Oracle, OracleVerdict, _jsonify
 
 if TYPE_CHECKING:  # concrete game classes, used only in type hints (the real space.py / sheets.py types)
@@ -124,58 +126,38 @@ class GameTables:
         return self.utility.shape[1]
 
     @classmethod
-    def build(cls, space: DealSpace, sheets: list[ScoreSheet]) -> "GameTables":
-        """Enumerate ``space`` and vectorize utilities over ``sheets``. Uses each sheet's ``.values`` rows
-        when present (a single fancy-index per issue); otherwise falls back to calling ``sheet.utility``."""
-        deals = deal_list(space)
-        deals_arr = np.asarray(deals, dtype=int)
-        n = len(sheets)
-        D, J = deals_arr.shape
-        util = np.zeros((D, n), dtype=float)
-        for si, s in enumerate(sheets):
-            vals = getattr(s, "values", None)
-            if vals is not None:
-                for j in range(J):
-                    col = np.asarray(vals[j], dtype=float)
-                    util[:, si] += col[deals_arr[:, j]]
-            else:
-                for di in range(D):
-                    util[di, si] = float(s.utility(deals[di]))
-        thr = np.asarray([float(getattr(s, "threshold", 0.0)) for s in sheets], dtype=float)
-        surplus = util - thr[None, :]
-        index = {d: i for i, d in enumerate(deals)}
-        return cls(deals, index, deals_arr, util, surplus, thr)
-
-    @classmethod
     def from_game(cls, game) -> "GameTables":
-        """Build from a ``GameSpec``-like object exposing ``.space`` and ``.sheets``. Reuses the game's own
-        ``utility_matrix()`` when available (identical mixed-radix row order) to avoid recomputation."""
+        """Build tables from a ``GameSpec``-like object exposing ``.space`` and ``.sheets``. Reuses the game's
+        own ``utility_matrix()`` when available (identical mixed-radix row order, no recomputation); otherwise
+        vectorizes utilities from each sheet's ``.values`` rows (single fancy-index per issue), falling back to
+        ``sheet.utility`` per deal. The single tables builder — there is no separate ``build`` entry point."""
         space = game.space
         sheets = list(game.sheets)
+        deals = deal_list(space)
+        deals_arr = np.asarray(deals, dtype=int)
+        index = {d: i for i, d in enumerate(deals)}
+        thr = (np.asarray(game.thresholds, dtype=float) if hasattr(game, "thresholds")
+               else np.asarray([float(getattr(s, "threshold", 0.0)) for s in sheets], dtype=float))
         um = getattr(game, "utility_matrix", None)
         if callable(um):
-            deals = deal_list(space)
-            deals_arr = np.asarray(deals, dtype=int)
             util = np.asarray(um(), dtype=float)
-            thr = (np.asarray(game.thresholds, dtype=float) if hasattr(game, "thresholds")
-                   else np.asarray([float(getattr(s, "threshold", 0.0)) for s in sheets]))
-            index = {d: i for i, d in enumerate(deals)}
-            return cls(deals, index, deals_arr, util, util - thr[None, :], thr)
-        return cls.build(space, sheets)
+        else:
+            D, J = deals_arr.shape
+            util = np.zeros((D, len(sheets)), dtype=float)
+            for si, s in enumerate(sheets):
+                vals = getattr(s, "values", None)
+                if vals is not None:
+                    for j in range(J):
+                        util[:, si] += np.asarray(vals[j], dtype=float)[deals_arr[:, j]]
+                else:
+                    for di in range(D):
+                        util[di, si] = float(s.utility(deals[di]))
+        return cls(deals, index, deals_arr, util, util - thr[None, :], thr)
 
 
 # --------------------------------------------------------------------------------------------------------- #
 # Small numeric helpers (kept local so the oracle modules share one implementation).
 # --------------------------------------------------------------------------------------------------------- #
-def logsumexp(a: np.ndarray, axis=None) -> np.ndarray:
-    """Numerically stable ``log(sum(exp(a)))``."""
-    a = np.asarray(a, dtype=float)
-    m = np.max(a, axis=axis, keepdims=True)
-    m = np.where(np.isneginf(m), 0.0, m)
-    out = np.log(np.sum(np.exp(a - m), axis=axis, keepdims=True)) + m
-    return np.squeeze(out, axis=axis) if axis is not None else float(out)
-
-
 def softmax(a: np.ndarray, temperature: float = 1.0, axis=-1) -> np.ndarray:
     """Tempered softmax; ``temperature -> 0`` approaches a hard argmax (used to break equilibrium cycles)."""
     a = np.asarray(a, dtype=float) / max(temperature, 1e-12)
@@ -193,90 +175,6 @@ def normalize(w: np.ndarray, floor: float = 0.0) -> np.ndarray:
     if floor > 0:
         p = (1.0 - floor) * p + floor / len(p)
     return p
-
-
-# --------------------------------------------------------------------------------------------------------- #
-# Negotiation view/state that policies consume, and the action <-> message serialization.
-# --------------------------------------------------------------------------------------------------------- #
-@dataclass
-class NegotiationState:
-    """The structured state a ``Policy`` reads to compute its next action — the machine-readable counterpart
-    of the text ``view`` an LLM seat reads, so a ``PolicyParticipant`` and an LLM participant are
-    interchangeable seats.
-
-    Attributes
-    ----------
-    seat : int
-        This policy's seat index.
-    sheet : ScoreSheet
-        This seat's private score sheet.
-    space : DealSpace
-        The shared deal space.
-    round : int
-        Current round (1-indexed).
-    deadline : int
-        Total number of rounds ``T`` (turn-count deadline, restated every turn).
-    offers : dict[str, Deal]
-        Live offer registry: ``offer_id -> deal``.
-    standing : str | None
-        The offer id this seat is being asked to respond to (most recent live offer), if any.
-    received : list[Deal]
-        Opponent-proposed deals in order (feeds MiCRO / tit-for-tat / belief updates).
-    my_offers : list[Deal]
-        This seat's own past proposals in order.
-    discount : float
-        Per-round discount / breakdown-risk ``delta`` (1.0 = none).
-    tables : GameTables | None
-        Optional cached tables for the full game (only available under full information).
-    opponents : tuple[int, ...]
-        Seat indices of the other parties.
-    must_vote : bool
-        True on a vote-only turn (the scenario's forced-final phase): the seat may ONLY accept/reject/walk the
-        standing offer, not propose. Policies read this and cast a terminal individually-rational vote
-        (accept any offer that clears their threshold, since the only alternative is no-deal = 0). Proposing
-        here is an economic-legality violation, so a proposing policy would otherwise blow the deal.
-    """
-
-    seat: int
-    sheet: ScoreSheet
-    space: DealSpace
-    round: int = 1
-    deadline: int = 1
-    offers: dict = field(default_factory=dict)
-    standing: str | None = None
-    received: list = field(default_factory=list)
-    my_offers: list = field(default_factory=list)
-    discount: float = 1.0
-    tables: GameTables | None = None
-    opponents: tuple = ()
-    must_vote: bool = False
-
-    @property
-    def standing_deal(self) -> Deal | None:
-        """The deal referenced by ``standing`` (or None)."""
-        return self.offers.get(self.standing) if self.standing else None
-
-    @property
-    def time_fraction(self) -> float:
-        """``(round-1)/deadline`` in ``[0, 1)`` — the ``t`` used by time-dependent concession curves."""
-        return (self.round - 1) / max(self.deadline, 1)
-
-    @classmethod
-    def from_block(cls, block: dict, *, sheet, space, tables=None, discount: float = 1.0,
-                   opponents: tuple = (), seat: int | None = None) -> "NegotiationState":
-        """Build a state from a scenario-emitted ``negotiation_state`` block (see ``parse_negotiation_state``)
-        plus the seat-bound context (``sheet``/``space``/``tables``/``discount``/``opponents``). The block
-        carries only the dynamic fields — ``seat``, ``round``, ``deadline``, ``offers`` (``{id: [opt,...]}``),
-        ``standing`` (id or null), ``received``/``my_offers`` (lists of deals) — so a ``PolicyParticipant``
-        can read the scenario's authoritative offer registry straight from its view."""
-        offers = {k: tuple(int(x) for x in v) for k, v in (block.get("offers") or {}).items()}
-        return cls(seat=int(block.get("seat", seat if seat is not None else 0)), sheet=sheet, space=space,
-                   round=int(block.get("round", 1)), deadline=int(block.get("deadline", 1)),
-                   offers=offers, standing=block.get("standing"),
-                   received=[tuple(int(x) for x in d) for d in block.get("received", [])],
-                   my_offers=[tuple(int(x) for x in d) for d in block.get("my_offers", [])],
-                   discount=discount, tables=tables, opponents=tuple(opponents),
-                   must_vote=bool(block.get("must_vote", False)))
 
 
 def seat_index(game, agent) -> int:
@@ -298,23 +196,6 @@ def seat_index(game, agent) -> int:
         return int(agent)
     except Exception as e:
         raise KeyError(f"cannot resolve seat index for agent {agent!r}") from e
-
-
-_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-
-
-def parse_action_json(text: str) -> dict | None:
-    """Extract the last fenced-JSON action object from ``text`` (the last block wins, mirroring the arena's
-    'trailing action' convention). Returns the parsed dict or None."""
-    matches = _FENCE.findall(text or "")
-    for raw in reversed(matches):
-        try:
-            obj = json.loads(raw)
-        except Exception:
-            continue
-        if isinstance(obj, dict) and ("action" in obj or "proposal" in obj or "deal" in obj):
-            return obj
-    return None
 
 
 # --------------------------------------------------------------------------------------------------------- #
@@ -422,16 +303,3 @@ def proposer_sequence(game) -> list:
     return [(start + k) % n for k in range(n)]
 
 
-def parse_negotiation_state(text: str) -> dict | None:
-    """Extract the last fenced JSON object carrying a top-level ``"negotiation_state"`` key and return that
-    inner dict — the authoritative structured-state channel a scenario embeds in a seat's view so a
-    ``PolicyParticipant`` reads canonical offer ids / round instead of reconstructing them from the transcript.
-    """
-    for raw in reversed(_FENCE.findall(text or "")):
-        try:
-            obj = json.loads(raw)
-        except Exception:
-            continue
-        if isinstance(obj, dict) and isinstance(obj.get("negotiation_state"), dict):
-            return obj["negotiation_state"]
-    return None

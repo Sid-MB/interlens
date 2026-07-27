@@ -126,19 +126,6 @@ def action_from_json(d: dict) -> Action:
 	raise ValueError(f"not a serialized action: {d!r}")
 
 
-@dataclass
-class Turn:
-	"""The channel-separated protocol turn (frozen contract's ``Turn = {agent, thinking, action, message}``): a
-	seat's private ``thinking`` (always captured), its validated formal ``action`` (or ``None`` for a pure
-	speech turn), and its optional public ``message`` (cheap talk). This is the *protocol* view of a turn; the
-	arena persists it as a ``schema.TurnRecord`` (which adds indices, tokens, and reasoning provenance)."""
-
-	agent: str
-	thinking: str | None = None
-	action: Action | None = None
-	message: str | None = None
-
-
 # ----------------------------------------------------------------- offers ---
 
 @dataclass
@@ -202,8 +189,14 @@ class OfferRegistry:
 		"""Live offers, in registration order."""
 		return [o for o in self.offers.values() if o.live]
 
-	def standing_ids(self) -> set[OfferId]:
-		return {o.offer_id for o in self.offers.values() if o.live}
+	def standing_ids(self) -> list[OfferId]:
+		"""Live offer ids in REGISTRATION order (same order as :meth:`standing`).
+
+		A list, not a set, deliberately: callers build ordered things out of it — the legal-action set an oracle
+		scores, and hence the stored verdict — and a set's iteration order varies with ``PYTHONHASHSEED``, which
+		used to make a saved annotation differ run to run. Membership tests (``offer_id in standing_ids()``, how
+		:func:`parse_action` gates accept/reject) read the same either way."""
+		return [o.offer_id for o in self.offers.values() if o.live]
 
 	def accept(self, offer_id: OfferId, agent: str) -> bool:
 		"""Record ``agent``'s ACCEPT of a live offer; a reject by the same agent is cleared. Returns False (no
@@ -315,8 +308,7 @@ def _holder_and_kind(obj: dict) -> tuple[dict, str | None, bool]:
 
 
 def _action_from_holder(holder: dict, kind: str, *, deal_decoder, standing, allowed) -> ParseResult:
-	"""Validate one action given its kind and the dict its fields live on. Shared by ``parse_action`` and
-	``parse_turn``."""
+	"""Validate one action given its kind and the dict its fields live on (the shared core of ``parse_action``)."""
 	if allowed is not None and kind not in allowed:
 		return ParseResult.bad(LEGALITY, f'The action "{kind}" is not allowed on this turn '
 		                       f'(allowed: {", ".join(sorted(allowed))}).', raw=holder)
@@ -369,7 +361,8 @@ def parse_action(text: str, *, deal_decoder: Callable[[Any], Deal | None] | None
 
 	Accepts both the flat wire form ``{"action": "propose"|"accept"|"reject"|"walk", ...}`` and the nested form
 	``{"action": {"type": "propose", ...}}`` (see :func:`_holder_and_kind`); ``"offer_id"`` also accepts the
-	aliases ``"id"`` / ``"offer"``. For a turn that mixes cheap talk with a move, use :func:`parse_turn`."""
+	aliases ``"id"`` / ``"offer"``. A turn that mixes cheap talk with a move carries both in one object; the
+	scenario reads the ``message`` field itself and calls this for the action."""
 	obj = last_json(text)
 	if not isinstance(obj, dict):
 		return ParseResult.bad(SYNTAX, "No JSON action found. End your turn with one fenced JSON object, e.g. "
@@ -381,131 +374,45 @@ def parse_action(text: str, *, deal_decoder: Callable[[Any], Deal | None] | None
 	return _action_from_holder(holder, kind, deal_decoder=deal_decoder, standing=standing, allowed=allowed)
 
 
-@dataclass
-class ParsedTurn:
-	"""A structurally channel-separated turn (the frozen contract's ``Turn`` split at parse time): the public
-	``message`` (cheap talk) and the validated formal ``action``, kept apart so the harness can publish ONLY the
-	message + a moderator rendering of the action (privacy is structural, never gated on tag discipline).
+# --------------------------------------------------------------- action as a stable key ---
 
-	``thinking`` is always ``None`` here — a participant's ``<think>`` stream is stripped upstream by the engine
-	(``interlens.parsing.strip_think``) into the turn record's reasoning field before this text is seen, so it
-	never reaches the public parse. ``action`` is ``None`` for a pure cheap-talk turn; on a malformed action
-	``ok`` is False with a specific ``error`` / ``error_kind`` (:data:`SYNTAX` vs :data:`LEGALITY`)."""
+def action_key(action: Action | None) -> str | None:
+	"""The canonical STRING an action serializes to when it must be a JSON object key or a sort key — its
+	``to_json()`` dumped with sorted keys (``'{"action": "accept", "offer_id": "O1"}'``). ``None`` maps to
+	``None``.
 
-	message: str | None = None
-	action: Action | None = None
-	thinking: str | None = None
-	ok: bool = True
-	error: str | None = None
-	error_kind: str | None = None
-	raw: Any = None
-
-	def retry_directive(self) -> dict | None:
-		"""``{'retry': <error>, 'error_kind': <kind>}`` when the action was malformed, else ``None``."""
-		if self.ok:
-			return None
-		return {"retry": self.error, "error_kind": self.error_kind}
+	One definition serves two needs that must agree: an ``OracleVerdict``'s ``action_values`` is keyed by action,
+	and JSON object keys must be strings; and the oracles sort their scored actions by this key so a stored
+	verdict is byte-reproducible regardless of the order the legal actions arrived in. :func:`action_from_key`
+	is the exact inverse."""
+	return None if action is None else json.dumps(action.to_json(), sort_keys=True)
 
 
-def parse_turn(text: str, *, deal_decoder: Callable[[Any], Deal | None] | None = None,
-               standing: Container[OfferId] | None = None, allowed: Container[str] | None = None,
-               require_action: bool = False) -> ParsedTurn:
-	"""Parse a combined ``{"message": ..., "action": {...}}`` turn into channel-separated :class:`ParsedTurn`.
-
-	The public ``message`` and the formal ``action`` are pulled apart so a scenario can publish the message
-	while keeping the action a structured object (rendered by the moderator). A turn may carry a message only
-	(cheap talk), an action only, or both. ``require_action=True`` (e.g. a finalization phase) turns a
-	missing/unreadable action into a failed ``ParsedTurn`` (``ok=False``); otherwise a missing action is legal
-	(``action=None``, ``ok=True``). Action validation and the ``deal_decoder`` / ``standing`` / ``allowed`` gates
-	are exactly those of :func:`parse_action`."""
-	obj = last_json(text)
-	message = None
-	if isinstance(obj, dict) and isinstance(obj.get("message"), str):
-		message = obj["message"].strip() or None
-	if not isinstance(obj, dict):
-		if require_action:
-			return ParsedTurn(ok=False, error="No JSON action found. End your turn with one fenced JSON "
-			                  'object, e.g. ```json\n{"action": "walk"}\n```.', error_kind=SYNTAX, raw=obj)
-		return ParsedTurn(raw=obj)
-	holder, kind, has_action = _holder_and_kind(obj)
-	if kind is None:
-		if has_action or require_action:                # an action was attempted but unreadable, or one is due
-			return ParsedTurn(message=message, ok=False,
-			                  error='This turn needs an "action" naming a kind (one of "propose", "accept", '
-			                  '"reject", "walk").', error_kind=SYNTAX, raw=obj)
-		return ParsedTurn(message=message, raw=obj)     # pure cheap talk, legal
-	res = _action_from_holder(holder, kind, deal_decoder=deal_decoder, standing=standing, allowed=allowed)
-	return ParsedTurn(message=message, action=res.action, ok=res.ok, error=res.error,
-	                  error_kind=res.error_kind, raw=obj)
+def action_from_key(key: str | None) -> Action | None:
+	"""Rebuild the :class:`Action` a :func:`action_key` string names; ``None``/unparseable → ``None``."""
+	if not isinstance(key, str):
+		return None
+	try:
+		return action_from_json(json.loads(key))
+	except (json.JSONDecodeError, ValueError, TypeError):
+		return None
 
 
-# ----------------------------------------------------- name-based action <-> JSON (de)serialization ---
-# The wire (de)serialization of a typed action lives next to the action types. ``action_to_json`` /
-# ``action_to_message_content`` render a validated action into the fenced-JSON envelope both an LLM seat and a
-# ``PolicyParticipant`` emit (optionally with issue/option NAMES for legibility); ``deal_from_json`` is the
-# inverse for a ``deal`` payload. Used by the negotiation stack and re-exported there for its consumers.
+# ------------------------------------------------------------- action -> message envelope ---
 
-def action_to_json(action: Action, issue_names: list[str] | None = None,
-                   option_names: list[list[str]] | None = None) -> dict:
-	"""Serialize a typed action to the canonical fenced-JSON envelope. Delegates to the action's own
-	``.to_json()`` (index-based ``deal``) unless ``issue_names`` is supplied, in which case ``Propose`` is
-	rendered with issue/option names for LLM-legibility. This is the format both ``PolicyParticipant`` and LLM
-	seats emit."""
-	if isinstance(action, Propose) and issue_names is not None:
-		if option_names is not None:
-			deal = {issue_names[j]: option_names[j][action.deal[j]] for j in range(len(action.deal))}
-		else:
-			deal = {issue_names[j]: int(action.deal[j]) for j in range(len(action.deal))}
-		return {"action": "propose", "deal": deal}
-	to_json = getattr(action, "to_json", None)
-	if callable(to_json):
-		return to_json()
-	if isinstance(action, Propose):
-		return {"action": "propose", "deal": list(int(x) for x in action.deal)}
-	if isinstance(action, Accept):
-		return {"action": "accept", "offer_id": action.offer_id}
-	if isinstance(action, Reject):
-		return {"action": "reject", "offer_id": action.offer_id}
-	if isinstance(action, Walk):
-		return {"action": "walk"}
-	raise TypeError(f"not a negotiation action: {action!r}")
+def action_message(action: Action, space=None, *, preface: str = "") -> str:
+	"""Render ``action`` as a message body: an optional free-text ``preface``, then the fenced ``json`` action
+	block — the exact envelope an LLM seat produces, so a transcript is symmetric across seat types (a
+	``PolicyParticipant`` emits through here).
 
-
-def action_to_message_content(action: Action, *, preface: str = "", issue_names=None, option_names=None) -> str:
-	"""Render an action as a message body: optional free-text ``preface`` then a fenced ``json`` action block —
-	the exact envelope an LLM seat produces, so the transcript is symmetric across seat types."""
-	body = "```json\n" + json.dumps(action_to_json(action, issue_names, option_names)) + "\n```"
+	The action serializes through its own :meth:`Action.to_json` — the ONE action serializer — so ``deal`` is a
+	list of option indices. Pass ``space`` (anything with a ``named(deal)`` method, i.e. a
+	:class:`~interlens.arena.negotiation.space.DealSpace`) to render a ``Propose``'s deal as
+	``{issue_name: option_label}`` instead, which is what an LLM-legible transcript wants; ``DealSpace.parse`` is
+	the inverse when reading one back. ``space`` is duck-typed, so this module keeps no dependency on the
+	negotiation package."""
+	payload = action.to_json()
+	if space is not None and isinstance(action, Propose):
+		payload = {**payload, "deal": space.named(action.deal)}
+	body = "```json\n" + json.dumps(payload) + "\n```"
 	return f"{preface}\n{body}" if preface else body
-
-
-def deal_from_json(deal_field, issue_names: list[str] | None = None,
-                   option_names: list[list[str]] | None = None) -> Deal | None:
-	"""Parse a ``deal`` payload (index list, or a ``{issue: option}`` dict by name/index) back to a ``Deal``.
-	Tolerates name or index option values. Returns None if malformed."""
-	if isinstance(deal_field, (list, tuple)):
-		try:
-			return tuple(int(x) for x in deal_field)
-		except Exception:
-			return None
-	if isinstance(deal_field, dict) and issue_names is not None:
-		out = []
-		for j, name in enumerate(issue_names):
-			v = deal_field.get(name)
-			if v is None:
-				for k in deal_field:
-					if str(k).lower().replace(" ", "") == name.lower().replace(" ", ""):
-						v = deal_field[k]
-						break
-			if v is None:
-				return None
-			if isinstance(v, int) or (isinstance(v, str) and v.isdigit()):
-				out.append(int(v))
-			elif option_names is not None:
-				opts = [o.lower() for o in option_names[j]]
-				if str(v).strip().lower() not in opts:
-					return None
-				out.append(opts.index(str(v).strip().lower()))
-			else:
-				return None
-		return tuple(out)
-	return None

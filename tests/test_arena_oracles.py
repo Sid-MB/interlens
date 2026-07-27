@@ -45,10 +45,29 @@ def test_verdict_values_best_and_divergence():
 
 
 def test_verdict_to_json_serializes_action_keys():
+	"""action_values stores as a MAP keyed by the canonical action string, with `best` the same key — so a
+	reader looks a value up directly, and `stored['action_values'][stored['best']]` is the best value."""
 	v = OracleVerdict(action_values={Accept("O1"): 0.5}, best=Accept("O1"), beliefs={"p": 0.7}, flags=["f"])
 	j = v.to_json()
-	assert j["action_values"] == [{"action": {"action": "accept", "offer_id": "O1"}, "value": 0.5}]
-	assert j["best"] == {"action": "accept", "offer_id": "O1"} and j["beliefs"] == {"p": 0.7}
+	key = '{"action": "accept", "offer_id": "O1"}'
+	assert j["action_values"] == {key: 0.5}
+	assert j["best"] == key and j["beliefs"] == {"p": 0.7}
+	assert j["action_values"][j["best"]] == 0.5
+
+
+def test_verdict_from_json_reads_the_v1_0_list_shape():
+	"""Loader shim (episode schema v1.0 -> v1.1): episodes recorded before action_values became a map stored it
+	as a [{action, value}] list. Those must still load, with typed action keys and working regret math."""
+	old = {"action_values": [{"action": {"action": "accept", "offer_id": "O1"}, "value": 0.5},
+	                         {"action": {"action": "walk"}, "value": 0.0}],
+	       "best": {"action": "accept", "offer_id": "O1"}, "beliefs": None, "flags": [], "extra": {}}
+	back = OracleVerdict.from_json(old)
+	assert back.action_values == {Accept("O1"): 0.5, Walk(): 0.0}
+	assert back.best == Accept("O1") and back.best_value() == 0.5
+	assert back.divergence(Walk()) == 0.5
+	# and re-serializing an old record migrates it to the current shape
+	assert back.to_json()["action_values"] == {'{"action": "accept", "offer_id": "O1"}': 0.5,
+	                                           '{"action": "walk"}': 0.0}
 
 
 def test_verdict_extra_with_action_keys_is_json_serializable():
@@ -71,10 +90,10 @@ def test_verdict_extra_with_action_keys_is_json_serializable():
 	# the record that actually lands in round_checkpoints must also serialize
 	rec = OracleRecord.annotation(v, round=1, seat="Avery", oracle="bestresponse", chosen_action=Walk())
 	json.dumps(rec.to_json())
-	# round-trip: from_json inverts the action-keyed surplus_loss back to an Action-keyed dict
+	# `extra` is free-form diagnostics: the _jsonify coercion on the way OUT is deliberately not inverted on the
+	# way in, so from_json hands back exactly the JSON that was stored (only action_values/best are re-typed).
 	back = OracleVerdict.from_json(j)
-	assert back.extra["surplus_loss"] == {Accept("O1"): 0.0, Walk(): 0.5}
-	assert back.extra["best_deal"] == Propose(deal=(0, 1)) and back.extra["note"] == "ok"
+	assert back.extra == j["extra"]
 
 
 def test_extra_preserialized_action_list_passes_through():

@@ -33,7 +33,8 @@ import pytest
 from interlens.arena.actions import Accept, Propose, Walk
 from interlens.arena.engine import EpisodePool
 from interlens.arena.negotiation import games
-from interlens.arena.negotiation._oracle_common import GameTables, NegotiationState
+from interlens.arena.negotiation.oracle_context import GameTables
+from interlens.arena.negotiation.strategies import NegotiationState
 from interlens.arena.negotiation.acceptance import AcceptanceOracle, ThresholdOracle
 from interlens.arena.negotiation.bestresponse import BestResponseOracle
 from interlens.arena.negotiation.equilibrium import EquilibriumOracle, okada_closed_form

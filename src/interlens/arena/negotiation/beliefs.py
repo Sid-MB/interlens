@@ -46,7 +46,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ._oracle_common import (Deal, Oracle, issue_sizes, make_verdict, normalize, seat_index)
+from .oracle_context import (Deal, Oracle, issue_sizes, make_verdict, normalize, seat_index)
 
 
 # --------------------------------------------------------------------------------------------------------- #

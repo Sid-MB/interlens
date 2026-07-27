@@ -41,13 +41,115 @@ from __future__ import annotations
 
 import random
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ._oracle_common import (Accept, NegotiationState, Propose, Reject, Walk, deal_list)
+from ...parsing import last_json_with_key
+from .oracle_context import Accept, Deal, GameTables, Propose, Reject, Walk, deal_list
 from .acceptance import AcceptanceOracle
 from .beliefs import BeliefOracle
 from .bestresponse import BestResponseOracle, value_to_go_beliefs
+
+if TYPE_CHECKING:  # concrete game classes, used only in NegotiationState's type hints
+    from .sheets import ScoreSheet
+    from .space import DealSpace
+
+
+# --------------------------------------------------------------------------------------------------------- #
+# The structured state a policy reads, and the reader for the scenario's authoritative state block.
+# --------------------------------------------------------------------------------------------------------- #
+@dataclass
+class NegotiationState:
+    """The structured state a ``Policy`` reads to compute its next action — the machine-readable counterpart
+    of the text ``view`` an LLM seat reads, so a ``PolicyParticipant`` and an LLM participant are
+    interchangeable seats.
+
+    Attributes
+    ----------
+    seat : int
+        This policy's seat index.
+    sheet : ScoreSheet
+        This seat's private score sheet.
+    space : DealSpace
+        The shared deal space.
+    round : int
+        Current round (1-indexed).
+    deadline : int
+        Total number of rounds ``T`` (turn-count deadline, restated every turn).
+    offers : dict[str, Deal]
+        Live offer registry: ``offer_id -> deal``.
+    standing : str | None
+        The offer id this seat is being asked to respond to (most recent live offer), if any.
+    received : list[Deal]
+        Opponent-proposed deals in order (feeds MiCRO / tit-for-tat / belief updates).
+    my_offers : list[Deal]
+        This seat's own past proposals in order.
+    discount : float
+        Per-round discount / breakdown-risk ``delta`` (1.0 = none).
+    tables : GameTables | None
+        Optional cached tables for the full game (only available under full information).
+    opponents : tuple[int, ...]
+        Seat indices of the other parties.
+    must_vote : bool
+        True on a vote-only turn (the scenario's forced-final phase): the seat may ONLY accept/reject/walk the
+        standing offer, not propose. Policies read this and cast a terminal individually-rational vote
+        (accept any offer that clears their threshold, since the only alternative is no-deal = 0). Proposing
+        here is an economic-legality violation, so a proposing policy would otherwise blow the deal.
+    """
+
+    seat: int
+    sheet: ScoreSheet
+    space: DealSpace
+    round: int = 1
+    deadline: int = 1
+    offers: dict = field(default_factory=dict)
+    standing: str | None = None
+    received: list = field(default_factory=list)
+    my_offers: list = field(default_factory=list)
+    discount: float = 1.0
+    tables: GameTables | None = None
+    opponents: tuple = ()
+    must_vote: bool = False
+
+    @property
+    def standing_deal(self) -> Deal | None:
+        """The deal referenced by ``standing`` (or None)."""
+        return self.offers.get(self.standing) if self.standing else None
+
+    @property
+    def time_fraction(self) -> float:
+        """``(round-1)/deadline`` in ``[0, 1)`` — the ``t`` used by time-dependent concession curves."""
+        return (self.round - 1) / max(self.deadline, 1)
+
+    @classmethod
+    def from_block(cls, block: dict, *, sheet, space, tables=None, discount: float = 1.0,
+                   opponents: tuple = (), seat: int | None = None) -> "NegotiationState":
+        """Build a state from a scenario-emitted ``negotiation_state`` block (see ``parse_negotiation_state``)
+        plus the seat-bound context (``sheet``/``space``/``tables``/``discount``/``opponents``). The block
+        carries only the dynamic fields — ``seat``, ``round``, ``deadline``, ``offers`` (``{id: [opt,...]}``),
+        ``standing`` (id or null), ``received``/``my_offers`` (lists of deals) — so a ``PolicyParticipant``
+        can read the scenario's authoritative offer registry straight from its view."""
+        offers = {k: tuple(int(x) for x in v) for k, v in (block.get("offers") or {}).items()}
+        return cls(seat=int(block.get("seat", seat if seat is not None else 0)), sheet=sheet, space=space,
+                   round=int(block.get("round", 1)), deadline=int(block.get("deadline", 1)),
+                   offers=offers, standing=block.get("standing"),
+                   received=[tuple(int(x) for x in d) for d in block.get("received", [])],
+                   my_offers=[tuple(int(x) for x in d) for d in block.get("my_offers", [])],
+                   discount=discount, tables=tables, opponents=tuple(opponents),
+                   must_vote=bool(block.get("must_vote", False)))
+
+
+def parse_negotiation_state(text: str) -> dict | None:
+    """The scenario-emitted ``negotiation_state`` block in ``text`` (the inner dict of the last fenced JSON
+    object carrying that key), or ``None``. This is the authoritative structured-state channel a scenario
+    embeds in a seat's view, so a ``PolicyParticipant`` reads canonical offer ids / round straight off it
+    instead of reconstructing the ledger from the transcript; :meth:`NegotiationState.from_block` turns the
+    result into a state. Reads through ``parsing.last_json_with_key`` — the library's one fenced-JSON reader."""
+    obj = last_json_with_key(text, "negotiation_state")
+    block = obj.get("negotiation_state") if obj else None
+    return block if isinstance(block, dict) else None
 
 
 # --------------------------------------------------------------------------------------------------------- #
@@ -436,7 +538,7 @@ class BayesianRationalPolicy(Policy):
         ``state.received`` and ``update_from_offers`` rebuilds it from scratch anyway, so persisting it would
         buy nothing and would make one policy instance shared across concurrent seats race on a mutable
         member (the reported 'dict changed size during iteration')."""
-        from ._oracle_common import issue_sizes
+        from .oracle_context import issue_sizes
         n = tables.n_agents
         if state.tables is not None:
             ap = (state.tables.surplus >= 0.0).astype(float)
@@ -457,7 +559,7 @@ class BayesianRationalPolicy(Policy):
         their acceptance probability, so the padding is sound)."""
         if state.tables is not None:
             return state.tables
-        from ._oracle_common import GameTables
+        from .oracle_context import GameTables
         deals, u, _ = self._own.get(state)
         n = self._n_seats(state)
         deals_arr = np.asarray(deals, dtype=int)

@@ -14,6 +14,8 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # [rational_agents scaffold: oracles-strategies] 2026-07-23
+# [rational_agents restructure: phase-AB] 2026-07-24 — moved here from participant/participants/: it is built
+# on this package's NegotiationState/strategies, and a core participant must not import the arena.
 """``PolicyParticipant``: a state-dependent pure-Python seat that computes its move from a bound policy.
 
 Where ``ScriptedParticipant`` cycles fixed strings ignoring the conversation, a ``PolicyParticipant`` *reads*
@@ -36,10 +38,10 @@ Two ways to supply the state each turn:
 """
 from __future__ import annotations
 
-from ..participant import Participant
 from ...message import Message
-from ...arena.negotiation._oracle_common import (NegotiationState, action_to_message_content, deal_from_json,
-                                                 parse_negotiation_state)
+from ...participant.participant import Participant
+from ..actions import Propose, action_message, parse_action
+from .strategies import NegotiationState, parse_negotiation_state
 
 
 class PolicyParticipant(Participant):
@@ -56,8 +58,10 @@ class PolicyParticipant(Participant):
         This seat's index into the game's seat-indexed sheets/tables.
     sheet : object
         This seat's private score sheet (exposes ``.utility``/``.surplus``/``.threshold``).
-    space : object
-        The shared deal space (``.enumerate()`` / ``.size``).
+    space : DealSpace
+        The shared deal space. Also the seat's issue/option NAME table: proposals are emitted with names
+        (``space.named``) and incoming name-based deals decoded (``space.parse``), so the transcript is
+        LLM-legible and there is no second copy of the issue names to keep in sync.
     deadline : int
         Total number of rounds ``T`` (for the policy's time-dependent concession).
     discount : float
@@ -68,9 +72,6 @@ class PolicyParticipant(Participant):
         Total seat count (used to default ``opponents`` when not given).
     tables : object | None
         Optional full-information ``GameTables`` to attach to the state (enables exact full-info policies).
-    issue_names, option_names : list | None
-        Optional issue/option names. When ``issue_names`` is given, ``Propose`` is emitted with names (for
-        LLM-legible transcripts) and incoming name-based deals are decoded; otherwise deals are index lists.
     state_provider : callable | None
         Optional ``callable(view) -> NegotiationState`` overriding the default view reconstruction.
     registry_prefix : str
@@ -83,8 +84,8 @@ class PolicyParticipant(Participant):
     others_role = "user"
 
     def __init__(self, name: str, policy, *, seat: int, sheet, space, deadline: int, discount: float = 1.0,
-                 opponents: tuple = (), n_seats: int | None = None, tables=None, issue_names=None,
-                 option_names=None, state_provider=None, registry_prefix: str = "O",
+                 opponents: tuple = (), n_seats: int | None = None, tables=None,
+                 state_provider=None, registry_prefix: str = "O",
                  system_prompt: str | None = None, private_context: tuple = ()):
         self.name = name
         self.policy = policy
@@ -100,8 +101,6 @@ class PolicyParticipant(Participant):
         else:
             self.opponents = ()
         self.tables = tables
-        self.issue_names = issue_names
-        self.option_names = option_names
         self.state_provider = state_provider
         self.registry_prefix = registry_prefix
         self.system_prompt = system_prompt
@@ -120,10 +119,8 @@ class PolicyParticipant(Participant):
         state = (self.state_provider(view) if self.state_provider is not None
                  else self._state_from_view(view))
         action = self.policy(state)
-        content = action_to_message_content(action, issue_names=self.issue_names,
-                                            option_names=self.option_names)
-        return Message(author=self.name, content=content,
-                       metadata={"action": _to_json(action)})
+        return Message(author=self.name, content=action_message(action, self.space),
+                       metadata={"action": action.to_json()})
 
     def act(self, state: NegotiationState):
         """Compute this seat's action from a ``NegotiationState`` directly — no view parsing, no engine. The
@@ -134,33 +131,28 @@ class PolicyParticipant(Participant):
 
     # ---------------------------------------------------------------------------------------------------- #
     def _decode_deal(self, deal_obj):
-        """Decode a ``Propose`` deal payload to an option-index tuple (index list, or name dict when
-        ``issue_names`` is set)."""
-        return deal_from_json(deal_obj, self.issue_names, self.option_names)
+        """Decode a ``Propose`` deal payload to an option-index tuple, or ``None`` if malformed — the
+        ``deal_decoder`` the canonical parser calls. A list is read as option indices; a
+        ``{issue_name: option_label}`` object goes through ``DealSpace.parse`` (the ONE name decoder, tolerant
+        of case/whitespace), whose ``ValueError`` on an unknown issue/option becomes the ``None`` that
+        ``parse_action`` reports as an economic-legality failure."""
+        if isinstance(deal_obj, (list, tuple)):
+            try:
+                return tuple(int(x) for x in deal_obj)
+            except (TypeError, ValueError):
+                return None
+        if isinstance(deal_obj, dict):
+            try:
+                return self.space.parse(deal_obj)
+            except (ValueError, AttributeError):
+                return None
+        return None
 
     def _parse_action(self, content: str):
-        """Parse one formal action from a message body (the last fenced-JSON action), returning a typed
-        ``Action`` or ``None``. Uses the canonical ``parse_action`` when available."""
-        try:
-            from ...arena.actions import parse_action
-            res = parse_action(content, deal_decoder=self._decode_deal)
-            return res.action if getattr(res, "ok", False) else None
-        except Exception:
-            from ...arena.negotiation._oracle_common import parse_action_json, Propose, Accept, Reject, Walk
-            obj = parse_action_json(content)
-            if not isinstance(obj, dict):
-                return None
-            kind = obj.get("action")
-            if kind == "propose" or "deal" in obj:
-                deal = self._decode_deal(obj.get("deal"))
-                return Propose(deal) if deal is not None else None
-            if kind == "accept":
-                return Accept(str(obj.get("offer_id")))
-            if kind == "reject":
-                return Reject(str(obj.get("offer_id")))
-            if kind == "walk":
-                return Walk()
-            return None
+        """One formal action read from a message body via the canonical ``parse_action``, or ``None`` if the
+        turn carried no well-formed legal action."""
+        res = parse_action(content, deal_decoder=self._decode_deal)
+        return res.action if res.ok else None
 
     def _state_from_view(self, view: list[dict]) -> NegotiationState:
         """Rebuild a ``NegotiationState`` from the flattened ``view``.
@@ -170,7 +162,6 @@ class PolicyParticipant(Participant):
         in order, assigning monotonic offer ids to every ``Propose`` (role ``assistant`` = this seat, role
         ``user`` = an opponent), track the latest incoming (opponent) offer as ``standing``, and infer the
         round from this seat's completed turns."""
-        from ...arena.negotiation._oracle_common import Propose
         for seg in reversed(view or []):
             block = parse_negotiation_state(seg.get("content", ""))
             if block is not None:
@@ -206,8 +197,3 @@ class PolicyParticipant(Participant):
             round=my_turns + 1, deadline=self.deadline, offers=offers, standing=standing,
             received=received, my_offers=my_offers, discount=self.discount, tables=self.tables,
             opponents=self.opponents)
-
-
-def _to_json(action):
-    to_json = getattr(action, "to_json", None)
-    return to_json() if callable(to_json) else {"action": getattr(action, "kind", "?")}

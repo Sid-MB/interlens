@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._oracle_common import (Accept, GameTables, Oracle, Propose, Reject, Walk, effective_discount,
+from .oracle_context import (Accept, GameTables, Oracle, Propose, Reject, Walk, effective_discount,
                              game_tables, make_verdict, offer_registry, rounds_left, seat_index)
 
 

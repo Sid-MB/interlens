@@ -42,28 +42,13 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from .actions import Action, action_from_json
-
-
-def _ser(action: Any) -> Any:
-	"""JSON-safe rendering of an action key (an ``Action`` -> its ``to_json``, anything else unchanged)."""
-	return action.to_json() if isinstance(action, Action) else action
-
-
-def _de(value: Any) -> Any:
-	"""Inverse of :func:`_ser`: rebuild an ``Action`` from a serialized action dict, else pass through."""
-	if isinstance(value, dict) and any(k in value for k in ("action", "type", "kind")):
-		try:
-			return action_from_json(value)
-		except ValueError:
-			return value
-	return value
+from .actions import Action, action_from_json, action_from_key, action_key
 
 
 def _jsonify(value: Any) -> Any:
 	"""Recursively coerce an oracle's free-form ``beliefs`` / ``extra`` payload to JSON-safe data, so the
 	episode's oracle log stays ``json.dumps``-able no matter what an oracle stashes there. THE single coercion for
-	the negotiation oracle stack — ``_oracle_common.make_verdict`` imports it too, so the ``|D|×n`` numpy tables
+	the negotiation oracle stack — ``oracle_context.make_verdict`` imports it too, so the ``|D|×n`` numpy tables
 	and typed actions the oracles produce are serialized one way.
 
 	numpy array/scalar → list/py-scalar; a dataclass (e.g. OpponentType) → its fields; an ``Action`` → its
@@ -88,36 +73,6 @@ def _jsonify(value: Any) -> Any:
 		return {(k if isinstance(k, str) else str(k)): _jsonify(v) for k, v in value.items()}
 	if isinstance(value, (list, tuple)):
 		return [_jsonify(v) for v in value]
-	return value
-
-
-def _as_action(value: Any) -> Action | None:
-	"""``value`` as an ``Action`` if it's a serialized action dict, else ``None``."""
-	if isinstance(value, dict):
-		try:
-			return action_from_json(value)
-		except ValueError:
-			return None
-	return None
-
-
-def _unjsonify(value: Any) -> Any:
-	"""Best-effort inverse of :func:`_jsonify` for ``from_json`` (round-trips where feasible): a serialized
-	action dict becomes its ``Action``; a list whose every element is exactly ``{"action", "value"}`` with a
-	valid serialized action becomes the action-keyed dict it came from (inverting the ``surplus_loss`` case);
-	other dicts/lists recurse. Stringified non-action keys (e.g. an original tuple key) stay strings — not every
-	coercion is reversible."""
-	if (isinstance(value, list) and value
-			and all(isinstance(x, dict) and set(x) == {"action", "value"} and _as_action(x["action"]) is not None
-			        for x in value)):
-		return {_as_action(x["action"]): _unjsonify(x["value"]) for x in value}
-	if isinstance(value, dict):
-		action = _as_action(value)
-		if action is not None:
-			return action
-		return {k: _unjsonify(v) for k, v in value.items()}
-	if isinstance(value, list):
-		return [_unjsonify(v) for v in value]
 	return value
 
 
@@ -160,23 +115,38 @@ class OracleVerdict:
 		return best - chosen
 
 	def to_json(self) -> dict:
-		# beliefs/extra are free-form oracle payloads -> run them through _jsonify so an action-keyed dict (e.g. a
-		# best-response oracle's per-action surplus_loss) can't leave the record un-serializable.
-		return {"action_values": [{"action": _ser(a), "value": v} for a, v in self.action_values.items()],
-		        "best": _ser(self.best), "beliefs": _jsonify(self.beliefs), "flags": list(self.flags),
+		"""The stored form. ``action_values`` is a JSON OBJECT keyed by
+		:func:`~interlens.arena.actions.action_key` (the action's ``to_json`` dumped with sorted keys) — a map,
+		because that is what it is, so a reader can look one action's value up directly instead of scanning a
+		list of pairs. ``best`` is the same key string, so ``stored['action_values'][stored['best']]`` is the
+		best value. ``beliefs``/``extra`` are free-form oracle payloads run through :func:`_jsonify`, so an
+		action-keyed dict or a numpy table an oracle stashed can't leave the record un-serializable."""
+		return {"action_values": {action_key(a): v for a, v in self.action_values.items()},
+		        "best": action_key(self.best), "beliefs": _jsonify(self.beliefs), "flags": list(self.flags),
 		        "extra": _jsonify(self.extra)}
 
 	@staticmethod
 	def from_json(d: dict) -> "OracleVerdict":
-		"""Rebuild an ``OracleVerdict`` from :meth:`to_json` — the round-trip inverse. Serialized action keys and
-		``best`` are reconstructed into typed :class:`~interlens.arena.actions.Action` objects
-		(via :func:`~interlens.arena.actions.action_from_json`); ``beliefs`` / ``flags`` / ``extra`` come back
-		verbatim. Lets an analysis layer reconstruct typed verdicts (and their regret math) from stored
-		episodes."""
-		action_values = {_de(item["action"]): item["value"] for item in d.get("action_values", [])}
-		return OracleVerdict(action_values=action_values, best=_de(d.get("best")),
-		                     beliefs=_unjsonify(d.get("beliefs")), flags=list(d.get("flags", [])),
-		                     extra=_unjsonify(d.get("extra", {})))
+		"""Rebuild an ``OracleVerdict`` from :meth:`to_json`, reconstructing typed
+		:class:`~interlens.arena.actions.Action` keys (and ``best``) so the regret math works on a verdict loaded
+		from a stored episode. ``beliefs``/``flags``/``extra`` come back as the JSON that was stored — ``extra``
+		is free-form diagnostics, so the coercion :func:`_jsonify` applies on the way out is deliberately not
+		inverted on the way in.
+
+		Reads BOTH stored shapes: the current ``{action_key: value}`` object (episode ``schema_version`` v1.1+)
+		and the original ``[{"action": {...}, "value": v}, ...]`` list of pairs (v1.0), so episodes recorded
+		before the shape change still load and replay."""
+		stored = d.get("action_values") or {}
+		if isinstance(stored, list):                       # v1.0 episodes: a list of {action, value} pairs
+			action_values = {action_from_json(item["action"]): item["value"] for item in stored}
+			best = d.get("best")
+			best = action_from_json(best) if isinstance(best, dict) else None
+		else:
+			action_values = {action_from_key(k): v for k, v in stored.items()}
+			best = action_from_key(d.get("best"))
+		return OracleVerdict(action_values=action_values, best=best,
+		                     beliefs=d.get("beliefs"), flags=list(d.get("flags", [])),
+		                     extra=d.get("extra", {}))
 
 
 class Oracle(ABC):

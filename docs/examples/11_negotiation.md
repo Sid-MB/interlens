@@ -139,7 +139,7 @@ Arms: `moves_chat` (binding moves + cheap talk), `moves_only` (the ±communicati
 A `PolicyParticipant` mounts a pure-Python `policy(state) → Action` as a first-class participant, so a rational agent plays the *same* protocol as an LLM (and can sit across the table from one). The strategy zoo in `arena/negotiation/strategies.py` provides the executable opponents: time-dependent Faratin curves (`TimeDependentPolicy.boulware(...)` concedes near the deadline, `.conceder(...)` concedes early), `MiCROPolicy`, `NaiveTitForTatPolicy`, `ToughPolicy`, and a `BayesianRationalPolicy`, plus AC-next/AC-combi acceptance conditions.
 
 ```python
-from interlens.participant.participants.policy_participant import PolicyParticipant
+from interlens.arena.negotiation.policy_participant import PolicyParticipant
 from interlens.arena.negotiation.strategies import TimeDependentPolicy
 
 alice_agent = PolicyParticipant(

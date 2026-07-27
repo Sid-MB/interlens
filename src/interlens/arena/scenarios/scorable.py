@@ -607,12 +607,7 @@ class ScorableNegotiation(Scenario):
 		the seat's actual PROPOSE (if any) — the full ``Propose(deal)`` space is enumerable from ``game``, so the
 		oracle expands it internally rather than us bloating the record with |D| entries; we include the chosen
 		propose so its value is scored for regret."""
-		# FLAGGED-FOR-LATER: standing_ids() is a set, so list(...) here is PYTHONHASHSEED-ordered — the
-		# accept/reject entries of an oracle record's action_values (a dict, order-preserving) then serialize in a
-		# process-dependent order. It does NOT affect any value/divergence, only the serialization order of
-		# equal-status entries; making it deterministic (e.g. sorted by offer id) is a schema-conscious change,
-		# not a drive-by (it shifts stored-record byte order), so left as-is pending the record-format restructure.
-		live = list(st["registry"].standing_ids())
+		live = st["registry"].standing_ids()       # registration order (a list) — deterministic across processes
 		acts: list[Action] = [Walk()]
 		acts += [Accept(o) for o in live]
 		acts += [Reject(o) for o in live]

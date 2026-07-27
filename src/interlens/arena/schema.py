@@ -33,7 +33,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "v1.0"
+# Episode record schema. v1.1 changed one stored shape: an oracle verdict's ``action_values`` in
+# ``round_checkpoints`` is a ``{action_key: value}`` OBJECT rather than a ``[{action, value}]`` list (see
+# ``OracleVerdict.to_json``). Reading is backward compatible — ``OracleVerdict.from_json`` accepts both — so
+# v1.0 episodes still load and replay; the bump records which shape a file was WRITTEN with.
+SCHEMA_VERSION = "v1.1"
 
 # Neutral seat names, assigned in order (a scenario with n seats uses the first n).
 PERSONAS = ["Avery", "Blake", "Casey", "Devon", "Ember", "Flynn", "Greer", "Hollis"]
