@@ -293,6 +293,11 @@ class ScorableNegotiation(Scenario):
 		seat = st["seat_names"][si]
 		standing_offers = reg.standing()
 		opponents = [o for o in standing_offers if o.proposer != seat]
+		seat_index = {name: i for i, name in enumerate(st["seat_names"])}
+		received_by_opponent: dict[str, list[list[int]]] = {}
+		for offer in opponents:
+			key = str(seat_index[offer.proposer])
+			received_by_opponent.setdefault(key, []).append(list(offer.deal))
 		standing = opponents[-1].offer_id if opponents else None
 		if must_vote and st.get("final_offer"):
 			standing = st["final_offer"]  # the specific offer under the up/down vote
@@ -301,6 +306,7 @@ class ScorableNegotiation(Scenario):
 			"offers": {o.offer_id: list(o.deal) for o in standing_offers},
 			"standing": standing,
 			"received": [list(o.deal) for o in opponents],
+			"received_by_opponent": received_by_opponent,
 			"my_offers": [list(o.deal) for o in standing_offers if o.proposer == seat],
 			"must_vote": must_vote,
 		}}
