@@ -36,6 +36,9 @@ pytestmark = pytest.mark.slow
 _CASES = [
 	("google/gemma-2-2b-it", False, True),
 	("google/gemma-3-4b-it", True, True),
+	# Mistral phrases the same rule as "After the optional system message, conversation roles must alternate ..."
+	# — a second, independently-templated strict family, so the repairs must be flag-driven, not Gemma-shaped.
+	("mistralai/Ministral-8B-Instruct-2410", True, True),
 	("Qwen/Qwen2.5-0.5B-Instruct", True, False),
 ]
 
@@ -46,3 +49,29 @@ def test_derive_chat_flags(hf_id, exp_sys, exp_alt):
 
 	tok = AutoTokenizer.from_pretrained(hf_id)
 	assert derive_chat_flags(tok) == (exp_sys, exp_alt)
+
+
+# An arena scenario hands a participant an already-flattened per-seat view, and a multi-round game's OPENER sees
+# its own turn first (system, assistant, user, ...) — which every strict template rejects. ``repair_view`` (driven
+# by the same derived flags) must make each of these render under the family's REAL template.
+_ARENA_VIEWS = [
+	[{"role": "system", "content": "SYS"}, {"role": "assistant", "content": "my proposal"},
+	 {"role": "user", "content": "[Blake] counter\n\nYour turn."}],                                    # opener
+	[{"role": "system", "content": "SYS"}, {"role": "user", "content": "[Blake] open"},
+	 {"role": "assistant", "content": "propose"}, {"role": "assistant", "content": "vote"},
+	 {"role": "user", "content": "Your turn."}],                                                       # spoke twice
+]
+
+
+@pytest.mark.parametrize("hf_id,_sys,_alt", _CASES)
+@pytest.mark.parametrize("view", _ARENA_VIEWS)
+def test_repaired_arena_views_render_under_real_templates(hf_id, _sys, _alt, view):
+	from transformers import AutoTokenizer
+
+	from interlens.participant.participants.gemma import GemmaModelParticipant
+
+	tok = AutoTokenizer.from_pretrained(hf_id)
+	p = GemmaModelParticipant.__new__(GemmaModelParticipant)
+	p.supports_system_role, p.requires_alternating_roles = derive_chat_flags(tok)
+	rendered = tok.apply_chat_template(p.repair_view(view), tokenize=False, add_generation_prompt=True)
+	assert "my proposal" in rendered or "propose" in rendered   # the seat's own turn survived the repair

@@ -20,6 +20,11 @@ Views are family-agnostic role/content message lists; the participant applies th
 own past turns as assistant turns and everyone else's (author-labelled) as merged user turns — the same
 semantics as the core per-speaker view pipeline, specialized to a scenario's event list with per-seat private
 events.
+
+Family-agnostic means exactly that: the alternation here is *this seat's* speaking order, so a view legitimately
+opens on the seat's OWN turn (the round-1 opener of a multi-round game, whose proposal is the first event in the
+shared log) or repeats it (a rotation/round-boundary repeat). A strict template — Gemma's — rejects both; the
+participant repairs the flattened view for its own family in ``Participant.repair_view``. Do not repair here.
 """
 from __future__ import annotations
 

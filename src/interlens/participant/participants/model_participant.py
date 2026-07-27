@@ -384,8 +384,9 @@ class ModelParticipant(Functional, Participant):
 		template_kwargs = {}
 		if isinstance(self.thinking, bool):
 			template_kwargs["enable_thinking"] = self.thinking
-		prompts = [self.tokenizer.apply_chat_template(v, tokenize=False, add_generation_prompt=True,
-		                                              **template_kwargs) for v in views]
+		prompts = [self.tokenizer.apply_chat_template(self.repair_view(v), tokenize=False,
+		                                              add_generation_prompt=True, **template_kwargs)
+		           for v in views]
 
 		do_sample = bool(self.temperature and self.temperature > 0)
 		gen = dict(max_new_tokens=max_new_tokens if max_new_tokens is not None else self.max_new_tokens,
@@ -441,8 +442,12 @@ class ModelParticipant(Functional, Participant):
 		template_kwargs = {}
 		if isinstance(self.thinking, bool):
 			template_kwargs["enable_thinking"] = self.thinking
+		# ``repair_view`` (a no-op for permissive families) makes a strict template's demands — no standalone
+		# system turn, strict user/assistant alternation, user first — hold for views this participant did not
+		# assemble itself: arena scenarios hand over already-flattened views, and the tool loop appends turns.
 		rendered = self.tokenizer.apply_chat_template(
-			messages, tokenize=False, add_generation_prompt=True, tools=schemas, **template_kwargs
+			self.repair_view(messages), tokenize=False, add_generation_prompt=True, tools=schemas,
+			**template_kwargs
 		)
 		enc = self.tokenizer(rendered, return_tensors="pt", add_special_tokens=False).to(self.device)
 		prompt_len = enc["input_ids"].shape[1]
