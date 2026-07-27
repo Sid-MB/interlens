@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # [rational_agents scaffold: oracles-strategies] 2026-07-23
+# [rational_agents scaffold: lens-wave] 2026-07-26 — deterministic verdict/extra ordering (canonical action sort)
 """Exact expectimax best-response oracle over (remaining rounds x deal space x type posterior).
 
 Yields the headline **per-turn surplus-loss** metric ``V(oracle action) - V(agent action)`` in surplus units
@@ -42,6 +43,8 @@ Complexity: building the per-deal all-accept masks is ``O(T * n * |D|)`` (vector
 the ``O(n * |types| * |D|)`` acceptance-probability tensor once. Sub-second at the target scale.
 """
 from __future__ import annotations
+
+import json
 
 import numpy as np
 
@@ -236,6 +239,12 @@ class BestResponseOracle(Oracle):
         if any(isinstance(a, Propose) for a in legal):
             br_action = Propose(tuple(int(x) for x in tables.deals[best_deal]))
             values.setdefault(br_action, float(prop_vals[best_deal]))
+
+        # Canonical action order so the stored verdict is reproducible: ``legal`` can arrive in PYTHONHASHSEED
+        # order (Accept/Reject offer ids come off a set), which otherwise leaks into ``action_values``,
+        # ``surplus_loss``, AND the tie-break in ``best`` — making the annotation nondeterministic run-to-run.
+        # Sorting by the serialized action fixes the order at the oracle without touching the values themselves.
+        values = {a: values[a] for a in sorted(values, key=lambda a: json.dumps(a.to_json(), sort_keys=True))}
 
         best = max(values, key=values.get) if values else None
         vbest = values[best] if best is not None else 0.0

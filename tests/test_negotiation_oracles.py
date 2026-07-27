@@ -183,6 +183,20 @@ def test_bestresponse_picks_dominant_proposal():
     assert verdict.divergence(Propose((0,))) > 0
 
 
+def test_bestresponse_verdict_is_order_invariant():
+    """Regression (exp-wave): the stored verdict must not depend on the order the legal actions arrive in. Accept/
+    Reject offer ids come off a set (``list(set(standing_ids))``, PYTHONHASHSEED order), which used to leak into
+    ``action_values``, ``extra['surplus_loss']`` and the tie-break in ``best`` — making ``annotate --oracles
+    bestresponse`` nondeterministic run-to-run. The oracle now canonically sorts the scored actions, so
+    ``to_json`` is byte-stable across input orderings."""
+    game = _tiny_game()
+    orc = BestResponseOracle(0, discount=0.9)
+    legal = [Propose((0,)), Propose((1,)), Accept("O2"), Reject("O1"), Walk()]
+    base = orc.evaluate(game, [], "p0", legal).to_json()
+    for perm in ([Walk(), Reject("O1"), Propose((1,)), Accept("O2"), Propose((0,))], list(reversed(legal))):
+        assert orc.evaluate(game, [], "p0", perm).to_json() == base   # identical regardless of input order
+
+
 # --------------------------------------------------------------------------------------------------------- #
 # 4. Equilibrium oracle: Okada divide-the-dollar recovers v = 1/n.
 # --------------------------------------------------------------------------------------------------------- #
