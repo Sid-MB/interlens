@@ -88,7 +88,7 @@ class CategoryResult:
 # ------------------------------------------------------------- annotation helpers --
 def _flagged_turns(annotation: EpisodeAnnotation | None, row: int) -> list[dict]:
 	"""Turns whose annotation carries any flag string for this row — the canonical FLAGS id (mechanical pass) or
-	an oracle-emitted string (oracles-strategies), per ``_row_flag_strings``."""
+	an oracle-emitted string, per ``_row_flag_strings``."""
 	if annotation is None:
 		return []
 	want = _row_flag_strings(row)

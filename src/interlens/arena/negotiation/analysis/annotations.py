@@ -122,9 +122,11 @@ def summarize_turns(episode_id: str, model: str, arm: str, outcome: dict,
 
 
 def _extra_scalar(extra) -> float | None:
-	"""A scalar per-turn loss from ``OracleVerdict.extra`` (interlens-core is adding ``extra: dict`` for
-	per-action surplus_loss / reservation diagnostics). Tolerant: reads the first numeric of a few candidate
-	keys, since the exact schema lands with that change."""
+	"""A scalar per-turn loss read out of an oracle verdict's ``extra`` diagnostics.
+
+	``extra`` is a free-form per-oracle payload, so this reads the first numeric under any of a few known keys
+	rather than assuming one schema — a best-response oracle reports ``surplus_loss``, others ``regret``. Used
+	only as the fallback when a row carries no ``divergence`` of its own."""
 	if isinstance(extra, dict):
 		for k in ("surplus_loss", "regret", "chosen_surplus_loss"):
 			v = extra.get(k)
@@ -135,7 +137,7 @@ def _extra_scalar(extra) -> float | None:
 
 def _row_regret(row: dict) -> float | None:
 	"""Per-turn regret from one inline oracle row: the canonical ``divergence`` (best_value − chosen_value), or,
-	when that is absent, a scalar loss carried in ``verdict.extra`` (the lead's 'read verdict.extra' wiring)."""
+	when that is absent, a scalar loss carried in ``verdict.extra``."""
 	d = row.get("divergence")
 	if d is not None:
 		return float(d)

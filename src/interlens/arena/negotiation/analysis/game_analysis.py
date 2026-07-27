@@ -54,7 +54,7 @@ class GameAnalysis:
 	descriptors: dict[str, Any] = field(default_factory=dict)
 	scale: tuple[float, ...] | None = None              # per-party normalizer (max feasible surplus) for distances
 	_surplus_cache: dict[Deal, tuple[float, ...]] = field(default_factory=dict, repr=False)
-	# delegation handles set by from_instance so deal-based distances reuse game-theory's exact scale-invariant
+	# delegation handles set by from_instance so deal-based distances reuse ``solutions.py``'s exact scale-invariant
 	# solutions.distance_to_frontier / distance_to_solution rather than a re-implementation (None for from_sheets)
 	_U: Any = field(default=None, repr=False)
 	_tau: Any = field(default=None, repr=False)
@@ -116,7 +116,7 @@ class GameAnalysis:
 
 	def deal_frontier_distance(self, deal_like: Any) -> float:
 		"""Scale-invariant distance from a realized deal to the Pareto frontier (0 iff efficient). Delegates to
-		game-theory's ``solutions.distance_to_frontier`` (normalized-surplus space) for instances built via
+		the sibling ``solutions.distance_to_frontier`` (normalized-surplus space) for instances built via
 		``from_instance``; falls back to the Euclidean-on-surplus metric for hand-built fixtures."""
 		deal = self.canonical_deal(deal_like)
 		if self._U is not None and self._space is not None:
@@ -136,7 +136,7 @@ class GameAnalysis:
 		return self.distance_to_point(self.surplus(deal), name)
 
 	# ------------------------------------------------------------ constructors --
-	# concept names in game-theory's solutions.py -> this module's point names
+	# concept names in ``solutions.py`` -> this module's point names
 	_CONCEPT_MAP = {"nbs": "nash", "ks": "kalai_smorodinsky", "mnw": "max_nash_welfare",
 	                "utilitarian": "utilitarian", "egalitarian": "egalitarian"}
 
@@ -194,7 +194,7 @@ class GameAnalysis:
 	                issues: list[tuple[str, list[str]]] | None = None,
 	                points: dict[str, tuple] | None = None) -> "GameAnalysis":
 		"""Enumerate the deal space from raw score sheets and compute the frontier, IR set, welfare argmaxes, and
-		descriptors. A self-contained fallback and the tests' constructor — game-theory's ``solutions.py`` is the
+		descriptors. A self-contained fallback and the tests' constructor — ``solutions.py`` is the
 		authority for the axiomatic NBS/KS/MNW points, which are only filled here if passed in ``points``."""
 		n = len(sheets)
 		thresholds = _broadcast_threshold(thresholds, n)

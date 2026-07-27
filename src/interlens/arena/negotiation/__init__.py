@@ -13,13 +13,10 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-# [rational_agents scaffold: oracles-strategies] 2026-07-23 — package seeded minimally by T3.
-# Deliberately NO eager submodule imports: this package is co-authored (game-theory owns
-# space/sheets/solutions/generate/references.py; oracles-strategies owns beliefs/acceptance/
-# bestresponse/equilibrium/strategies.py + oracle_context.py), and eager imports would fail
-# while a sibling's file is still absent. Import submodules explicitly, e.g.
-# ``from interlens.arena.negotiation.beliefs import BeliefOracle``. Convenience re-exports can be
-# added here at integration time once every sibling module has landed.
+# [rational_agents scaffold: oracles-strategies] 2026-07-23
+# No eager submodule imports: the oracle modules pull in numpy and each other's tables, so importing this
+# package should not cost that for a caller who wants one solution concept. Import submodules explicitly, e.g.
+# ``from interlens.arena.negotiation.beliefs import BeliefOracle``.
 
 """Multi-issue, multi-party scorable negotiation: deal spaces, private score sheets, exact solution
 concepts, computable rational-agent oracles, and an executable strategy zoo.

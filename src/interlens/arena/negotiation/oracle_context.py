@@ -199,8 +199,10 @@ def seat_index(game, agent) -> int:
 
 
 # --------------------------------------------------------------------------------------------------------- #
-# Turn-context readers, tolerant of the (not-yet-frozen) history / offer-registry shapes. Shared by the
-# acceptance and best-response oracles so there is one implementation.
+# Turn-context readers. Each is tolerant of several history / offer-registry shapes on purpose: an oracle is
+# handed whatever a scenario chose to snapshot (an object, a mapping, a list of serialized offers), and the
+# alternative to tolerating that is every scenario owning its own oracle adapter. Shared by all four oracles so
+# there is one implementation of each question.
 # --------------------------------------------------------------------------------------------------------- #
 def game_tables(game) -> GameTables:
     """``GameTables`` for ``game``, cached on the game object when possible."""
