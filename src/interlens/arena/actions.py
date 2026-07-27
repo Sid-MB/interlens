@@ -38,6 +38,7 @@ Three pieces:
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Container
 
@@ -436,3 +437,75 @@ def parse_turn(text: str, *, deal_decoder: Callable[[Any], Deal | None] | None =
 	res = _action_from_holder(holder, kind, deal_decoder=deal_decoder, standing=standing, allowed=allowed)
 	return ParsedTurn(message=message, action=res.action, ok=res.ok, error=res.error,
 	                  error_kind=res.error_kind, raw=obj)
+
+
+# ----------------------------------------------------- name-based action <-> JSON (de)serialization ---
+# The wire (de)serialization of a typed action lives next to the action types. ``action_to_json`` /
+# ``action_to_message_content`` render a validated action into the fenced-JSON envelope both an LLM seat and a
+# ``PolicyParticipant`` emit (optionally with issue/option NAMES for legibility); ``deal_from_json`` is the
+# inverse for a ``deal`` payload. Used by the negotiation stack and re-exported there for its consumers.
+
+def action_to_json(action: Action, issue_names: list[str] | None = None,
+                   option_names: list[list[str]] | None = None) -> dict:
+	"""Serialize a typed action to the canonical fenced-JSON envelope. Delegates to the action's own
+	``.to_json()`` (index-based ``deal``) unless ``issue_names`` is supplied, in which case ``Propose`` is
+	rendered with issue/option names for LLM-legibility. This is the format both ``PolicyParticipant`` and LLM
+	seats emit."""
+	if isinstance(action, Propose) and issue_names is not None:
+		if option_names is not None:
+			deal = {issue_names[j]: option_names[j][action.deal[j]] for j in range(len(action.deal))}
+		else:
+			deal = {issue_names[j]: int(action.deal[j]) for j in range(len(action.deal))}
+		return {"action": "propose", "deal": deal}
+	to_json = getattr(action, "to_json", None)
+	if callable(to_json):
+		return to_json()
+	if isinstance(action, Propose):
+		return {"action": "propose", "deal": list(int(x) for x in action.deal)}
+	if isinstance(action, Accept):
+		return {"action": "accept", "offer_id": action.offer_id}
+	if isinstance(action, Reject):
+		return {"action": "reject", "offer_id": action.offer_id}
+	if isinstance(action, Walk):
+		return {"action": "walk"}
+	raise TypeError(f"not a negotiation action: {action!r}")
+
+
+def action_to_message_content(action: Action, *, preface: str = "", issue_names=None, option_names=None) -> str:
+	"""Render an action as a message body: optional free-text ``preface`` then a fenced ``json`` action block —
+	the exact envelope an LLM seat produces, so the transcript is symmetric across seat types."""
+	body = "```json\n" + json.dumps(action_to_json(action, issue_names, option_names)) + "\n```"
+	return f"{preface}\n{body}" if preface else body
+
+
+def deal_from_json(deal_field, issue_names: list[str] | None = None,
+                   option_names: list[list[str]] | None = None) -> Deal | None:
+	"""Parse a ``deal`` payload (index list, or a ``{issue: option}`` dict by name/index) back to a ``Deal``.
+	Tolerates name or index option values. Returns None if malformed."""
+	if isinstance(deal_field, (list, tuple)):
+		try:
+			return tuple(int(x) for x in deal_field)
+		except Exception:
+			return None
+	if isinstance(deal_field, dict) and issue_names is not None:
+		out = []
+		for j, name in enumerate(issue_names):
+			v = deal_field.get(name)
+			if v is None:
+				for k in deal_field:
+					if str(k).lower().replace(" ", "") == name.lower().replace(" ", ""):
+						v = deal_field[k]
+						break
+			if v is None:
+				return None
+			if isinstance(v, int) or (isinstance(v, str) and v.isdigit()):
+				out.append(int(v))
+			elif option_names is not None:
+				opts = [o.lower() for o in option_names[j]]
+				if str(v).strip().lower() not in opts:
+					return None
+				out.append(opts.index(str(v).strip().lower()))
+			else:
+				return None
+		return tuple(out)
+	return None

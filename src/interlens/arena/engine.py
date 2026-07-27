@@ -92,10 +92,13 @@ class EpisodeRun:
 	def __init__(self, scenario: Scenario, instance: Instance, arm: str, participant, seed: int,
 	             store: EpisodeStore | None, *, cfg: dict | None = None, gen_config: dict | None = None,
 	             budget: StopCondition | list | None = None,
-	             capture=None, steering=None, patch=None):
+	             capture=None, steering=None, patch=None, record_views: bool = True):
 		self.scenario = scenario
 		self.instance = instance
 		self.participant = participant
+		# Record each committed turn's rendered view (the ground-truth prompt) into its TurnRecord (text is
+		# cheap); a pool can disable it for a lean run.
+		self.record_views = record_views
 		# Per-episode interp hooks threaded into each committed turn's generation (local models only; forked
 		# provisional probes are left clean). ``capture`` tags activations by this run's turn index.
 		self.capture = capture
@@ -179,6 +182,7 @@ class EpisodeRun:
 			cap=cap,
 			raw=(raw if raw != text or think else None),
 			reasoning=reasoning, reasoning_provenance=provenance,
+			view=(request.view if self.record_views else None),
 		))
 		self._turn_idx += 1
 		self.ep.tokens_in += tokens_in
@@ -263,9 +267,10 @@ class EpisodePool:
 	accumulated while it queued genuinely stops it from starting."""
 
 	def __init__(self, store: EpisodeStore | None = None, *, meter: UsageMeter | None = None,
-	             max_concurrent: int = 32):
+	             max_concurrent: int = 32, record_views: bool = True):
 		self.store = store
 		self.meter = meter
+		self.record_views = record_views   # persist each turn's rendered view into its TurnRecord (default on)
 		self._sem = asyncio.Semaphore(max_concurrent)  # concurrent EPISODES (generation width is the client's)
 
 	async def _generate(self, participant, request: SeatRequest, cap: int, *,
@@ -307,7 +312,8 @@ class EpisodePool:
 			try:
 				run = EpisodeRun(scenario, instance, arm, participant, seed, self.store,
 				                 cfg=cfg, gen_config=gen_config, budget=budget,
-				                 capture=capture, steering=steering, patch=patch)
+				                 capture=capture, steering=steering, patch=patch,
+				                 record_views=self.record_views)
 				try:
 					while True:
 						requests = run.pending()
@@ -361,13 +367,15 @@ class BatchedEpisodePool:
 	retried down to single episodes; a single episode whose context alone OOMs yields a placeholder empty turn
 	so the pool keeps moving."""
 
-	def __init__(self, store: EpisodeStore | None = None):
+	def __init__(self, store: EpisodeStore | None = None, *, record_views: bool = True):
 		self.store = store
+		self.record_views = record_views   # persist each turn's rendered view into its TurnRecord (default on)
 
 	def run_pool(self, jobs: list[dict], progress: Callable[[int, int], None] | None = None) -> list[Episode]:
 		runs = [EpisodeRun(j["scenario"], j["instance"], j["arm"], j["participant"],
 		                   j.get("seed", 0), self.store, cfg=j.get("cfg"),
-		                   gen_config=j.get("gen_config"), budget=j.get("budget")) for j in jobs]
+		                   gen_config=j.get("gen_config"), budget=j.get("budget"),
+		                   record_views=self.record_views) for j in jobs]
 		live = {r.ep.episode_id: r for r in runs}
 		tick = 0
 		while live:

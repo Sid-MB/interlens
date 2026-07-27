@@ -15,48 +15,26 @@
 
 # [rational_agents scaffold: scenario-runner] 2026-07-23 — the repaired scorable-negotiation scenario.
 
-"""ScorableNegotiation: the repaired multi-party, multi-issue scorable game (DESIGN.md §3).
+"""ScorableNegotiation: the repaired multi-party, multi-issue scorable game — the *protocol* around a
+:class:`~interlens.arena.negotiation.sheets.GameSpec` (carried in ``Instance.payload``), built on the shared
+typed-action (:mod:`interlens.arena.actions`) and oracle (:mod:`interlens.arena.oracles`) layers. See DESIGN.md
+§3 and ``docs/lit/benchmarks-scorable-games.md`` "Design Lessons B" for the benchmark flaws it fixes.
 
-This scenario supersedes the bundled ``Negotiation`` (``e1_negotiation``) and exists to fix every documented
-protocol flaw of the scoreable-games benchmark line (Abdelnabi et al. 2309.17234 and the reproduction studies
-2502.16242 / TMLR BVH81SAAh2 — see ``experiments/rational_agents/docs/lit/benchmarks-scorable-games.md``
-"Design Lessons B"). The game itself (deal space, private additive score sheets, thresholds, agreement rule,
-info condition) is a :class:`~interlens.arena.negotiation.sheets.GameSpec`, carried in ``Instance.payload``;
-this scenario is the *protocol* around it, built on the shared typed-action layer
-(:mod:`interlens.arena.actions`) and the oracle layer (:mod:`interlens.arena.oracles`).
+Each turn is one fenced JSON object with three channels — private ``scratchpad``, public ``message``, one
+binding ``action`` (``Propose`` a complete package -> a fresh offer id, ``Accept`` / ``Reject`` a live id,
+``Walk``, or a talk-only pass, parsed by :func:`~interlens.arena.actions.parse_action`); the harness publishes
+only the message + the validated action, so privacy is structural, not tag-dependent. A deal closes ONLY on real
+ACCEPT votes on the SAME standing offer (never threshold arithmetic). Rotating proposer, the turn deadline
+restated each turn, one canonical prompt scaffold with variants behind flags
+(:class:`~interlens.arena.scenarios.scorable_prompts.PromptScaffold`). A syntax/legality error gets one
+retry-with-specific-feedback then a pass; an economic (below-own-threshold) move is MEASURED, never blocked.
 
-What is repaired, relative to the prior art:
-
-- **Real votes, not arithmetic auto-accept** (Lesson 7). A deal closes ONLY when every still-active party has
-  formally ACCEPTed the *same* standing offer id (tracked in the shared :class:`OfferRegistry`). There is no
-  "score p1's last proposal offline" shortcut and no threshold-arithmetic auto-accept.
-- **Formal typed moves with offer ids** (Lessons 9, 10). Each turn ends in one action parsed by the shared
-  :func:`~interlens.arena.actions.parse_action`: ``Propose`` (a complete package -> a fresh offer id),
-  ``Accept`` / ``Reject`` of a *live* id, or ``Walk`` (explicit no-deal exit); plus a talk-only pass.
-- **Structural channel separation** (Lesson 11). A turn is one flat fenced JSON object with three channels —
-  private ``scratchpad``, public ``message``, and the ``action`` (a string field with its parameters as
-  siblings). The harness publishes ONLY the ``message`` + a rendering of the *validated* action, so privacy
-  never depends on the model's tag discipline (69% of one model's "leakage" in prior work was a parse
-  artifact). Numbers a model puts in ``message`` are genuine strategic disclosure — a measured failure.
-- **Rotating proposer** (Lesson 8); **turn-count deadline restated every turn** (Lesson 13); **history window
-  an explicit, recorded knob** (Lesson 14); **one canonical prompt scaffold, variants behind flags**
-  (Lesson 15) — :class:`~interlens.arena.scenarios.scorable_prompts.PromptScaffold`.
-- **Arms**: ``moves_chat`` (moves + public cheap talk), ``moves_only`` (chat channel disabled), ``team``
-  (chat per the game's ``chat`` flag), ``solo`` (the communication-free single-agent control that must NOT be
-  competitive, Study A), crossed with the game's FULL vs PRIVATE information condition (``GameSpec.info``).
-- **Invalid-action policy is data** (Lesson 12): a *syntax* or *offer-reference* (legality) error triggers one
-  retry-with-specific-error, then degrades to a pass; an *economic* illegality (proposing/accepting below your
-  own threshold) is a strategic choice we MEASURE — recorded, never blocked or retried.
-
-Scoring is in **surplus** units (``u_i(d) - tau_i``) throughout (raw points are arbitrary private scales,
-DESIGN §2): per-party realized surplus, welfare aggregates (USW/ESW/NSW/Gini), individual-rationality
-violations, and deal/no-deal, normalized by the game's exact max-feasible joint surplus (recomputed from the
-``GameSpec``). Heavy normative analysis (Pareto/NBS/KS distance, per-turn rational-oracle regret) is done by
-the pluggable oracles: pass ``oracles=`` and every turn carries an :class:`OracleRecord` via
-:meth:`annotate_turn`; :meth:`oracle_inputs` also exposes the per-turn context for post-hoc annotation.
-
-The scenario is a pure state machine (text in, state out; the offer registry and all counters are pure
-functions of the action sequence), so stored episodes replay and rescore exactly (see ``arena/replay.py``).
+Arms ``moves_chat`` / ``moves_only`` / ``team`` / ``solo`` cross the game's FULL/PRIVATE info; ultimatum-style
+single-shot / fixed-proposer / majority variants ride on cfg knobs. Scoring is in surplus units (``u_i-tau_i``):
+realized surplus, welfare (USW/ESW/NSW/Gini), IR violations, deal/no-deal, normalized by the exact max-feasible
+joint surplus; per-turn normative regret comes from the pluggable ``oracles=`` (each turn -> an
+:class:`OracleRecord` via :meth:`annotate_turn`). A pure state machine (state is a pure function of the action
+sequence), so stored episodes replay and rescore exactly (``arena/replay.py``).
 """
 from __future__ import annotations
 
@@ -255,21 +233,32 @@ class ScorableNegotiation(Scenario):
 		return f"{names} hold a veto: no deal can pass unless every veto party accepts."
 
 	def _live_offers_block(self, st, si: int | None) -> str:
-		"""The always-current live-offers summary put in every phase prompt (Lesson 13/14: structured state is
-		re-surfaced each turn so a small history window never loses it). For the acting seat ``si`` and when
-		``show_own_scores`` is on, each offer is annotated with THAT seat's own private surplus for it (a
-		calculator scaffold that removes arithmetic noise so we measure strategy, not addition — Lesson 20)."""
+		"""The always-current live-offers summary re-surfaced in every phase prompt (structured state so a small
+		history window never loses it). When ``show_own_scores`` is on, each offer is rendered SEAT-RELATIVELY
+		from the acting seat ``si``'s OWN sheet — every issue's chosen option carries this seat's own value for
+		it, plus the seat's own total utility and surplus — so an option TOKEN never needs cross-seat
+		interpretation (a bare ``P0`` was misread by a responder as "0 for me") and no other party's private
+		values leak (private-info safe). A calculator scaffold too: it removes arithmetic noise so we measure
+		strategy, not addition."""
 		spec, reg = st["spec"], st["registry"]
 		standing = reg.standing()
 		if not standing:
 			return "Live offers on the table: none yet."
+		show = si is not None and st["show_own_scores"]
+		sheet = spec.sheets[si] if si is not None else None
 		lines = ["Live offers on the table:"]
 		for offer in standing:
-			pkg = ", ".join(f"{k}={v}" for k, v in spec.space.named(offer.deal).items())
+			if show:
+				pkg = ", ".join(f"{iss.name}={iss.options[o]} (worth {sheet.values[j][o]:g} to you)"
+				                for j, (iss, o) in enumerate(zip(spec.space.issues, offer.deal)))
+				mine = (f" — you get {sheet.utility(offer.deal):g} total (your threshold {sheet.threshold:g}, "
+				        f"surplus {sheet.surplus(offer.deal):+g})")
+			else:
+				pkg = ", ".join(f"{k}={v}" for k, v in spec.space.named(offer.deal).items())
+				mine = ""
 			backers = [nm for nm in st["seat_names"] if nm in offer.accepts and nm not in st["walked"]]
 			note = f" — accepted by: {', '.join(backers)}" if backers else " — no acceptances yet"
-			mine = f" [your surplus: {spec.sheets[si].surplus(offer.deal):+g}]" if (si is not None and st["show_own_scores"]) else ""
-			lines.append(f"  {offer.offer_id}: {pkg}{note}{mine}")
+			lines.append(f"  {offer.offer_id}: {pkg}{mine}{note}")
 		return "\n".join(lines)
 
 	def _system_prompt(self, st, si: int) -> str:
@@ -618,6 +607,11 @@ class ScorableNegotiation(Scenario):
 		the seat's actual PROPOSE (if any) — the full ``Propose(deal)`` space is enumerable from ``game``, so the
 		oracle expands it internally rather than us bloating the record with |D| entries; we include the chosen
 		propose so its value is scored for regret."""
+		# FLAGGED-FOR-LATER: standing_ids() is a set, so list(...) here is PYTHONHASHSEED-ordered — the
+		# accept/reject entries of an oracle record's action_values (a dict, order-preserving) then serialize in a
+		# process-dependent order. It does NOT affect any value/divergence, only the serialization order of
+		# equal-status entries; making it deterministic (e.g. sorted by offer id) is a schema-conscious change,
+		# not a drive-by (it shifts stored-record byte order), so left as-is pending the record-format restructure.
 		live = list(st["registry"].standing_ids())
 		acts: list[Action] = [Walk()]
 		acts += [Accept(o) for o in live]

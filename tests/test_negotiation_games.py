@@ -233,6 +233,20 @@ def test_single_shot_oracle_scoring_integration():
     assert thr[responder]["chosen_value"] == pytest.approx(10.0)   # the same live offer, seen by every oracle
 
 
+def test_offer_rendered_seat_relative_in_responder_view():
+    # De-contaminate responder-side data (the real Qwen label-misread): the responder's view must show the
+    # standing offer in ITS OWN terms (its own per-issue value + total utility), so a bare option token like
+    # "P0" never needs cross-seat interpretation. Prompt-rendering only — the wire labels are unchanged.
+    scen, st = _ultimatum_scenario_state()
+    # the fixed proposer tables P0 -> gives the responder the WHOLE pie (10); the responder is then up to vote
+    scen.apply(st, scen.next_requests(st)[0], '```json\n{"action": "propose", "deal": {"Split": "P0"}}\n```')
+    vreq = scen.next_requests(st)[0]
+    assert vreq.phase == "final_vote"
+    view_text = "\n".join(seg["content"] for seg in vreq.view)
+    assert "to you" in view_text                       # per-issue own value ("... (worth 10 to you)")
+    assert "you get 10 total" in view_text             # the responder's own utility for the standing offer P0
+
+
 # --------------------------------------------------------------------------------------------------------- #
 # 4. divide_dollar: the equilibrium oracle recovers the Okada v = 1/n anchor through the PRESET path.
 # --------------------------------------------------------------------------------------------------------- #

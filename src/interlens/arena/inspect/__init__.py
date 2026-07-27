@@ -34,7 +34,8 @@ except ImportError as _err:  # pragma: no cover - exercised only without the ext
 	) from _err
 
 from .adapter import InspectModelParticipant, arena_solver, scenario_scorer
-from .tasks import coding_collab, distributed_longcontext, info_relay, negotiation, security_dilemma
+from .tasks import (coding_collab, distributed_longcontext, info_relay, negotiation, scorable,
+                    security_dilemma)
 
-__all__ = ["negotiation", "info_relay", "security_dilemma", "coding_collab", "distributed_longcontext",
-           "arena_solver", "scenario_scorer", "InspectModelParticipant"]
+__all__ = ["negotiation", "scorable", "info_relay", "security_dilemma", "coding_collab",
+           "distributed_longcontext", "arena_solver", "scenario_scorer", "InspectModelParticipant"]

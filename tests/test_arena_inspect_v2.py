@@ -28,7 +28,7 @@ from inspect_ai.model import ModelOutput, get_model  # noqa: E402
 from interlens.arena.schema import Instance, new_id  # noqa: E402
 from interlens.arena.scenarios import CodingCollab  # noqa: E402
 from interlens.arena.scenarios.dlc.build import char_split4, insert_needle  # noqa: E402
-from interlens.arena.inspect import coding_collab, distributed_longcontext, security_dilemma  # noqa: E402
+from interlens.arena.inspect import coding_collab, distributed_longcontext, scorable, security_dilemma  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -129,3 +129,23 @@ def test_distributed_longcontext_task_messaging_maps_to_team_msg(tmp_path):
 	                   model=model, display="none")[0]
 	assert log.status == "success"
 	assert log.samples[0].scores["scenario_scorer"].value["success"] == 1.0
+
+
+def test_scorable_task_builds_via_preset_registry():
+	# ScorableNegotiation registered as an Inspect task through the game-preset registry; the preset's protocol
+	# cfg (single-shot / fixed-proposer for the ultimatum) rides into the sample so `inspect view` renders it.
+	assert len(scorable(n_instances=2).dataset) == 2
+	ult = scorable(game="ultimatum", n_instances=1)
+	md = ult.dataset[0].metadata
+	assert md["cfg"].get("single_shot") is True and md["cfg"].get("fixed_proposer") is True
+	assert md["instance"]["scenario"] == "scorable_negotiation"
+
+
+def test_scorable_ultimatum_eval_completes_end_to_end():
+	# a full task -> arena solver -> scenario scorer round-trip on the ultimatum preset (canned WALK -> no deal,
+	# but the run completes and the exact scorer produces the scorable outcome).
+	model = get_model("mockllm/model", custom_outputs=_outputs('```json\n{"action": "walk"}\n```', 40))
+	log = inspect_eval(scorable(game="ultimatum", n_instances=1, arm="moves_only"), model=model, display="none")[0]
+	assert log.status == "success"
+	value = log.samples[0].scores["scenario_scorer"].value
+	assert "primary" in value and "success" in value

@@ -34,7 +34,8 @@ from inspect_ai import Task, task
 from inspect_ai.dataset import MemoryDataset, Sample
 
 from ..scenario import Scenario
-from ..scenarios import CodingCollab, InfoRelay, Negotiation, SecurityDilemma, dlc_scenario
+from ..scenarios import (CodingCollab, InfoRelay, Negotiation, ScorableNegotiation, SecurityDilemma,
+                         dlc_scenario)
 from ..schema import Instance
 from .adapter import arena_solver, scenario_scorer
 
@@ -196,6 +197,42 @@ def negotiation(level: int = 0, n_parties: int | None = None, n_instances: int =
 		dataset=dataset,
 		solver=arena_solver(arm=arm, communication=communication, turn_max_tokens=turn_max_tokens,
 		                    messaging_turns=messaging_turns),
+		scorer=scenario_scorer(),
+		token_limit=token_limit,
+	)
+
+
+@task
+def scorable(game: str = "scorable", level: int = 0, n_instances: int = 10, seed0: int = 1,
+             arm: str = "moves_chat", turn_max_tokens: int = 2048, token_limit: int | None = None,
+             messaging_turns: int = 24) -> Task:
+	"""The repaired ``ScorableNegotiation`` as an Inspect task, generated through the game-preset registry
+	(:mod:`interlens.arena.negotiation.games`). ``game`` picks the preset — ``scorable`` (the default
+	multi-party multi-issue game, at difficulty ``level``), ``ultimatum``, ``divide_dollar``, or
+	``bilateral_multiissue`` — and the preset's protocol cfg (single-shot / fixed-proposer / majority) rides in
+	each sample's ``cfg`` so ``inspect view`` renders the right protocol. The arena solver plays every seat with
+	the evaluated model; ``arm`` is ``moves_chat`` / ``moves_only`` / ``team`` (``solo`` = the single-agent
+	control). Run e.g. ``inspect eval interlens.arena.inspect/scorable --model anthropic/claude-sonnet-5
+	-T game=ultimatum -T arm=moves_only``."""
+	from ..negotiation import games
+	scenario = ScorableNegotiation()
+	samples = []
+	for i in range(n_instances):
+		instance, protocol_cfg = games.build_preset_instance(game, level=level, seed=seed0 + i,
+		                                                     instance_name=scenario.name)
+		cfg = {"cell": "inspect", **protocol_cfg}
+		state = scenario.make_state(instance, arm, instance.seed, cfg=cfg)
+		samples.append(Sample(
+			id=instance.instance_id,
+			input=(f"{scenario.name} [{game}] instance {instance.instance_id} (level {level}, seed "
+			       f"{instance.seed}); the arena solver plays every seat."),
+			target=str(instance.solution.get("max_feasible_joint_utility", "")),
+			metadata={"instance": instance.to_json(), "cfg": cfg,
+			          "seat_framings": scenario.seat_framings(state)}))
+	return Task(
+		dataset=MemoryDataset(samples),
+		solver=arena_solver(arm=arm, communication=scenario.default_communication,
+		                    turn_max_tokens=turn_max_tokens, messaging_turns=messaging_turns),
 		scorer=scenario_scorer(),
 		token_limit=token_limit,
 	)

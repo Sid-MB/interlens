@@ -111,6 +111,11 @@ class TurnRecord:
 	# episode JSON via to_json() and from there into any exported dataset rows built from episodes.
 	reasoning: str | None = None
 	reasoning_provenance: str = "none"
+	# The exact rendered view (list of {role, content} messages) the seat was conditioned on for this turn — the
+	# ground-truth prompt, so a transcript is faithful even after prompt code drifts (reconstruction-by-replay
+	# breaks the moment it does). The engine records it by default (``EpisodePool(record_views=...)`` to disable);
+	# ``None`` on turns/episodes recorded before this field existed, so old episodes load unchanged.
+	view: list[dict] | None = None
 
 
 @dataclass

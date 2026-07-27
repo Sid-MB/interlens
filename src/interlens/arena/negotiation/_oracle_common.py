@@ -15,187 +15,57 @@
 
 # [rational_agents scaffold: oracles-strategies] 2026-07-23
 """Shared plumbing for the negotiation oracle stack (beliefs / acceptance / bestresponse / equilibrium /
-strategies) so the |D|xn utility bookkeeping and the typed-action layer are written once, not four times.
+strategies), written once: the ``|D|×n`` utility/surplus tables (:class:`GameTables`), the structured
+:class:`NegotiationState` a policy reads, turn-context readers over the (loose) history/offer-registry shapes,
+and the ``make_verdict`` constructor. The typed actions and the ``Oracle`` ABC / ``OracleVerdict`` are imported
+from interlens-core (``arena/actions.py``, ``arena/oracles.py``).
 
-This module deliberately depends on the DESIGN.md §8 *frozen shapes* by duck-typing, not by importing the
-concrete classes eagerly:
-
-- ``Deal = tuple[int, ...]`` — one option index per issue.
-- a *sheet* exposes ``.threshold: float``, ``.utility(deal) -> float``, ``.surplus(deal) -> float`` (and,
-  when available, ``.values`` = per-issue option-value rows, which we use to vectorize).
-- a *space* exposes ``.enumerate() -> Iterator[Deal]`` and ``.size: int``.
-- a *game* exposes ``.space`` and ``.sheets`` (seat-indexed), plus optionally ``.rounds``, ``.info``,
-  ``.discount``, ``.proposer``, ``.veto``.
-
-The typed actions (``Propose``/``Accept``/``Reject``/``Walk``) and the ``Oracle`` ABC / ``OracleVerdict`` are
-owned by interlens-core (``arena/actions.py``, ``arena/oracles.py``). We *try to import them* and fall back to
-faithful local mirrors of the frozen shapes, so this scaffold runs and tests green before those land and then
-adopts the real types automatically once the names resolve. The mirrors are the single swap point.
+A *game* is duck-typed: any object exposing ``.space`` and seat-indexed ``.sheets`` works, plus optionally
+``.rounds`` / ``.info`` / ``.discount`` / ``.proposer`` / ``.veto`` (the real one is
+:class:`~interlens.arena.negotiation.sheets.GameSpec`). ``Deal = tuple[int, ...]`` is one option index per issue.
 """
 from __future__ import annotations
 
 import json
 import re
-from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field, is_dataclass
-from typing import Iterable, Iterator, Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Iterable
 
 import numpy as np
 
+# The typed actions and the Oracle ABC / OracleVerdict are owned by interlens-core; import them directly (no
+# import cycle — the arena action/oracle layer does not import the negotiation package). ``_jsonify`` is the ONE
+# JSON-coercion for oracle diagnostics, owned by ``arena.oracles`` and reused here by ``make_verdict``.
+from ..actions import Accept, Propose, Reject, Walk
+# Name-based action (de)serialization lives next to the action types in ``arena.actions``; re-exported here so
+# the negotiation stack's consumers (e.g. PolicyParticipant) keep one import site.
+from ..actions import action_to_json, action_to_message_content, deal_from_json  # noqa: F401
+from ..oracles import Oracle, OracleVerdict, _jsonify
 
-def jsonify(obj):
-    """Recursively coerce an oracle-diagnostics payload to a JSON-serializable form so ``OracleVerdict.extra``
-    always survives ``to_json()`` / the engine's episode save. Handles: numpy arrays/scalars -> lists/py
-    scalars; objects with ``.to_json()`` (the typed actions) -> their json; other dataclasses (e.g.
-    ``OpponentType``) -> their fields; dicts with non-string keys (e.g. an ``{Action: value}`` map) -> a list
-    of ``{"key", "value"}`` entries; tuples/lists element-wise."""
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, np.generic):
-        return obj.item()
-    to_json = getattr(obj, "to_json", None)
-    if callable(to_json):
-        try:
-            return to_json()
-        except Exception:
-            pass
-    if is_dataclass(obj) and not isinstance(obj, type):
-        return jsonify(asdict(obj))
-    if isinstance(obj, dict):
-        if all(isinstance(k, str) for k in obj):
-            return {k: jsonify(v) for k, v in obj.items()}
-        return [{"key": jsonify(k), "value": jsonify(v)} for k, v in obj.items()]
-    if isinstance(obj, (list, tuple, set)):
-        return [jsonify(x) for x in obj]
-    return obj
+if TYPE_CHECKING:  # concrete game classes, used only in type hints (the real space.py / sheets.py types)
+    from .sheets import ScoreSheet
+    from .space import DealSpace
 
 Deal = tuple[int, ...]
 
 
-# --------------------------------------------------------------------------------------------------------- #
-# Frozen-shape protocols (structural typing; the real space.py / sheets.py classes satisfy these).
-# --------------------------------------------------------------------------------------------------------- #
-@runtime_checkable
-class SheetLike(Protocol):
-    """A private additive score sheet: ``utility(deal) = sum_j values[j][deal[j]]`` with a reservation
-    ``threshold`` (the BATNA); ``surplus = utility - threshold``."""
-
-    threshold: float
-
-    def utility(self, deal: Deal) -> float: ...
-
-    def surplus(self, deal: Deal) -> float: ...
-
-
-@runtime_checkable
-class SpaceLike(Protocol):
-    """The enumerable discrete deal space ``D = prod_j O_j``."""
-
-    size: int
-
-    def enumerate(self) -> Iterator[Deal]: ...
-
-
-# --------------------------------------------------------------------------------------------------------- #
-# Typed actions + Oracle ABC: import the real ones, else mirror the DESIGN §8 shapes (single swap point).
-# --------------------------------------------------------------------------------------------------------- #
-try:  # interlens-core (T1) owns these; adopt automatically once the module exists.
-    from ..actions import Propose, Accept, Reject, Walk  # type: ignore
-    _ACTIONS_ARE_LOCAL = False
-except Exception:  # pragma: no cover - exercised only before actions.py lands
-    @dataclass(frozen=True)
-    class Propose:
-        """Register a complete deal as a binding offer. ``deal`` is one option index per issue."""
-
-        deal: Deal
-
-    @dataclass(frozen=True)
-    class Accept:
-        """Accept a specific live offer by id (unambiguous with >=2 standing offers)."""
-
-        offer_id: str
-
-    @dataclass(frozen=True)
-    class Reject:
-        """Reject a specific live offer by id."""
-
-        offer_id: str
-
-    @dataclass(frozen=True)
-    class Walk:
-        """Explicit no-deal exit — no-deal is a decision, not a timeout."""
-
-    _ACTIONS_ARE_LOCAL = True
-
-
-try:  # interlens-core (T1) owns these too.
-    from ..oracles import Oracle, OracleVerdict  # type: ignore
-    _ORACLE_IS_LOCAL = False
-except Exception:  # pragma: no cover - exercised only before oracles.py lands
-    @dataclass
-    class OracleVerdict:
-        """A per-turn oracle reading (mirror of the DESIGN §8 shape).
-
-        Parameters
-        ----------
-        action_values : dict
-            Maps each legal action (a hashable ``Propose``/``Accept``/``Reject``/``Walk``) to its value in
-            surplus units — the centipawn-loss analog (Regan & Haworth 2011).
-        best : object
-            The value-maximizing legal action (the oracle-preferred move).
-        beliefs : object | None
-            Optional belief payload (posterior over opponent types / induced distributions).
-        flags : list[str]
-            Hard-violation / diagnostic tags (e.g. ``"premature_accept"``, ``"ir_violation"``).
-        extra : dict
-            Free-form diagnostics (surplus-loss of a reference action, reservation value, timings). Present
-            on the local mirror only; when the real ``OracleVerdict`` lacks it these are folded into
-            ``beliefs``/``flags`` by ``make_verdict``.
-        """
-
-        action_values: dict
-        best: object = None
-        beliefs: object = None
-        flags: list = field(default_factory=list)
-        extra: dict = field(default_factory=dict)
-
-    class Oracle(ABC):
-        """Per-turn evaluation oracle. ``evaluate`` scores every legal action for one agent at one turn."""
-
-        @abstractmethod
-        def evaluate(self, game, history, agent, legal) -> "OracleVerdict":
-            ...
-
-    _ORACLE_IS_LOCAL = True
-
-
-def make_verdict(action_values, best=None, *, beliefs=None, flags=None, extra=None) -> "OracleVerdict":
-    """Build an ``OracleVerdict`` that works whether ``OracleVerdict`` is the real one or the local mirror.
-
-    If the target dataclass has no ``extra`` field, the ``extra`` diagnostics are attached as a dynamic
-    attribute (best-effort) so nothing is lost; ``beliefs``/``flags`` always map to the frozen fields."""
-    flags = list(flags or [])
-    extra = jsonify(dict(extra or {}))   # keep extra JSON-serializable so to_json()/episode-save never crash
-    try:
-        v = OracleVerdict(action_values=action_values, best=best, beliefs=beliefs, flags=flags, extra=extra)
-    except TypeError:
-        v = OracleVerdict(action_values=action_values, best=best, beliefs=beliefs, flags=flags)
-        try:
-            v.extra = extra  # type: ignore[attr-defined]
-        except Exception:
-            pass
-    return v
+def make_verdict(action_values, best=None, *, beliefs=None, flags=None, extra=None) -> OracleVerdict:
+    """Build an ``OracleVerdict`` with its free-form ``extra`` diagnostics coerced JSON-safe up front (the
+    ``|D|×n`` numpy tables / typed actions the oracles stash) via the shared ``_jsonify``, so ``to_json`` and the
+    episode save never crash. ``beliefs`` is coerced later by ``OracleVerdict.to_json``."""
+    return OracleVerdict(action_values=action_values, best=best, beliefs=beliefs,
+                         flags=list(flags or []), extra=_jsonify(dict(extra or {})))
 
 
 # --------------------------------------------------------------------------------------------------------- #
 # Utility bookkeeping: enumerate once, vectorize the |D| x n surplus/utility tables.
 # --------------------------------------------------------------------------------------------------------- #
-def deal_list(space: SpaceLike) -> list[Deal]:
+def deal_list(space: DealSpace) -> list[Deal]:
     """Materialize the deal space in a *stable* order (matrix rows below use this exact order)."""
     return [tuple(int(x) for x in d) for d in space.enumerate()]
 
 
-def issue_sizes(space: SpaceLike | None = None, sheets: Iterable[SheetLike] | None = None,
+def issue_sizes(space: DealSpace | None = None, sheets: Iterable[ScoreSheet] | None = None,
                 deals: list[Deal] | None = None) -> tuple[int, ...]:
     """Per-issue option counts ``(O_1, ..., O_J)``, discovered from (in order): an ``.issue_sizes`` /
     ``.n_options`` attribute on the space; a sheet's ``.values`` rows; or the max option index seen in
@@ -254,7 +124,7 @@ class GameTables:
         return self.utility.shape[1]
 
     @classmethod
-    def build(cls, space: SpaceLike, sheets: list[SheetLike]) -> "GameTables":
+    def build(cls, space: DealSpace, sheets: list[ScoreSheet]) -> "GameTables":
         """Enumerate ``space`` and vectorize utilities over ``sheets``. Uses each sheet's ``.values`` rows
         when present (a single fancy-index per issue); otherwise falls back to calling ``sheet.utility``."""
         deals = deal_list(space)
@@ -338,9 +208,9 @@ class NegotiationState:
     ----------
     seat : int
         This policy's seat index.
-    sheet : SheetLike
+    sheet : ScoreSheet
         This seat's private score sheet.
-    space : SpaceLike
+    space : DealSpace
         The shared deal space.
     round : int
         Current round (1-indexed).
@@ -368,8 +238,8 @@ class NegotiationState:
     """
 
     seat: int
-    sheet: SheetLike
-    space: SpaceLike
+    sheet: ScoreSheet
+    space: DealSpace
     round: int = 1
     deadline: int = 1
     offers: dict = field(default_factory=dict)
@@ -409,32 +279,6 @@ class NegotiationState:
                    must_vote=bool(block.get("must_vote", False)))
 
 
-def action_to_json(action, issue_names: list[str] | None = None,
-                   option_names: list[list[str]] | None = None) -> dict:
-    """Serialize a typed action to the canonical fenced-JSON envelope. Delegates to the action's own
-    ``.to_json()`` (index-based ``deal``) unless ``issue_names`` is supplied, in which case ``Propose`` is
-    rendered with issue/option names for LLM-legibility. This is the format both ``PolicyParticipant`` and
-    LLM seats emit."""
-    if isinstance(action, Propose) and issue_names is not None:
-        if option_names is not None:
-            deal = {issue_names[j]: option_names[j][action.deal[j]] for j in range(len(action.deal))}
-        else:
-            deal = {issue_names[j]: int(action.deal[j]) for j in range(len(action.deal))}
-        return {"action": "propose", "deal": deal}
-    to_json = getattr(action, "to_json", None)
-    if callable(to_json):
-        return to_json()
-    if isinstance(action, Propose):
-        return {"action": "propose", "deal": list(int(x) for x in action.deal)}
-    if isinstance(action, Accept):
-        return {"action": "accept", "offer_id": action.offer_id}
-    if isinstance(action, Reject):
-        return {"action": "reject", "offer_id": action.offer_id}
-    if isinstance(action, Walk):
-        return {"action": "walk"}
-    raise TypeError(f"not a negotiation action: {action!r}")
-
-
 def seat_index(game, agent) -> int:
     """Resolve ``agent`` to a seat index. Accepts an int (returned as-is) or a seat *name* (str), which is
     matched against ``sheet.agent`` on each score sheet, then against a ``game.seats``/``seat_names``/
@@ -454,13 +298,6 @@ def seat_index(game, agent) -> int:
         return int(agent)
     except Exception as e:
         raise KeyError(f"cannot resolve seat index for agent {agent!r}") from e
-
-
-def action_to_message_content(action, *, preface: str = "", issue_names=None, option_names=None) -> str:
-    """Render an action as a message body: optional free-text ``preface`` then a fenced ``json`` action
-    block — the exact envelope an LLM seat produces, so the transcript is symmetric across seat types."""
-    body = "```json\n" + json.dumps(action_to_json(action, issue_names, option_names)) + "\n```"
-    return f"{preface}\n{body}" if preface else body
 
 
 _FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
@@ -597,37 +434,4 @@ def parse_negotiation_state(text: str) -> dict | None:
             continue
         if isinstance(obj, dict) and isinstance(obj.get("negotiation_state"), dict):
             return obj["negotiation_state"]
-    return None
-
-
-def deal_from_json(deal_field, issue_names: list[str] | None = None,
-                   option_names: list[list[str]] | None = None) -> Deal | None:
-    """Parse a ``deal`` payload (index list, or a ``{issue: option}`` dict by name/index) back to a ``Deal``.
-    Tolerates name or index option values. Returns None if malformed."""
-    if isinstance(deal_field, (list, tuple)):
-        try:
-            return tuple(int(x) for x in deal_field)
-        except Exception:
-            return None
-    if isinstance(deal_field, dict) and issue_names is not None:
-        out = []
-        for j, name in enumerate(issue_names):
-            v = deal_field.get(name)
-            if v is None:
-                for k in deal_field:
-                    if str(k).lower().replace(" ", "") == name.lower().replace(" ", ""):
-                        v = deal_field[k]
-                        break
-            if v is None:
-                return None
-            if isinstance(v, int) or (isinstance(v, str) and v.isdigit()):
-                out.append(int(v))
-            elif option_names is not None:
-                opts = [o.lower() for o in option_names[j]]
-                if str(v).strip().lower() not in opts:
-                    return None
-                out.append(opts.index(str(v).strip().lower()))
-            else:
-                return None
-        return tuple(out)
     return None

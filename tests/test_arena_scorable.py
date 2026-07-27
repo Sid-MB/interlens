@@ -300,3 +300,22 @@ def test_full_vs_private_info_changes_common_knowledge():
 	assert "All parties' score sheets" in sys_full
 	assert "All parties' score sheets" not in sys_priv
 	assert "private to them" in sys_priv
+
+
+def test_view_persisted_in_turn_records():
+	# the engine records the exact rendered view each turn was conditioned on (default on), so a transcript is
+	# faithful even if prompt code later drifts — no reconstruction-by-replay needed.
+	scen, inst = ScorableNegotiation(), make_instance(make_game())
+	ep = run(scen, inst, "moves_chat", JsonSeat(coop({"Site": "North", "Fund": "High"})))
+	assert ep.turns and all(t.view for t in ep.turns)
+	first = ep.turns[0]
+	assert first.view[0]["role"] == "system"                     # the seat's system prompt leads the view
+	assert ep.to_json()["turns"][0]["view"] == first.view        # it round-trips into the episode JSON
+
+
+def test_view_recording_can_be_disabled():
+	scen, inst = ScorableNegotiation(), make_instance(make_game())
+	pool = EpisodePool(None, record_views=False)
+	ep = asyncio.run(pool.run_episode(scen, inst, "moves_chat",
+	                                  JsonSeat(coop({"Site": "North", "Fund": "High"})), seed=0))
+	assert ep.turns and all(t.view is None for t in ep.turns)    # lean mode: no views stored

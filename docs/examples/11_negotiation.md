@@ -153,3 +153,13 @@ A rational-vs-rational rollout should land near the frontier in `info="full"` an
 ## Measuring divergence
 
 The `experiments/rational_agents/` measurement layer reads stored `Episode` + `Instance` and computes the **divergence atlas**: outcome quality (Pareto / NBS / KS distance via the `solutions` functions above, welfare, Gini), per-turn oracle regret (from the `round_checkpoints` `OracleRecord` rows) with the Park et al. no-regret trend tests, concession-curve τ/CRI, and a 12-row failure taxonomy tiered from fully-mechanical (IR violation) to LLM-judge (tactic-style). `annotate.py` writes the per-turn annotations; `analysis/report.py` aggregates a run into per-model per-arm tables + plots. See that experiment's README for the pipeline.
+
+## Transcripts & Inspect
+
+Every turn's exact rendered prompt is persisted: the engine records each `SeatRequest.view` into `TurnRecord.view` by default (`EpisodePool(record_views=False)` to disable), so a transcript is faithful even if prompt code later drifts. `arena/export.py` turns a stored run into human-readable transcripts — `export.export_run(episodes_dir, instances_dir, out_dir)` (or `python -m interlens.arena.export --episodes … --instances … --out …`) writes a markdown + self-contained HTML page per episode (game setup, per-turn scratchpad/message/action/oracle-regret, outcome + welfare) plus a run index; it renders old episodes (no `view`) too.
+
+And the scenario is registered as an Inspect task via the preset registry, so `inspect eval` / `inspect view` work out of the box:
+
+```bash
+inspect eval interlens.arena.inspect/scorable --model anthropic/claude-sonnet-5 -T game=ultimatum -T arm=moves_only
+```

@@ -37,8 +37,10 @@ Both land in ``Episode.round_checkpoints`` (kept as the field name for record co
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Sequence
+
+import numpy as np
 
 from .actions import Action, action_from_json
 
@@ -60,15 +62,26 @@ def _de(value: Any) -> Any:
 
 def _jsonify(value: Any) -> Any:
 	"""Recursively coerce an oracle's free-form ``beliefs`` / ``extra`` payload to JSON-safe data, so the
-	episode's oracle log stays ``json.dumps``-able (and ``dataclasses.asdict``-safe) no matter what an oracle
-	stashes there.
+	episode's oracle log stays ``json.dumps``-able no matter what an oracle stashes there. THE single coercion for
+	the negotiation oracle stack — ``_oracle_common.make_verdict`` imports it too, so the ``|D|×n`` numpy tables
+	and typed actions the oracles produce are serialized one way.
 
-	An ``Action`` becomes its ``to_json()``; a dict KEYED BY actions becomes the same ``[{"action", "value"}]``
-	list as ``action_values`` (a JSON object key can't be an object — this is the case that crashed a
-	best-response oracle's action-keyed ``surplus_loss``); any other non-string dict key is stringified;
-	lists/tuples recurse; primitives pass through."""
-	if isinstance(value, Action):
-		return value.to_json()
+	numpy array/scalar → list/py-scalar; a dataclass (e.g. OpponentType) → its fields; an ``Action`` → its
+	``to_json()``; a dict KEYED BY actions → the same ``[{"action", "value"}]`` list as ``action_values`` (a JSON
+	object key can't be an object — the case that crashed a best-response oracle's action-keyed table); any other
+	non-string dict key is stringified; lists/tuples recurse; primitives pass through."""
+	if isinstance(value, np.ndarray):
+		return value.tolist()
+	if isinstance(value, np.generic):
+		return value.item()
+	to_json = getattr(value, "to_json", None)   # typed actions + any to_json-carrying object (e.g. OpponentType)
+	if callable(to_json):
+		try:
+			return to_json()
+		except Exception:
+			pass
+	if is_dataclass(value) and not isinstance(value, type):
+		return _jsonify(asdict(value))
 	if isinstance(value, dict):
 		if value and all(isinstance(k, Action) for k in value):
 			return [{"action": k.to_json(), "value": _jsonify(v)} for k, v in value.items()]
