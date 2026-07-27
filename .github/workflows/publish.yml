@@ -42,7 +42,7 @@ on:
       publish:
         description: "Whether to publish the built distributions to PyPI."
         required: false
-        default: true
+        default: false
         type: boolean
       release:
         description: "Whether to create a GitHub Release for the new tag."
@@ -59,7 +59,7 @@ on:
       publish:
         description: "Publish the built distributions to PyPI"
         required: false
-        default: true
+        default: false
         type: boolean
       release:
         description: "Create a GitHub Release for the new tag"
@@ -174,8 +174,9 @@ jobs:
       - name: Push release tag
         run: git push origin "v${{ steps.bump.outputs.version }}"
 
+      # Interlens publishes automatically, while other repositories must explicitly opt in or publish the uploaded distributions from a repository-local job.
       - name: Publish to PyPI
-        if: ${{ toJSON(inputs) == '{}' || inputs.publish }}
+        if: ${{ github.repository == 'Sid-MB/interlens' || inputs.publish }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           attestations: true   # upload PEP 740 attestations to PyPI (default under Trusted Publishing; explicit here)
