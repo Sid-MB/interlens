@@ -318,20 +318,27 @@ def build_instance(game: GameSpec, analysis: dict, *, name: str, level: int, see
     """Wrap a generated ``(GameSpec, analysis)`` into a solver-verified arena :class:`~interlens.arena.schema.Instance`.
 
     Primary-score convention (matching the shipped ``negotiation`` scenario): the episode's primary score is the
-    normalized joint value on the agreed deal, ``joint_utility(deal) / max_feasible_joint_utility`` (no deal =
-    0). So the exact ``ceiling`` is ``1.0`` (the best feasible deal) and the reference ``floor`` is
-    ``mean_feasible_joint / max_feasible_joint`` -- an average-feasible-deal policy. ``payload`` is
-    ``GameSpec.to_json()`` (round-trips back via ``GameSpec.from_json``); ``solution`` is the full
+    sum of per-party normalized surplus captures divided by its maximum over feasible deals (no deal = 0).
+    Thus the exact ``ceiling`` is ``1.0`` and the reference ``floor`` is the mean normalized primary over
+    feasible deals -- an average-feasible-deal policy. Both are invariant to independent positive affine
+    transformations of the parties' score sheets. ``payload`` is ``GameSpec.to_json()`` (round-trips back via
+    ``GameSpec.from_json``); ``solution`` is the full
     :func:`~interlens.arena.negotiation.solutions.analyze` dict (descriptors + every solution point), so scorers
     and analyses read it straight from the stored Instance without re-solving. If the feasible set is empty
     (no-deal is the rational outcome) ceiling/floor are both ``0.0``. ``name`` is the scenario name the calling
     scenario passes in, so ``Instance.scenario`` matches it."""
-    U = game.utility_matrix()
-    acc = game.feasible_mask(U)
-    max_joint = float(analysis.get("max_feasible_joint_utility", 0.0))
-    if acc.any() and max_joint > 0:
-        ceiling = 1.0
-        floor = round(float(U.sum(axis=1)[acc].mean()) / max_joint, 4)
+    surplus = game.surplus_matrix()
+    acc = game.feasible_mask()
+    capacities = surplus.max(axis=0)
+    valid = bool(acc.any()) and bool(np.all(capacities > 1e-9))
+    if valid:
+        normalized_joint = (surplus / capacities[None, :]).sum(axis=1)
+        max_normalized_joint = float(normalized_joint[acc].max())
+        if max_normalized_joint > 1e-9:
+            ceiling = 1.0
+            floor = round(float(normalized_joint[acc].mean()) / max_normalized_joint, 4)
+        else:
+            ceiling, floor = 0.0, 0.0
     else:
         ceiling, floor = 0.0, 0.0
     prefix = id_prefix or f"{name}-L{level}"

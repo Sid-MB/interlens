@@ -26,8 +26,8 @@ import numpy as np
 import pytest
 
 from interlens.arena.negotiation import solutions as S
-from interlens.arena.negotiation.generate import (INSTANCE_LADDER, LADDER_DISCOUNT, generate_game,
-                                                  generate_games, generate_instance)
+from interlens.arena.negotiation.generate import (INSTANCE_LADDER, LADDER_DISCOUNT, build_instance,
+                                                  generate_game, generate_games, generate_instance)
 from interlens.arena.negotiation.sheets import GameSpec
 from interlens.arena.schema import Instance
 
@@ -137,6 +137,21 @@ def test_generate_instance_returns_valid_arena_instance():
     assert inst2.payload == inst.payload and inst2.ceiling == inst.ceiling and inst2.floor == inst.floor
     assert inst2.instance_id != inst.instance_id
     json.dumps(inst.to_json())                                  # whole Instance is JSON-serializable
+
+
+def test_instance_primary_floor_is_affine_invariant():
+    game, analysis = generate_game(
+        n_parties=3, n_issues=3, n_options=3, dominated_target=None, seed=9, max_tries=5)
+    scaled = GameSpec.from_json(game.to_json())
+    scaled.sheets = tuple(
+        sheet.rescaled(a, c)
+        for sheet, a, c in zip(game.sheets, (0.5, 7.0, 20.0), (11.0, -30.0, 5.0))
+    )
+    scaled_analysis = S.analyze(scaled.space, scaled.sheets)
+    base_instance = build_instance(game, analysis, name="negotiation", level=0, seed=9)
+    scaled_instance = build_instance(scaled, scaled_analysis, name="negotiation", level=0, seed=9)
+    assert base_instance.ceiling == scaled_instance.ceiling == 1.0
+    assert base_instance.floor == scaled_instance.floor
 
 
 def test_instance_ladder_descriptors_within_tolerance_per_level():
