@@ -43,6 +43,23 @@ DEFAULT_REGRET_THRESHOLD = 1e-6
 
 
 # ============================================================= outcome level ==
+def normalized_nash_welfare(game: GameAnalysis, surplus: tuple[float, ...] | None) -> float:
+	"""Bounded Nash-welfare endpoint in per-party feasible-surplus units.
+
+	Each surplus is divided by that party's maximum surplus over the individually rational set
+	(``game.scale``).  A missing outcome, a non-positive surplus, or an unavailable/invalid scale scores zero.
+	The geometric mean is in ``[0, 1]`` for solved finite games and is invariant to independent positive affine
+	rescalings of the parties' utility sheets.
+	"""
+	if surplus is None or game.scale is None or len(surplus) != len(game.scale):
+		return 0.0
+	if any(x <= 0 or s <= 0 for x, s in zip(surplus, game.scale)):
+		return 0.0
+	z = np.asarray([x / s for x, s in zip(surplus, game.scale)], dtype=float)
+	# Work in log space: the six-party product can underflow even when every normalized gain is positive.
+	return float(np.exp(np.mean(np.log(z))))
+
+
 def outcome_metrics(game: GameAnalysis, view: EpisodeView) -> dict:
 	"""Outcome-level divergence for one episode. On a no-deal episode the welfare fields are 0 (USW/ESW/NSW) and
 	Gini is ``nan`` (no distribution), while ``surplus`` is ``None`` — this is the U-vs-U* distinction: the
@@ -64,6 +81,7 @@ def outcome_metrics(game: GameAnalysis, view: EpisodeView) -> dict:
 			"esw": S.egalitarian_welfare(x),
 			"nsw": S.nash_welfare(x),                    # raw product (kept in atlas.json)
 			"nsw_geomean": S.nash_welfare_geomean(x),    # display form: geometric mean of surpluses
+			"normalized_nash_welfare": normalized_nash_welfare(game, x),
 			"gini": S.gini(x),
 			"on_frontier": df <= DEFAULT_REGRET_THRESHOLD,
 			"all_ir": all(xi >= 0 for xi in x),
@@ -74,7 +92,8 @@ def outcome_metrics(game: GameAnalysis, view: EpisodeView) -> dict:
 	else:
 		out.update({"dist_to_frontier": float("nan"), "dist_to_nbs": float("nan"),
 		            "dist_to_ks": float("nan"), "usw": 0.0, "esw": 0.0, "nsw": 0.0,
-		            "nsw_geomean": 0.0, "gini": float("nan"), "on_frontier": False, "all_ir": False,
+		            "nsw_geomean": 0.0, "normalized_nash_welfare": 0.0,
+		            "gini": float("nan"), "on_frontier": False, "all_ir": False,
 		            "usw_unconditional": 0.0, "usw_conditional": None})
 	out["welfare_trajectory"] = welfare_trajectory(game, view)
 	return out
