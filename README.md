@@ -2,8 +2,6 @@
 
 This library provides a harness, optimized utilities, and interpretability hooks for multi-agent conversation rollouts. 
 
-A harness for **multi-agent (model-to-model) conversations** with **first-class interpretability**—activation capture, steering, activation patching, and token logprobs—all hooked into the *same* generation path as real turns and tagged to conversation structure. Scales from one interactive dialogue to thousands of checkpointed, multi-GPU rollouts.
-
 ```python
 from interlens import Conversation
 
