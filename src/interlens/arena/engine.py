@@ -182,7 +182,9 @@ class EpisodeRun:
 			cap=cap,
 			raw=(raw if raw != text or think else None),
 			reasoning=reasoning, reasoning_provenance=provenance,
-			view=(request.view if self.record_views else None),
+			# A participant wrapper may add private, per-turn decision support after the scenario creates the
+			# request. Persist the exact post-wrapper view when supplied; otherwise keep the scenario view.
+			view=(message.metadata.get("conditioned_view", request.view) if self.record_views else None),
 		))
 		self._turn_idx += 1
 		self.ep.tokens_in += tokens_in
@@ -449,6 +451,9 @@ class BatchedEpisodePool:
 		cap = max(c for c, _q in capped_requests)
 		views = [q.view for _c, q in capped_requests]
 		try:
+			if hasattr(participant, "generate_batch_with_seats"):
+				return participant.generate_batch_with_seats(
+					views, [q.seat for _c, q in capped_requests], max_new_tokens=cap)
 			return participant.generate_batch(views, max_new_tokens=cap)
 		except RuntimeError as e:
 			text = str(e).lower()

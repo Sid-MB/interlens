@@ -146,6 +146,25 @@ def test_budget_turn_cap_flows_to_generation(tmp_path):
 	assert caps and all(c == 64 for c in caps[:4])  # the per-turn cap shrinks every generation
 
 
+def test_participant_conditioned_view_override_is_persisted(tmp_path):
+	scen = InfoRelay()
+	inst = scen.generate_instance(0, 5)
+
+	class PrivateWrapper(ScriptedSeat):
+		def generate(self, view, **kwargs):
+			message = super().generate(view, **kwargs)
+			actual = [dict(segment) for segment in view]
+			actual[-1] = dict(actual[-1])
+			actual[-1]["content"] += "\nPRIVATE WRAPPER ADVICE"
+			message.metadata["conditioned_view"] = actual
+			return message
+
+	ep = run(EpisodePool(EpisodeStore(tmp_path)).run_episode(
+		scen, inst, "team", PrivateWrapper(f'```json\n{{"answer": {inst.payload["gold"]}}}\n```')))
+	assert ep.turns
+	assert "PRIVATE WRAPPER ADVICE" in ep.turns[0].view[-1]["content"]
+
+
 def test_reservation_gating_skips_unaffordable_episodes(tmp_path):
 	scen = InfoRelay()
 	inst = scen.generate_instance(0, 5)
