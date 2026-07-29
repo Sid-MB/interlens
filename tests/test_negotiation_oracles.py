@@ -413,6 +413,18 @@ def test_belief_separate_mode_reconstructs_distribution():
     assert np.all(post >= 0)
 
 
+def test_belief_formal_response_updates_threshold_softly():
+    true, alt1, alt2 = _three_types()
+    st = BeliefState(true.option_counts, types=[true, alt1, alt2], mode="joint", lam=1.0)
+    deal = _concession_trace(true)[0]
+    prior = st.posterior().copy()
+    predicted = np.array([t.accepts(deal) for t in st.types])
+    st.observe_response(deal, accepted=True, reliability=0.75, strength=0.35)
+    post = st.posterior()
+    assert post[predicted].sum() > prior[predicted].sum()
+    assert np.all(post > 0)  # soft evidence never catastrophically eliminates a type
+
+
 def test_exploitability_nonnegative():
     from interlens.arena.negotiation.bestresponse import exploitability
     game = _tiny_game()

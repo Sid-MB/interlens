@@ -320,6 +320,30 @@ class BeliefState:
         self._renormalize()
         return self
 
+    def observe_response(self, deal: Deal, accepted: bool, *, reliability: float = 0.75,
+                         strength: float = 0.35) -> "BeliefState":
+        """Soft-update from an opponent's public accept/reject response to ``deal``.
+
+        A type predicts acceptance iff the deal clears its reservation threshold.  ``reliability`` is the
+        probability that the observed response follows that myopic prediction; values below 1 explicitly
+        allow strategic rejection, mistakes, and cheap-talk inconsistency.  ``strength`` tempers this evidence
+        relative to a self-authored proposal, because a vote is informative about the threshold but much less
+        diagnostic of the opponent's complete preference ordering.
+
+        The update is deliberately soft and implementable: it consumes only a public formal response and the
+        referenced public deal, never the opponent's hidden score sheet.
+        """
+        if not 0.5 < reliability < 1.0:
+            raise ValueError("reliability must lie strictly between 0.5 and 1")
+        if not 0.0 < strength <= 1.0:
+            raise ValueError("strength must lie in (0, 1]")
+        predicted_accept = self._type_utils(tuple(int(x) for x in deal)) >= self._TAU
+        matches = predicted_accept if accepted else ~predicted_accept
+        likelihood = np.where(matches, reliability, 1.0 - reliability)
+        self._logpost = self._logpost + self.lam * float(strength) * np.log(likelihood)
+        self._renormalize()
+        return self
+
     def _renormalize(self):
         self._logpost -= self._logpost.max()
         p = np.exp(self._logpost)
