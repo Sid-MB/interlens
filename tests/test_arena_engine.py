@@ -452,12 +452,19 @@ def test_gen_failures_reads_legacy_episodes_and_spares_genuine_model_silence():
 	              "content": EMPTY_TURN_PLACEHOLDER, "n_tokens_out": 0, "raw": None}
 	model_was_silent = dict(fabricated, idx=1, raw="")     # record_turn substituted the placeholder for ""
 	real = {"idx": 2, "seat": "Blake", "content": "a real turn", "n_tokens_out": 12, "raw": None}
-	found = gen_failures({"turns": [fabricated, model_was_silent, real]})
+	# a thinking model that burned its whole cap: content is the placeholder, but raw holds what it really said.
+	# That is genuine model behaviour, not an engine failure, and must not be counted as one.
+	reasoning_only = dict(fabricated, idx=3, raw="<think>long deliberation</think>")
+	found = gen_failures({"turns": [fabricated, model_was_silent, real, reasoning_only]})
 	assert [f["idx"] for f in found] == [0]
 	assert found[0]["detected_by"] == "legacy_signature"
 	assert "predates the stamp" in found[0]["reason"]
 	# an explicit False stamp is authoritative: a v1.2 episode is never re-screened by the legacy signature
 	assert gen_failures({"turns": [dict(fabricated, gen_failed=False)]}) == []
+	# and `raw is None` ALONE must never be the screen: it is true of essentially every healthy local turn,
+	# because a non-thinking local model's raw completion equals its content and record_turn stores None.
+	healthy_local = {"idx": 4, "seat": "Casey", "content": "a real proposal", "n_tokens_out": 40, "raw": None}
+	assert gen_failures({"turns": [healthy_local]}) == []
 
 
 def test_episode_pool_records_a_generation_failure_as_an_error_and_never_fabricates(tmp_path):

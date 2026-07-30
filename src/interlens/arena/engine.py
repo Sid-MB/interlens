@@ -30,15 +30,20 @@ Two drivers, two throughput regimes:
   pending requests of every live episode and runs them as ONE batched ``generate_batch`` per participant
   (the 5–20× rollout win), with adaptive batch splitting on GPU OOM.
 
-**A failed generation is never silent.** The batched driver recovers from transient GPU faults by splitting the
-wave and then retrying the lone request; only if that also fails does it substitute ``EMPTY_TURN_PLACEHOLDER`` so
-the pool can keep moving — and then it logs at ERROR, stamps ``TurnRecord.gen_failed`` with the causing exception,
-counts it, and RAISES ``GenerationFailureBudgetExceeded`` once such turns exceed ``max_fabricated_fraction`` of
-the run. This matters because the placeholder parses into a well-formed no-op: before the stamp existed, a cell
-in which *every* turn had been fabricated still reported ``status="done"`` and ``parse_ok=True`` throughout, and
-the contamination was only found months later. Use ``gen_failures(episode)`` to screen stored episodes (it also
-handles pre-stamp records) and ``BatchedEpisodePool.fabrication_report()`` for a run's totals. A non-transient
-error is a bug and always propagates — it is never converted into a turn.
+**A failed generation is never silent, and the two drivers are equally honest about it.** Both drivers meet the
+same cuDNN/OOM faults under load; what differed was only the REPORTING. ``EpisodePool`` always surfaced a failure
+as ``status="error"`` with the traceback — legible, and excluded by any "done" filter. ``BatchedEpisodePool``
+instead substituted ``EMPTY_TURN_PLACEHOLDER`` and swallowed the exception, and because that placeholder parses
+into a well-formed no-op, a cell in which *every* turn had been fabricated still reported ``status="done"`` and
+``parse_ok=True`` throughout; the contamination was found months later, from the outcome numbers.
+
+So the batched driver now recovers from a transient fault by splitting the wave and then retrying the lone
+request, and only if that also fails does it fabricate — at which point it logs at ERROR, stamps
+``TurnRecord.gen_failed`` with the causing exception, counts it, and RAISES
+``GenerationFailureBudgetExceeded`` once such turns exceed ``max_fabricated_fraction`` of the run. A
+non-transient error is a bug and always propagates; it is never converted into a turn. Screen stored episodes
+with ``gen_failures(episode)`` (it also handles pre-stamp records) and read a run's totals from
+``BatchedEpisodePool.fabrication_report()``.
 
 **Budgets are stop conditions, not ad-hoc counters.** An episode's budget is any ``StopCondition``
 (``TokenBudget``, ``CostBudget``, a list of both): the engine records each committed turn as an interlens
@@ -144,15 +149,25 @@ def gen_failures(episode) -> list[dict]:
 
 	- **v1.2 and later** carry an explicit ``gen_failed`` stamp (``detected_by="stamp"``), which also records the
 	  exception that caused it.
-	- **Older episodes** have no stamp, so they are screened by the legacy value signature
+	- **Older episodes** have no stamp, so they fall back to the legacy value signature
 	  (``detected_by="legacy_signature"``): content is exactly :data:`EMPTY_TURN_PLACEHOLDER`, zero output
-	  tokens, and ``raw is None``. That last clause is what separates an engine fabrication from the OTHER
-	  producer of the same placeholder — a model that genuinely returned empty text, which
-	  :meth:`EpisodeRun.record_turn` also replaces with the placeholder but which leaves ``raw`` as the empty
-	  string it actually got. Both are contamination; only the first means no model was called.
+	  tokens, AND ``raw is None``.
 
-	Do NOT screen with ``parse_ok`` or "is the content empty": the placeholder is a non-empty string that parses
-	into a well-formed no-op action, so a fully fabricated episode passes both."""
+	The legacy fallback is a conjunction, and it is worth being precise about which clause does what, because
+	getting this wrong in either direction has already happened:
+
+	- ``content == EMPTY_TURN_PLACEHOLDER`` does the discriminating work. ``raw is None`` **alone is useless** on
+	  local runs — a local non-thinking model's raw completion equals its content, so ``record_turn`` stores
+	  ``raw=None`` for essentially every healthy turn too (measured: all 2,683 turns of a clean 32B cell).
+	- ``raw is None`` is a GUARD, not the detector. Its job is to exclude the other producer of the same
+	  placeholder: a model that genuinely returned empty or reasoning-only text, which ``record_turn`` also
+	  replaces with the placeholder but for which ``raw`` holds the non-placeholder text it actually got. That is
+	  real model behaviour (a thinking model burning its cap) and a different problem with a different fix, so it
+	  must not be counted as an engine failure.
+
+	Because the stamp exists from v1.2 on, this fallback is only for pre-stamp records — do not build new tooling
+	on it. And do NOT screen with ``parse_ok`` or "is the content empty": the placeholder is a non-empty string
+	that parses into a well-formed no-op action, so a fully fabricated episode passes both."""
 	d = episode if isinstance(episode, dict) else episode.to_json()
 	out = []
 	for t in d.get("turns") or []:
