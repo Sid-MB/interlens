@@ -197,9 +197,16 @@ class PromptScaffold:
 
 	# ------------------------------------------------------------ assembled --
 	def system_prompt(self, *, rules: str, private: str, action_format: str, info_note: str,
-	                  full_info_sheets: str | None) -> str:
+	                  full_info_sheets: str | None, seat_index: int | None = None) -> str:
 		"""Assemble a seat's complete system prompt. ``full_info_sheets`` is the block of all parties' sheets,
-		present only in the FULL-information condition."""
+		present only in the FULL-information condition.
+
+		``seat_index`` is the acting seat's index, passed by the scenario and **ignored here** — the seat is
+		already rendered into ``private``, so the base assembly does not need it. It exists so a subclass can
+		vary the prompt PER SEAT (e.g. appending a reasoning workflow to one focal seat only, for a
+		treatment-vs-control arm) without the scenario having to know which subclass it holds. Overriding
+		subclasses that do not care may omit it; the base accepts and drops it, so existing scaffolds and
+		stored-episode replay are byte-identical."""
 		parts = [rules, "", info_note]
 		if full_info_sheets:
 			parts += ["", "All parties' score sheets (common knowledge):", full_info_sheets]
@@ -207,10 +214,12 @@ class PromptScaffold:
 		return "\n".join(parts)
 
 	def turn_prompt(self, *, seat: str, round_no: int, rounds: int, is_opener: bool,
-	                offers_block: str, chat_enabled: bool) -> str:
+	                offers_block: str, chat_enabled: bool, seat_index: int | None = None) -> str:
 		"""The per-turn user prompt: restates the deadline (Lesson 13), lists live offers with ids, and names
 		whose turn it is. ``offers_block`` is the scenario-rendered live-offers summary (with, privately, this
-		seat's own score for each live offer when the scenario surfaces it)."""
+		seat's own score for each live offer when the scenario surfaces it). ``seat_index`` mirrors
+		:meth:`system_prompt` — the acting seat's index, ignored by the base assembly and available to per-seat
+		subclasses (``seat`` already names the seat; the index is what a seat-targeting arm is configured with)."""
 		head = f"[Mediator] Round {round_no} of {rounds}. It is your turn, {seat}."
 		if is_opener:
 			head += " You hold the opening proposal this round."

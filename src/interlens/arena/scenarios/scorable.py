@@ -278,7 +278,8 @@ class ScorableNegotiation(Scenario):
 		return sc.system_prompt(
 			rules=rules, private=private,
 			action_format=sc.action_format_block(chat_enabled=self._chat_enabled(st)),
-			info_note=sc.info_condition_note(info=spec.info), full_info_sheets=full_sheets)
+			info_note=sc.info_condition_note(info=spec.info), full_info_sheets=full_sheets,
+			seat_index=si)
 
 	def _state_block_json(self, st, si: int, *, must_vote: bool = False) -> str:
 		"""The authoritative, machine-readable ``negotiation_state`` block a ``PolicyParticipant`` reads directly
@@ -338,7 +339,8 @@ class ScorableNegotiation(Scenario):
 			seat = st["seat_names"][si]
 			prompt = self.scaffold.turn_prompt(
 				seat=seat, round_no=st["round"], rounds=rounds, is_opener=(len(st["moved"]) == 0),
-				offers_block=self._live_offers_block(st, si), chat_enabled=self._chat_enabled(st))
+				offers_block=self._live_offers_block(st, si), chat_enabled=self._chat_enabled(st),
+				seat_index=si)
 			return [SeatRequest("", seat, self._seat_view(st, si, prompt), "turn", st["round"], meta={"si": si})]
 		# ---- forced final: opener tables one last binding proposal (or walks), then everyone else votes ----
 		order = self._active_order(st, rounds + 1)
@@ -354,7 +356,7 @@ class ScorableNegotiation(Scenario):
 				prompt = self.scaffold.turn_prompt(
 					seat=seat, round_no=rounds + 1, rounds=rounds, is_opener=False,
 					offers_block=self._live_offers_block(st, si) + f"\nThis is the FINAL up/down vote on {st['final_offer']}.",
-					chat_enabled=self._chat_enabled(st))
+					chat_enabled=self._chat_enabled(st), seat_index=si)
 				return [SeatRequest("", seat, self._seat_view(st, si, prompt, must_vote=True), "final_vote",
 				                    rounds + 1, meta={"si": si})]
 		return []  # all votes in; apply() has resolved closure and set done
