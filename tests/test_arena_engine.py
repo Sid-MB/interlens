@@ -25,7 +25,9 @@ import pytest
 from interlens import TokenBudget, UsageMeter
 from interlens.message import Message
 from interlens.participant import Participant
-from interlens.arena import EpisodePool, EpisodeStore, check_reasoning_leak, replay_episode, rescore
+from interlens.arena import (BatchedEpisodePool, EMPTY_TURN_PLACEHOLDER, EpisodePool, EpisodeStore,
+                             GenerationFailureBudgetExceeded, check_reasoning_leak, gen_failures,
+                             replay_episode, rescore)
 from interlens.arena.scenarios import InfoRelay, Negotiation
 
 
@@ -276,3 +278,201 @@ def test_exhausted_meter_blocks_queued_episodes(tmp_path):
 	episodes = run(pool.run_pool(jobs))
 	assert len(episodes) == 1              # the in-flight episode finished; the queued two never started
 	assert meter.exhausted
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Generation-failure visibility on the batched driver.
+#
+# The bug these pin: `BatchedEpisodePool._generate_batch` caught transient GPU errors, split the batch, and — when
+# a lone request still failed — fabricated an EMPTY_TURN_PLACEHOLDER message and swallowed the exception with no
+# log line and no mark on the record. Because that placeholder parses into a well-formed no-op, an affected run
+# reported status="done" and parse_ok=True on every turn; one campaign cell reached 100% fabricated turns and
+# looked clean. So: retry before fabricating, log loudly, stamp the record, and raise past a budget.
+# --------------------------------------------------------------------------------------------------------------
+
+TRANSIENT = "CUDA error: out of memory"          # matched by the engine's transient-error screen
+PERMANENT = "shapes cannot be multiplied"        # not transient: must propagate, never be swallowed
+
+
+class BatchSeat(ScriptedSeat):
+	"""A scripted participant with a batched entry point and an injectable failure schedule.
+
+	``fail_times`` raises on the first N ``generate_batch`` calls; ``fail_forever`` raises on every call;
+	``fail_above_width`` raises only for batches wider than the given size (the real OOM shape, where splitting
+	is what rescues the wave). ``error`` selects the message, so a test can choose a transient error or a
+	permanent one. ``batch_widths`` records every width the engine asked for."""
+
+	def __init__(self, final_text, *, fail_times=0, fail_forever=False, fail_above_width=None,
+	             error=TRANSIENT, **kw):
+		super().__init__(final_text, **kw)
+		self.name = "batchseat"
+		self.fails_remaining = fail_times
+		self.fail_forever = fail_forever
+		self.fail_above_width = fail_above_width
+		self.error = error
+		self.batch_widths: list[int] = []
+
+	def generate_batch(self, views, *, max_new_tokens=None, **kwargs):
+		self.batch_widths.append(len(views))
+		if self.fail_forever:
+			raise RuntimeError(self.error)
+		if self.fail_above_width is not None and len(views) > self.fail_above_width:
+			raise RuntimeError(self.error)
+		if self.fails_remaining > 0:
+			self.fails_remaining -= 1
+			raise RuntimeError(self.error)
+		return [self.generate(view, max_new_tokens=max_new_tokens) for view in views]
+
+
+def _relay_jobs(n, seat):
+	scen = InfoRelay()
+	inst = scen.generate_instance(0, 5)
+	return [dict(scenario=scen, instance=inst, arm="team", participant=seat) for _ in range(n)], scen, inst
+
+
+def _batch_seat(n_shards=5, **kw):
+	scen = InfoRelay()
+	inst = scen.generate_instance(0, n_shards)
+	return BatchSeat(f'```json\n{{"answer": {inst.payload["gold"]}}}\n```', **kw), scen, inst
+
+
+def test_batched_pool_retries_a_single_transient_failure_instead_of_fabricating(tmp_path):
+	"""A blip on a lone request is retried and succeeds — nothing is fabricated, so nothing is contaminated."""
+	seat, scen, inst = _batch_seat(fail_times=1)
+	pool = BatchedEpisodePool(EpisodeStore(tmp_path))
+	episodes = pool.run_pool([dict(scenario=scen, instance=inst, arm="team", participant=seat)])
+	assert [e.status for e in episodes] == ["done"]
+	assert pool.fabrication_report()["fabricated"] == 0
+	assert not any(t.gen_failed for e in episodes for t in e.turns)
+	assert gen_failures(episodes[0]) == []
+	assert 1 in seat.batch_widths      # it really did re-issue the single request
+
+
+def test_batched_pool_stamps_and_reports_a_turn_it_had_to_fabricate(tmp_path):
+	seat, scen, inst = _batch_seat(fail_forever=True)
+	# budget off, so this test observes the fabrication itself rather than the abort
+	pool = BatchedEpisodePool(EpisodeStore(tmp_path), max_fabricated_fraction=1.0)
+	episodes = pool.run_pool([dict(scenario=scen, instance=inst, arm="team", participant=seat)])
+	fabricated = [t for e in episodes for t in e.turns if t.gen_failed]
+	assert fabricated, "a turn no model produced must be stamped"
+	for t in fabricated:
+		assert t.content == EMPTY_TURN_PLACEHOLDER      # scenario-facing semantics unchanged
+		assert t.n_tokens_out == 0
+		assert "out of memory" in t.gen_failure         # the cause is recorded, not just the fact
+	# the stamp survives the round trip through the stored JSON, and the detector reads it
+	stored = json.loads(EpisodeStore(tmp_path).path(episodes[0]).read_text())
+	found = gen_failures(stored)
+	assert len(found) == len([t for t in episodes[0].turns if t.gen_failed])
+	assert all(f["detected_by"] == "stamp" and f["seat"] for f in found)
+	report = pool.fabrication_report()
+	assert report["fraction"] > 0
+	assert report["failures"][0]["wave_width"] == 1
+	# The report is the COMPLETE account and the stamps are a subset of it: a forked provisional probe is stored
+	# as an OracleRecord, which has no field to stamp, so those fabrications live only in the report.
+	provisional = [f for f in report["failures"] if f["phase"] == "provisional"]
+	assert report["fabricated"] == len(fabricated) + len(provisional)
+	assert provisional, "this scenario forks provisional probes, so the gap must be exercised, not assumed"
+
+
+def test_fabrication_is_logged_at_error_with_the_cause(tmp_path, caplog):
+	seat, scen, inst = _batch_seat(fail_forever=True)
+	pool = BatchedEpisodePool(EpisodeStore(tmp_path), max_fabricated_fraction=1.0)
+	with caplog.at_level("WARNING", logger="interlens.arena.engine"):
+		episodes = pool.run_pool([dict(scenario=scen, instance=inst, arm="team", participant=seat)])
+	errors = [r for r in caplog.records if r.levelname == "ERROR"]
+	warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+	assert errors, "fabricating a turn must be an ERROR, not a silent return"
+	first = errors[0].getMessage()
+	assert "FABRICATING" in first
+	assert "out of memory" in first                       # the exception
+	assert episodes[0].episode_id in first                # which episode
+	assert "wave was 1" in first                          # the batch width at failure
+	assert "gen_failed=True" in first                     # how to find it downstream
+	assert warnings and "retry 1/2" in warnings[0].getMessage()   # the retries are visible too
+
+
+def test_a_permanent_error_is_never_swallowed(tmp_path):
+	"""Only transient GPU errors are recoverable. A real bug must reach the caller — never become an empty turn —
+	and the episodes it killed must still land on disk as failed rather than stuck at status="running"."""
+	seat, scen, inst = _batch_seat(fail_forever=True, error=PERMANENT)
+	pool = BatchedEpisodePool(EpisodeStore(tmp_path), max_fabricated_fraction=1.0)
+	with pytest.raises(RuntimeError, match="shapes cannot be multiplied"):
+		pool.run_pool([dict(scenario=scen, instance=inst, arm="team", participant=seat)])
+	assert pool.fabrication_report()["fabricated"] == 0
+	stored = EpisodeStore(tmp_path).load_all()
+	assert stored and all(e["status"] == "error" for e in stored)
+	assert all("shapes cannot be multiplied" in e["error"] for e in stored)
+
+
+def test_batch_splitting_still_rescues_a_wide_wave(tmp_path):
+	"""The original recovery behaviour is intact: a wave too wide to run is split until it fits, and no turn is
+	fabricated — the split, not the placeholder, is what saves the run."""
+	seat, scen, inst = _batch_seat(fail_above_width=1)
+	pool = BatchedEpisodePool(EpisodeStore(tmp_path))
+	jobs = [dict(scenario=scen, instance=inst, arm="team", participant=seat, seed=s) for s in range(4)]
+	episodes = pool.run_pool(jobs)
+	assert all(e.status == "done" for e in episodes)
+	assert pool.fabrication_report()["fabricated"] == 0
+	assert max(seat.batch_widths) > 1 and min(seat.batch_widths) == 1   # it tried wide, then split
+
+
+def test_fabrication_budget_aborts_a_systematically_broken_run(tmp_path):
+	"""The Olmo case: every generation fails, so the run must CRASH in its first seconds rather than complete
+	full of turns no model produced."""
+	seat, scen, inst = _batch_seat(fail_forever=True)
+	pool = BatchedEpisodePool(EpisodeStore(tmp_path))          # default 10% ceiling
+	jobs = [dict(scenario=scen, instance=inst, arm="team", participant=seat, seed=s) for s in range(30)]
+	with pytest.raises(GenerationFailureBudgetExceeded) as excinfo:
+		pool.run_pool(jobs)
+	message = str(excinfo.value)
+	assert "not measuring model behaviour" in message and "ceiling" in message
+	assert "out of memory" in message                          # names the underlying cause
+	# it stopped EARLY: a 10% ceiling on a 30-request first wave trips after a handful of failures
+	assert pool.fabricated_turns <= 6
+	# and the partial run is on disk as failed, not as a short clean one
+	stored = EpisodeStore(tmp_path).load_all()
+	assert stored and all(e["status"] == "error" for e in stored)
+	assert all("GenerationFailureBudgetExceeded" in e["error"] for e in stored)
+
+
+def test_fabrication_floor_tolerates_one_blip_in_a_tiny_run(tmp_path):
+	"""A 10% ceiling is meaningless on a denominator of one, so the fraction only applies past the floor."""
+	seat, scen, inst = _batch_seat(fail_forever=True)
+	pool = BatchedEpisodePool(EpisodeStore(tmp_path), fabrication_floor=1000)
+	episodes = pool.run_pool([dict(scenario=scen, instance=inst, arm="team", participant=seat)])
+	assert pool.attempted_turns < 1000
+	assert pool.fabricated_turns > 0                # it fabricated
+	assert all(e.status == "done" for e in episodes)  # ... and did not abort
+
+
+def test_gen_failures_reads_legacy_episodes_and_spares_genuine_model_silence():
+	"""Episodes recorded before the stamp are screened by the value signature — and that signature must NOT
+	catch a model that genuinely returned empty text, which is a different problem with a different fix."""
+	fabricated = {"idx": 0, "seat": "Avery", "round": 1, "phase": "turn",
+	              "content": EMPTY_TURN_PLACEHOLDER, "n_tokens_out": 0, "raw": None}
+	model_was_silent = dict(fabricated, idx=1, raw="")     # record_turn substituted the placeholder for ""
+	real = {"idx": 2, "seat": "Blake", "content": "a real turn", "n_tokens_out": 12, "raw": None}
+	found = gen_failures({"turns": [fabricated, model_was_silent, real]})
+	assert [f["idx"] for f in found] == [0]
+	assert found[0]["detected_by"] == "legacy_signature"
+	assert "predates the stamp" in found[0]["reason"]
+	# an explicit False stamp is authoritative: a v1.2 episode is never re-screened by the legacy signature
+	assert gen_failures({"turns": [dict(fabricated, gen_failed=False)]}) == []
+
+
+def test_episode_pool_records_a_generation_failure_as_an_error_and_never_fabricates(tmp_path):
+	"""The sibling-path check: the async driver has no fabrication path at all. A failing generate surfaces as
+	status="error" with the traceback — legible and excluded by any "done" filter — not as a placeholder turn."""
+	scen = InfoRelay()
+	inst = scen.generate_instance(0, 5)
+
+	class AlwaysOOM(Participant):
+		name = "oom"
+
+		def generate(self, view, **kwargs):
+			raise RuntimeError(TRANSIENT)
+
+	ep = run(EpisodePool(EpisodeStore(tmp_path)).run_episode(scen, inst, "team", AlwaysOOM()))
+	assert ep.status == "error" and "out of memory" in ep.error
+	assert all(t.content != EMPTY_TURN_PLACEHOLDER for t in ep.turns)
+	assert gen_failures(ep) == []

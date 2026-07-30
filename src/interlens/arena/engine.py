@@ -30,6 +30,16 @@ Two drivers, two throughput regimes:
   pending requests of every live episode and runs them as ONE batched ``generate_batch`` per participant
   (the 5–20× rollout win), with adaptive batch splitting on GPU OOM.
 
+**A failed generation is never silent.** The batched driver recovers from transient GPU faults by splitting the
+wave and then retrying the lone request; only if that also fails does it substitute ``EMPTY_TURN_PLACEHOLDER`` so
+the pool can keep moving — and then it logs at ERROR, stamps ``TurnRecord.gen_failed`` with the causing exception,
+counts it, and RAISES ``GenerationFailureBudgetExceeded`` once such turns exceed ``max_fabricated_fraction`` of
+the run. This matters because the placeholder parses into a well-formed no-op: before the stamp existed, a cell
+in which *every* turn had been fabricated still reported ``status="done"`` and ``parse_ok=True`` throughout, and
+the contamination was only found months later. Use ``gen_failures(episode)`` to screen stored episodes (it also
+handles pre-stamp records) and ``BatchedEpisodePool.fabrication_report()`` for a run's totals. A non-transient
+error is a bug and always propagates — it is never converted into a turn.
+
 **Budgets are stop conditions, not ad-hoc counters.** An episode's budget is any ``StopCondition``
 (``TokenBudget``, ``CostBudget``, a list of both): the engine records each committed turn as an interlens
 ``Message`` (usage metadata included) on an internal transcript, checks the condition against it, and applies
@@ -44,6 +54,7 @@ never collectively overrun the meter's budget (in-flight episodes finish; new on
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import traceback
 from typing import Callable
@@ -59,7 +70,103 @@ from .views import extract_json, strip_think
 
 # What an empty visible turn is replaced with (a reasoning model can burn its whole cap on hidden thinking;
 # an empty message would corrupt other seats' alternating views).
+#
+# AUDITING GOTCHA — do NOT screen for this failure with ``parse_ok`` or "is the content empty?". Both are
+# fooled: this placeholder is a non-empty string that parses cleanly into a well-formed no-op action, so a
+# transcript where the model said nothing on most turns reports ``parse_ok=True`` and non-empty content
+# throughout. The honest detectors are ``TurnRecord.stop_reason == "max_tokens"`` and a parsed action whose
+# type is the no-op ("none"). Measured on claude-opus-5 with adaptive thinking at a 2,048-token per-turn cap:
+# 67% of turns were this placeholder and the episode advanced zero rounds, while a naive parse_ok screen
+# called the run clean. See the sibling note on APIParticipant.turn_token_floor for the two controls.
 EMPTY_TURN_PLACEHOLDER = "(ran out of time this turn and says nothing substantive)"
+
+logger = logging.getLogger(__name__)
+
+# The metadata keys by which a failed generation travels from the driver that fabricated the turn to
+# ``EpisodeRun.record_turn``, which stamps them onto the ``TurnRecord``. Named constants because the producer
+# (``BatchedEpisodePool._generate_batch``) and the consumer (``record_turn``) are far apart in this file, and a
+# typo in either would silently restore the invisible-failure bug this stamp exists to prevent.
+GEN_FAILED_KEY = "gen_failed"
+GEN_FAILURE_KEY = "gen_failure"
+
+# How many times the batched driver re-attempts a SINGLE request that failed transiently, after batch splitting
+# has already narrowed the wave to that one request, before giving up and fabricating a turn. The failures worth
+# retrying here are transient by construction (a cuDNN graph blip, a fragmentation-driven OOM that
+# ``empty_cache`` may clear), so a couple of cheap attempts rescue them; a context that genuinely does not fit
+# will fail all of them and cost only milliseconds.
+SINGLE_REQUEST_RETRIES = 2
+
+# Default ceiling on the fraction of a pool's turns the engine may fabricate before it gives up and RAISES
+# instead of returning a run full of turns no model ever produced. 10% is already far beyond anything a healthy
+# run produces (a healthy run fabricates zero), so tripping this means the run is not measuring model behaviour.
+MAX_FABRICATED_FRACTION = 0.10
+
+# The fabrication fraction is only consulted once this many turns have been attempted, so a single transient blip
+# in the opening wave of a small run cannot trip a 10% ceiling on a denominator of one or two.
+FABRICATION_FLOOR = 20
+
+
+class GenerationFailureBudgetExceeded(RuntimeError):
+	"""Raised by :class:`BatchedEpisodePool` when it has had to fabricate more turns than its budget allows.
+
+	The alternative — which this replaces — is a run that completes, reports ``status="done"`` and
+	``parse_ok=True`` on every turn, and contains no model behaviour whatsoever. A campaign cell has been
+	observed at 100% fabricated turns while reporting clean. Failing loudly in the first seconds is strictly
+	better than discovering it in the analysis, so the budget defaults to ON."""
+
+
+def _is_transient_gpu_error(error: Exception) -> bool:
+	"""Whether a backend ``RuntimeError`` is the kind worth backing off and retrying rather than propagating:
+	a CUDA OOM, or the cuDNN graph errors long co-stepped batches produce. Matched on the message because the
+	backend raises all of them as plain ``RuntimeError``. One home, so the split path and the single-request
+	retry path can never disagree about what counts as transient."""
+	text = str(error).lower()
+	return ("out of memory" in text or "mha_graph" in text or "cudnn" in text or "is_good()" in text)
+
+
+def _empty_cuda_cache() -> None:
+	"""Best-effort ``torch.cuda.empty_cache()`` — what makes a fragmentation-driven OOM worth retrying at all.
+	Silent no-op without torch or a GPU, so the engine stays importable on CPU-only machines."""
+	try:
+		import torch
+		torch.cuda.empty_cache()
+	except Exception:
+		pass
+
+
+def gen_failures(episode) -> list[dict]:
+	"""Every turn of an episode whose text the ENGINE fabricated because generation failed.
+
+	``episode`` is an :class:`~interlens.arena.schema.Episode` or its ``to_json()`` dict. Returns a list of
+	``{"idx", "round", "seat", "phase", "reason", "detected_by"}``, one per fabricated turn.
+
+	Use this rather than hand-rolling a screen, because the honest test depends on when the episode was recorded:
+
+	- **v1.2 and later** carry an explicit ``gen_failed`` stamp (``detected_by="stamp"``), which also records the
+	  exception that caused it.
+	- **Older episodes** have no stamp, so they are screened by the legacy value signature
+	  (``detected_by="legacy_signature"``): content is exactly :data:`EMPTY_TURN_PLACEHOLDER`, zero output
+	  tokens, and ``raw is None``. That last clause is what separates an engine fabrication from the OTHER
+	  producer of the same placeholder — a model that genuinely returned empty text, which
+	  :meth:`EpisodeRun.record_turn` also replaces with the placeholder but which leaves ``raw`` as the empty
+	  string it actually got. Both are contamination; only the first means no model was called.
+
+	Do NOT screen with ``parse_ok`` or "is the content empty": the placeholder is a non-empty string that parses
+	into a well-formed no-op action, so a fully fabricated episode passes both."""
+	d = episode if isinstance(episode, dict) else episode.to_json()
+	out = []
+	for t in d.get("turns") or []:
+		stamped = bool(t.get(GEN_FAILED_KEY))
+		legacy = (GEN_FAILED_KEY not in t
+				  and t.get("content") == EMPTY_TURN_PLACEHOLDER
+				  and not t.get("n_tokens_out")
+				  and t.get("raw") is None)
+		if stamped or legacy:
+			out.append({"idx": t.get("idx"), "round": t.get("round"), "seat": t.get("seat"),
+						"phase": t.get("phase"),
+						"reason": t.get(GEN_FAILURE_KEY) or "(not recorded: episode predates the stamp)",
+						"detected_by": "stamp" if stamped else "legacy_signature"})
+	return out
 
 
 class _BudgetLedger:
@@ -185,6 +292,11 @@ class EpisodeRun:
 			# A participant wrapper may add private, per-turn decision support after the scenario creates the
 			# request. Persist the exact post-wrapper view when supplied; otherwise keep the scenario view.
 			view=(message.metadata.get("conditioned_view", request.view) if self.record_views else None),
+			# Carry a driver's generation-failure stamp onto the record. The turn is still applied to the state
+			# (the scenario reads the placeholder as a no-op, so the pool keeps moving), but it is now marked as
+			# text NO MODEL PRODUCED, so no downstream analysis can mistake it for behaviour.
+			gen_failed=bool(message.metadata.get(GEN_FAILED_KEY)),
+			gen_failure=message.metadata.get(GEN_FAILURE_KEY),
 		))
 		self._turn_idx += 1
 		self.ep.tokens_in += tokens_in
@@ -347,6 +459,11 @@ class EpisodePool:
 						run.save()
 					return run.finalize()
 				except Exception:
+					# NOT a silent swallow: the episode is finalized with status="error" and the traceback, so it
+					# is legible in the store and excluded by any "done" filter. Logged as well, because a run of
+					# 120 episodes where a third errored should say so while it is running, not only on inspection.
+					logger.exception("episode %s (%s, seat model %s) failed and is recorded as status=error",
+					                 run.ep.episode_id, run.ep.arm, run.ep.model)
 					return run.finalize(error=traceback.format_exc()[-2000:])
 			finally:
 				if self.meter is not None and estimated_cost is not None:
@@ -368,12 +485,63 @@ class BatchedEpisodePool:
 	requests and runs them as one batched ``generate_batch`` per participant — the local-GPU throughput path.
 
 	On CUDA OOM (or the transient cuDNN graph errors long co-stepped batches produce), the wave is split and
-	retried down to single episodes; a single episode whose context alone OOMs yields a placeholder empty turn
-	so the pool keeps moving."""
+	retried down to single episodes, then that single request is retried a bounded number of times. Only if all of
+	that fails does the pool fabricate a placeholder turn so it can keep moving — and a fabricated turn is LOGGED
+	at error level and STAMPED (``TurnRecord.gen_failed``), because text no model produced must never be
+	mistaken for model behaviour. Past ``max_fabricated_fraction`` of the pool's turns the run RAISES instead.
 
-	def __init__(self, store: EpisodeStore | None = None, *, record_views: bool = True):
+	Parameters
+	----------
+	store : EpisodeStore | None
+		Where to persist each episode after every applied wave.
+	record_views : bool
+		Persist each turn's rendered view into its ``TurnRecord`` (default on).
+	max_fabricated_fraction : float
+		The fraction of attempted turns the engine may fabricate before raising
+		:class:`GenerationFailureBudgetExceeded` (default :data:`MAX_FABRICATED_FRACTION`, 10%). A healthy run
+		fabricates none, so any nonzero rate is already a defect; the ceiling exists to stop a broken run in its
+		first seconds rather than at analysis time. Set it to ``1.0`` to never raise (the old behaviour) — which
+		is only defensible if something downstream screens ``gen_failed``.
+	fabrication_floor : int
+		Attempted turns required before the fraction is consulted (default :data:`FABRICATION_FLOOR`), so one
+		transient blip in a tiny run cannot trip the ceiling on a denominator of one.
+	single_request_retries : int
+		Re-attempts of a lone failing request after splitting has narrowed the wave to it, before fabricating
+		(default :data:`SINGLE_REQUEST_RETRIES`).
+	"""
+
+	def __init__(self, store: EpisodeStore | None = None, *, record_views: bool = True,
+	             max_fabricated_fraction: float = MAX_FABRICATED_FRACTION,
+	             fabrication_floor: int = FABRICATION_FLOOR,
+	             single_request_retries: int = SINGLE_REQUEST_RETRIES):
 		self.store = store
 		self.record_views = record_views   # persist each turn's rendered view into its TurnRecord (default on)
+		self.max_fabricated_fraction = max_fabricated_fraction
+		self.fabrication_floor = fabrication_floor
+		self.single_request_retries = single_request_retries
+		self.attempted_turns = 0        # requests this pool has tried to generate (the fabrication denominator)
+		self.fabricated_turns = 0       # of those, the ones no model ever produced
+		self.failures: list[dict] = []  # one record per fabrication: {episode_id, seat, round, phase, reason}
+		# The runs of the wave in flight, so that a fabrication-budget abort can finalize them as errored on its
+		# way out. Held on the pool because the raise happens deep inside the generate call stack, far from the
+		# loop that owns the live set.
+		self._abort_runs: list[EpisodeRun] = []
+
+	def fabrication_report(self) -> dict:
+		"""How much of this pool's output the engine had to fabricate: ``{attempted, fabricated, fraction,
+		failures}``. A caller should log this at the end of a run — ``fraction == 0.0`` is the only healthy
+		value, and anything else bounds how much of the run is not model behaviour.
+
+		This is the ONLY complete account of a run's fabrications, and it is why the report exists alongside the
+		per-turn stamp. Committed turns carry ``TurnRecord.gen_failed``, but a forked **provisional** probe is
+		stored as an ``OracleRecord`` rather than a ``TurnRecord``, so it has nowhere to carry the stamp: a
+		fabricated provisional shows up here and in ``failures`` (with ``phase == "provisional"``), and in the
+		stored record only as ``content == EMPTY_TURN_PLACEHOLDER``. So ``fabricated`` can legitimately exceed the
+		number of ``gen_failed`` turns in the episodes; the difference is fabricated provisional probes, whose
+		``score`` should be treated as contaminated."""
+		frac = (self.fabricated_turns / self.attempted_turns) if self.attempted_turns else 0.0
+		return {"attempted": self.attempted_turns, "fabricated": self.fabricated_turns,
+		        "fraction": round(frac, 6), "failures": list(self.failures)}
 
 	def run_pool(self, jobs: list[dict], progress: Callable[[int, int], None] | None = None) -> list[Episode]:
 		runs = [EpisodeRun(j["scenario"], j["instance"], j["arm"], j["participant"],
@@ -381,6 +549,7 @@ class BatchedEpisodePool:
 		                   gen_config=j.get("gen_config"), budget=j.get("budget"),
 		                   record_views=self.record_views) for j in jobs]
 		live = {r.ep.episode_id: r for r in runs}
+		self._abort_runs = runs
 		tick = 0
 		while live:
 			wave: list[tuple[EpisodeRun, SeatRequest]] = []
@@ -388,6 +557,8 @@ class BatchedEpisodePool:
 				try:
 					requests = run.pending()
 				except Exception:
+					logger.exception("episode %s: scenario failed to produce the next requests; "
+					                 "recorded as status=error", run.ep.episode_id)
 					run.finalize(error=traceback.format_exc()[-2000:])
 					del live[run.ep.episode_id]
 					continue
@@ -404,6 +575,9 @@ class BatchedEpisodePool:
 			for pairs in by_participant.values():
 				participant = pairs[0][0].participant
 				capped = [(r.turn_cap(q), q) for r, q in pairs]
+				# Unrecoverable failures are logged, the live episodes flushed as errored, and the exception
+				# re-raised inside _generate_batch (one home covering both the wave and the provisional probes),
+				# so there is deliberately nothing to catch here.
 				messages = self._generate_batch(participant, capped)
 				for (run, request), (cap, _q), message in zip(pairs, capped, messages):
 					try:
@@ -415,6 +589,8 @@ class BatchedEpisodePool:
 							run.record_turn(retry, retry_message, cap=retry_cap)
 						run.annotate(request)  # inline oracle annotations (no extra generation)
 					except Exception:
+						logger.exception("episode %s: applying seat %s's turn failed; recorded as status=error",
+						                 run.ep.episode_id, request.seat)
 						run.finalize(error=traceback.format_exc()[-2000:])
 						live.pop(run.ep.episode_id, None)
 			# provisional elicitations, batched per participant as well
@@ -442,34 +618,130 @@ class BatchedEpisodePool:
 				progress(tick, len(live))
 		return [r.ep for r in runs]
 
-	def _generate_batch(self, participant, capped_requests: list[tuple[int, SeatRequest]]) -> list[Message]:
+	def _call_batch(self, participant, requests: list[SeatRequest], cap: int) -> list[Message]:
+		"""The one place a participant's batched generate is actually invoked, preferring the seat-aware entry
+		point when the participant has one (a table fronting several seats needs each request's own seat)."""
+		views = [q.view for q in requests]
+		if hasattr(participant, "generate_batch_with_seats"):
+			return participant.generate_batch_with_seats(views, [q.seat for q in requests], max_new_tokens=cap)
+		return participant.generate_batch(views, max_new_tokens=cap)
+
+	def _generate_batch(self, participant, capped_requests: list[tuple[int, SeatRequest]],
+	                    *, wave_width: int | None = None) -> list[Message]:
 		"""One batched generate over the wave, surviving OOM / transient cuDNN graph errors by splitting and
 		retrying down to single requests. Long multi-agent transcripts make peak KV vary across a co-stepped
-		batch, so no fixed width is safe everywhere; back off on demand."""
+		batch, so no fixed width is safe everywhere; back off on demand.
+
+		``wave_width`` is the width of the ORIGINAL wave, threaded down through the recursive splits so a failure
+		is reported against the batch it started in — the width at the leaf is always 1, which says nothing about
+		what went wrong. Callers leave it unset; only the recursion passes it.
+
+		An UNRECOVERABLE error (anything not transient — i.e. a real bug) is never converted into a turn: it is
+		logged, every live episode is finalized as errored so the partial run is legible on disk, and it is
+		re-raised. That happens in the outermost frame only, which is why it lives here rather than at each call
+		site: the wave and the provisional probes both come through this method."""
 		if not capped_requests:
 			return []
-		cap = max(c for c, _q in capped_requests)
-		views = [q.view for _c, q in capped_requests]
-		try:
-			if hasattr(participant, "generate_batch_with_seats"):
-				return participant.generate_batch_with_seats(
-					views, [q.seat for _c, q in capped_requests], max_new_tokens=cap)
-			return participant.generate_batch(views, max_new_tokens=cap)
-		except RuntimeError as e:
-			text = str(e).lower()
-			transient = ("out of memory" in text or "mha_graph" in text
-			             or "cudnn" in text or "is_good()" in text)
-			if not transient:
-				raise
+		if wave_width is None:                     # a top-level call: this is the fabrication denominator
+			wave_width = len(capped_requests)
+			self.attempted_turns += len(capped_requests)
 			try:
-				import torch
-				torch.cuda.empty_cache()
+				return self._generate_batch(participant, capped_requests, wave_width=wave_width)
+			except GenerationFailureBudgetExceeded:
+				raise                              # already logged, and already flushed the runs as errored
 			except Exception:
-				pass
+				detail = traceback.format_exc()[-2000:]
+				logger.exception("%s: generation failed unrecoverably on a wave of %d request(s); aborting the "
+				                 "pool. This is NOT turned into placeholder turns.",
+				                 participant.name, len(capped_requests))
+				self._abort_all(detail)
+				raise
+		cap = max(c for c, _q in capped_requests)
+		try:
+			return self._call_batch(participant, [q for _c, q in capped_requests], cap)
+		except RuntimeError as e:
+			if not _is_transient_gpu_error(e):
+				raise
+			_empty_cuda_cache()
 			if len(capped_requests) == 1:
-				# one episode's context is too large even alone: emit an empty turn so the pool keeps moving
-				return [Message(author=participant.name, content=EMPTY_TURN_PLACEHOLDER,
-				                metadata={"n_tokens": 0, "oom_skip": True})]
+				return [self._retry_or_fabricate(participant, capped_requests[0][1], cap, e, wave_width)]
 			mid = len(capped_requests) // 2
-			return (self._generate_batch(participant, capped_requests[:mid])
-			        + self._generate_batch(participant, capped_requests[mid:]))
+			return (self._generate_batch(participant, capped_requests[:mid], wave_width=wave_width)
+			        + self._generate_batch(participant, capped_requests[mid:], wave_width=wave_width))
+
+	def _retry_or_fabricate(self, participant, request: SeatRequest, cap: int, error: Exception,
+	                        wave_width: int) -> Message:
+		"""Last resort for a request that failed transiently even alone: retry it a bounded number of times, and
+		only if every attempt fails fabricate a placeholder turn — loudly.
+
+		Fabricating is what keeps a long co-stepped run alive when one episode's context genuinely will not fit,
+		but it produces text NO MODEL WROTE. So every attempt and the final give-up are logged with the exception,
+		the participant, the episode/seat/round, and the width of the wave the failure started in; the returned
+		message carries the :data:`GEN_FAILED_KEY` stamp that ``record_turn`` puts on the ``TurnRecord``; and the
+		pool's fabrication budget is checked, so a systematically broken run stops instead of quietly filling up
+		with non-behaviour. Retrying is cheap and worth it: these errors are transient by construction, and a
+		context that truly does not fit fails every attempt in milliseconds."""
+		last = error
+		for attempt in range(1, self.single_request_retries + 1):
+			logger.warning(
+				"%s: generation failed for episode %s seat %s (round %s, phase %s) at batch width 1 "
+				"(wave was %d); retry %d/%d after %r",
+				participant.name, request.episode_id, request.seat, request.round, request.phase,
+				wave_width, attempt, self.single_request_retries, last)
+			try:
+				return self._call_batch(participant, [request], cap)[0]
+			except RuntimeError as e:
+				if not _is_transient_gpu_error(e):
+					raise
+				last = e
+				_empty_cuda_cache()
+
+		reason = f"{type(last).__name__}: {last}"
+		self.fabricated_turns += 1
+		self.failures.append({"episode_id": request.episode_id, "seat": request.seat, "round": request.round,
+		                      "phase": request.phase, "wave_width": wave_width, "reason": reason})
+		logger.error(
+			"%s: FABRICATING an empty turn for episode %s seat %s (round %s, phase %s) — generation failed alone "
+			"after %d retries (wave was %d): %s. This turn is NOT model behaviour; it is stamped gen_failed=True. "
+			"Pool so far: %d/%d turns fabricated (%.1f%%).",
+			participant.name, request.episode_id, request.seat, request.round, request.phase,
+			self.single_request_retries, wave_width, reason,
+			self.fabricated_turns, self.attempted_turns,
+			100.0 * self.fabricated_turns / max(1, self.attempted_turns))
+		self._check_fabrication_budget()
+		return Message(author=participant.name, content=EMPTY_TURN_PLACEHOLDER,
+		               metadata={"n_tokens": 0, "oom_skip": True,
+		                         GEN_FAILED_KEY: True, GEN_FAILURE_KEY: reason})
+
+	def _abort_all(self, error: str) -> None:
+		"""Finalize every still-running episode with ``error`` and flush it to the store.
+
+		Called on the way out of an unrecoverable generation failure so the partial run is on disk as a FAILED
+		run. Without this, an exception escaping the wave loop leaves those episodes at ``status="running"`` —
+		which a later "is this cell done?" check cannot distinguish from a crashed job that never wrote them."""
+		for run in self._abort_runs:
+			if run.ep.status == "running":
+				run.finalize(error=error)
+
+	def _check_fabrication_budget(self) -> None:
+		"""Raise :class:`GenerationFailureBudgetExceeded` once fabricated turns exceed
+		``max_fabricated_fraction`` of the attempted ones, provided at least ``fabrication_floor`` turns have been
+		attempted. Any episodes still live are finalized as errored and flushed to disk before the exception
+		leaves, so the partial run is on disk as a FAILED run rather than looking like a short clean one."""
+		if self.attempted_turns < self.fabrication_floor:
+			return
+		fraction = self.fabricated_turns / self.attempted_turns
+		if fraction <= self.max_fabricated_fraction:
+			return
+		message = (
+			f"generation failed on {self.fabricated_turns} of {self.attempted_turns} attempted turns "
+			f"({100.0 * fraction:.1f}%), over the {100.0 * self.max_fabricated_fraction:.1f}% ceiling — this run "
+			f"is not measuring model behaviour. Every failure was a transient GPU/backend error that survived "
+			f"batch splitting and {self.single_request_retries} single-request retries; the last was: "
+			f"{self.failures[-1]['reason'] if self.failures else 'unknown'}. Fix the backend (a chat-template or "
+			f"EOS mismatch and a genuinely oversized context both land here), or run this cell through "
+			f"EpisodePool instead of co-stepping. Raise max_fabricated_fraction only if you intend to keep the "
+			f"fabricated turns and screen them downstream with arena.engine.gen_failures.")
+		logger.error("%s: %s", type(self).__name__, message)
+		self._abort_all(f"GenerationFailureBudgetExceeded: {message}")
+		raise GenerationFailureBudgetExceeded(message)

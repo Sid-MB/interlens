@@ -45,7 +45,8 @@ from .scenario import Scenario
 from .actions import (Accept, Action, Deal, LEGALITY, Offer, OfferId, OfferRegistry, ParseResult,
                       Propose, Reject, SYNTAX, Walk, action_from_json, parse_action)
 from .oracles import Oracle, OracleRecord, OracleVerdict, annotate
-from .engine import BatchedEpisodePool, EpisodePool, EpisodeRun
+from .engine import (BatchedEpisodePool, EMPTY_TURN_PLACEHOLDER, EpisodePool, EpisodeRun,
+                     GenerationFailureBudgetExceeded, gen_failures)
 from .ratchet import DifficultyRatchet, found_level
 from .replay import ReplayError, replay_episode, rescore
 from .gates import check_reasoning_leak, check_template_fidelity, scenario_smoke_views
@@ -84,6 +85,11 @@ __all__ = [
 	"EpisodePool",
 	"BatchedEpisodePool",
 	"EpisodeRun",
+	# generation-failure visibility: the placeholder the engine substitutes for a turn it could not
+	# generate, the detector that finds those turns in a stored episode, and the fail-loud budget
+	"EMPTY_TURN_PLACEHOLDER",
+	"gen_failures",
+	"GenerationFailureBudgetExceeded",
 	"DifficultyRatchet",
 	"found_level",
 	"replay_episode",

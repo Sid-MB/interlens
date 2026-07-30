@@ -37,7 +37,13 @@ from typing import Any
 # ``round_checkpoints`` is a ``{action_key: value}`` OBJECT rather than a ``[{action, value}]`` list (see
 # ``OracleVerdict.to_json``). Reading is backward compatible — ``OracleVerdict.from_json`` accepts both — so
 # v1.0 episodes still load and replay; the bump records which shape a file was WRITTEN with.
-SCHEMA_VERSION = "v1.1"
+#
+# v1.2 added ``TurnRecord.gen_failed`` / ``gen_failure``: an explicit stamp for a turn whose text the ENGINE
+# fabricated after generation failed, rather than leaving that only inferable from a fragile value signature.
+# The version is the reliable way to ask "can I trust ``gen_failed == False`` on this file?" — on a v1.1-or-older
+# episode the field is simply absent, which is not the same as "generation succeeded", so screen those with
+# ``engine.gen_failures`` (it falls back to the legacy signature).
+SCHEMA_VERSION = "v1.2"
 
 # Neutral seat names, assigned in order (a scenario with n seats uses the first n).
 PERSONAS = ["Avery", "Blake", "Casey", "Devon", "Ember", "Flynn", "Greer", "Hollis"]
@@ -120,6 +126,20 @@ class TurnRecord:
 	# breaks the moment it does). The engine records it by default (``EpisodePool(record_views=...)`` to disable);
 	# ``None`` on turns/episodes recorded before this field existed, so old episodes load unchanged.
 	view: list[dict] | None = None
+	# Did the ENGINE fabricate this turn's text because generation failed outright? ``True`` means no model was
+	# ever successfully called for this turn: the batched driver exhausted its splits and retries and substituted
+	# ``engine.EMPTY_TURN_PLACEHOLDER`` so the pool could keep moving (``gen_failure`` carries the last
+	# exception's repr). Such a turn is NOT model behaviour and must be excluded from any behavioural measurement.
+	#
+	# This flag exists because the failure is otherwise near-invisible: the placeholder is a non-empty string that
+	# parses into a well-formed no-op, so a run in which nothing was ever generated reports ``parse_ok=True`` and
+	# non-empty content on every turn. It is also the ONLY way to distinguish an engine fabrication from the other
+	# producer of the same placeholder — a model that genuinely returned empty text (``engine.record_turn``
+	# substitutes the same string), which IS model behaviour and a completely different problem to chase.
+	# ``False``/``None`` on episodes recorded before these fields existed; use ``engine.gen_failures`` to screen
+	# those, since it falls back to the legacy signature.
+	gen_failed: bool = False
+	gen_failure: str | None = None
 
 
 @dataclass
