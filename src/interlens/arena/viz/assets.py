@@ -292,14 +292,49 @@ function frontierChart(host, game, marks, paths, onPick) {
       `<title>${tip}</title>`));
     if (mk.label) s.push(`<text class="lab" x="${(x + (mk.dx ?? 9)).toFixed(1)}" y="${(y + (mk.dy ?? -8)).toFixed(1)}">${E(mk.label)}</text>`);
   });
+  // the full-cloud hover anchor, drawn last so it sits on top; positioned + revealed on hover, never intercepts
+  s.push('<circle class="sel hoverpt" r="5" fill="none" style="pointer-events:none;opacity:0"></circle>');
   host.innerHTML = `<div class="chartwrap"><svg viewBox="0 0 ${W} ${H}" role="img"
-    aria-label="Deal space in a scale-invariant two-dimensional embedding: joint welfare against the worst-off party's surplus.">${s.join("")}</svg></div>`;
+    aria-label="Deal space in a scale-invariant two-dimensional embedding: joint welfare against the worst-off party's surplus. Hover anywhere to inspect the nearest deal; the marked deals also take keyboard focus.">${s.join("")}</svg></div>`;
   host.querySelectorAll("[data-mark]").forEach(node => {
     const mk = marks[Number(node.dataset.mark)];
     const fire = () => onPick(mk);
     node.addEventListener("mouseenter", fire);
     node.addEventListener("focus", fire);
     node.addEventListener("click", () => onPick(mk, true));
+  });
+  /* Full-cloud inspection: EVERY one of the |D| deals is hoverable, not only the marked ones. Rather than attach
+     a listener to each of thousands of dots, one handler on the svg finds the nearest deal to the pointer in plot
+     coordinates and opens its per-party breakdown; a faint ring anchors it. A mark is the event target when the
+     pointer is on it, so we defer to the mark's own (richer, titled) hover and skip the generic pick there. */
+  const svg = host.querySelector("svg");
+  const ring = svg.querySelector("circle.hoverpt");
+  let lastIdx = -1;
+  const nearest = (evt) => {
+    const box = svg.getBoundingClientRect();
+    if (!box.width || !box.height) return -1;
+    const vx = (evt.clientX - box.left) * (W / box.width), vy = (evt.clientY - box.top) * (H / box.height);
+    let bi = -1, bd = 1e18;
+    for (let i = 0; i < d.n; i++) {
+      const ex = px(d.wx[i]) - vx, ey = py(d.wy[i]) - vy, q = ex * ex + ey * ey;
+      if (q < bd) { bd = q; bi = i; }
+    }
+    return bd <= 22 * 22 ? bi : -1;   // only snap within a comfortable radius, so empty regions clear the hover
+  };
+  const clearRing = () => { ring.style.opacity = "0"; lastIdx = -1; };
+  svg.addEventListener("mousemove", (evt) => {
+    if (evt.target.closest("[data-mark]")) { clearRing(); return; }   // a mark owns its own hover
+    const i = nearest(evt);
+    if (i < 0) { clearRing(); return; }
+    ring.setAttribute("cx", px(d.wx[i]).toFixed(1)); ring.setAttribute("cy", py(d.wy[i]).toFixed(1));
+    ring.style.opacity = "1";
+    if (i !== lastIdx) { lastIdx = i; onPick({ index: i, role: "deal", title: "deal #" + i }); }
+  });
+  svg.addEventListener("mouseleave", clearRing);
+  svg.addEventListener("click", (evt) => {
+    if (evt.target.closest("[data-mark]")) return;
+    const i = nearest(evt);
+    if (i >= 0) onPick({ index: i, role: "deal", title: "deal #" + i }, true);
   });
 }
 
@@ -335,6 +370,15 @@ function regretChart(host, turns, oracle, onPick) {
   host.innerHTML = `<div class="chartwrap"><svg viewBox="0 0 ${W} ${H}" role="img"
     aria-label="Per-turn regret against the ${E(oracle)} oracle, in that oracle's value units.">${s.join("")}</svg></div>`;
   host.querySelectorAll("[data-turn]").forEach(n => n.addEventListener("click", () => onPick(Number(n.dataset.turn))));
+}
+
+/* A one-line provenance note naming the annotation vintage the post-hoc oracle values were read from
+   (`annotations` = the original scoring pass, `annotations_v1` = a re-annotated set such as the oracle
+   seat-binding fix), so an auditor always sees WHICH counterfactual they are reading. Empty when no counterfactual
+   oracle is present or the values came from the episode's own inline records rather than an annotation store. */
+function annProvenance(source, oracles) {
+  if (!source || !(oracles && oracles.length)) return "";
+  return `<div class="sub muted annprov">Rational-agent counterfactual (${oracles.map(E).join(", ")}) read from the <code>${E(source)}</code> annotation set.</div>`;
 }
 
 /* ------------------------------------------------------------------- transcript --- */
@@ -463,6 +507,7 @@ function drawChart() {
 function drawTurns() {
   const showCf = Boolean(ORACLE);
   document.getElementById("turns").innerHTML =
+    annProvenance(P.annotations_source, P.counterfactual_oracles) +
     P.turns.map(t => turnCard(t, G, ORACLE, { showCounterfactual: showCf })).join("");
   document.querySelectorAll("[data-deal]").forEach(a => a.addEventListener("click", ev => {
     ev.preventDefault();
@@ -532,24 +577,45 @@ if (G) {
 const byIdx = (side) => Object.fromEntries(side.turns.map(t => [t.idx, t]));
 const LT = byIdx(L), RT = byIdx(R);
 const oracleOf = (side) => side.counterfactual_oracles[0] || side.oracle_names[0] || "";
-function column(side, rows, which, cls) {
-  return rows.map((row, i) => {
+let SHOW_CF = false;   // per-turn rational-agent counterfactual column, off by default (the seat swap IS the contrast)
+
+function column(side, rows, which) {
+  const prov = SHOW_CF ? annProvenance(side.annotations_source, side.counterfactual_oracles) : "";
+  return prov + rows.map((row, i) => {
     const idx = row[which + "_idx"];
     const t = (which === "left" ? LT : RT)[idx];
     const head = i === C.divergence ? `<div class="divmark">first behavioural divergence — the two episodes are in different states from here on</div>` : "";
     if (t === undefined) return head + `<div class="turn"><div class="sub muted">round ${row.round} · ${E(row.phase)} · ${E(row.seat)} — this episode had already ended.</div></div>`;
-    const card = el(turnCard(t, G, oracleOf(which === "left" ? L : R), { showCounterfactual: false }));
+    const card = el(turnCard(t, G, oracleOf(which === "left" ? L : R), { showCounterfactual: SHOW_CF }));
     if (row.different) card.classList.add("divergent");
     return head + card.outerHTML;
   }).join("");
 }
-document.getElementById("col-left").innerHTML = column(L, C.aligned, "left");
-document.getElementById("col-right").innerHTML = column(R, C.aligned, "right");
-document.querySelectorAll("[data-deal]").forEach(a => a.addEventListener("click", ev => {
-  ev.preventDefault();
-  pickC({ index: Number(a.dataset.deal), title: "deal referenced from a transcript" });
-  document.getElementById("frontier").scrollIntoView({ behavior: "smooth", block: "start" });
-}));
+function bindCompareDealLinks() {
+  document.querySelectorAll("[data-deal]").forEach(a => a.addEventListener("click", ev => {
+    ev.preventDefault();
+    pickC({ index: Number(a.dataset.deal), title: "deal referenced from a transcript" });
+    document.getElementById("frontier").scrollIntoView({ behavior: "smooth", block: "start" });
+  }));
+}
+function renderColumns() {
+  document.getElementById("col-left").innerHTML = column(L, C.aligned, "left");
+  document.getElementById("col-right").innerHTML = column(R, C.aligned, "right");
+  bindCompareDealLinks();
+}
+renderColumns();
+
+/* Opt-in overlay of each turn's "what a rational agent would have done" column INSIDE the side-by-side. Off by
+   default because the seat swap is itself the rational-vs-LLM contrast, so the extra column is only wanted when
+   auditing per-turn. Injected next to the divergence-jump control so the static page needs no change. */
+const cfToggle = el(`<button id="cf-toggle" aria-pressed="false">Show each turn's rational-agent counterfactual</button>`);
+cfToggle.addEventListener("click", () => {
+  SHOW_CF = !SHOW_CF;
+  cfToggle.setAttribute("aria-pressed", String(SHOW_CF));
+  renderColumns();
+});
+const jumpBtn = document.getElementById("jump-divergence");
+(jumpBtn && jumpBtn.parentNode ? jumpBtn.parentNode : document.querySelector("main")).appendChild(cfToggle);
 /* Open the detail panel on something meaningful: whichever side closed a deal, else the Nash solution. */
 if (G) {
   const closed = [[R, "right", C.labels.right], [L, "left", C.labels.left]]

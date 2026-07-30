@@ -215,7 +215,7 @@ SELECTIONS = ("first", "largest-effect", "deal-flip")
 
 def pair_runs(left_run: str | Path, right_run: str | Path, *, pair_fields: tuple[str, ...] = DEFAULT_PAIR_KEY,
               limit: int | None = None, reconstruct: bool = True,
-              select: str = "first") -> tuple[list[dict], dict]:
+              select: str = "first", annotations_dirname: str = "annotations") -> tuple[list[dict], dict]:
     """Pair every episode of one run against its key-matched counterpart in another, and build a comparison
     payload for each.
 
@@ -228,11 +228,15 @@ def pair_runs(left_run: str | Path, right_run: str | Path, *, pair_fields: tuple
     only for the pairs that survive the limit. The report records the selection, because "the 6 largest movers" and
     "6 arbitrary pairs" support very different readings of the same page count.
 
+    ``annotations_dirname`` selects the per-run annotation subdirectory BOTH runs read their post-hoc oracles from
+    (default ``"annotations"``; e.g. ``"annotations_v1"`` — see :class:`~interlens.arena.viz.episode.RunDir`).
+
     Both runs' geometry caches are per-``RunDir``; the LEFT run's geometry is used for both sides of a pair so the
     frontier is built once and the two trajectories are provably drawn against the same numbers."""
     if select not in SELECTIONS:
         raise ValueError(f"unknown pair selection {select!r}; choose one of {list(SELECTIONS)}")
-    left_dir, right_dir = RunDir(left_run), RunDir(right_run)
+    left_dir = RunDir(left_run, annotations_dirname=annotations_dirname)
+    right_dir = RunDir(right_run, annotations_dirname=annotations_dirname)
     left_by_key, right_by_key = _group(left_dir, pair_fields), _group(right_dir, pair_fields)
     shared = sorted(set(left_by_key) & set(right_by_key), key=str)
     candidates, multiplicity = [], {}
@@ -308,5 +312,7 @@ def _payload_with_shared_geometry(run: RunDir, path: Path, geometry_from: RunDir
     paths = {"run": str(run.root), "episode": str(Path(path).resolve())}
     if run.annotation_paths.get(episode.get("episode_id")):
         paths["annotation"] = str(run.annotation_paths[episode["episode_id"]])
-    return episode_payload(episode, instance, run.annotations.get(episode.get("episode_id")),
-                           manifest=run.manifest, geometry=geo, reconstruct=reconstruct, paths=paths)
+    annotation = run.annotations.get(episode.get("episode_id"))
+    return episode_payload(episode, instance, annotation,
+                           manifest=run.manifest, geometry=geo, reconstruct=reconstruct, paths=paths,
+                           annotations_source=(run.annotations_dirname if annotation is not None else None))

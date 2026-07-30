@@ -253,7 +253,8 @@ def reconstruct_views(episode: dict, instance: dict) -> dict[int, list[dict]]:
 # -------------------------------------------------------------------------------- the payload --
 def episode_payload(episode: dict, instance: dict | None = None, annotation: dict | None = None, *,
                     manifest: dict | None = None, geometry: GameGeometry | None = None,
-                    reconstruct: bool = True, paths: dict | None = None) -> dict:
+                    reconstruct: bool = True, paths: dict | None = None,
+                    annotations_source: str | None = None) -> dict:
     """The complete render payload for one episode.
 
     Parameters
@@ -276,6 +277,12 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         :func:`reconstruct_views`) and mark them ``reconstructed``. ``False`` reports them as ``absent``.
     paths : dict, optional
         Absolute source paths to link from the page (``episode``, ``instance``, ``annotation``, ``run``).
+    annotations_source : str, optional
+        The name of the per-run annotation subdirectory the ``annotation`` record was read from (e.g.
+        ``"annotations"`` or ``"annotations_v1"``). Carried through to the page as provenance so an auditor can
+        see WHICH annotation vintage the post-hoc oracle values (above all the ``bestresponse`` counterfactual)
+        were read from — the v0 pass versus a re-annotated set such as the oracle seat-binding fix. ``None`` when
+        the counterfactual oracles came only from the episode's own inline records, not an annotation store.
     """
     geo = geometry if geometry is not None else GameGeometry.from_instance(instance or {})
     kinds = seat_kinds(episode, manifest)
@@ -360,6 +367,7 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         "oracle_names": oracle_names,
         "counterfactual_oracles": [n for n in oracle_names if n in COUNTERFACTUAL_ORACLES],
         "annotation_summary": (annotation or {}).get("summary"),
+        "annotations_source": annotations_source,
         "views": {"stored": stored_views, "reconstructed": len(rebuilt), "n_turns": len(turns),
                   "reconstructed_pre_retry": sum(1 for r in rows if r["view_source"] == RETRY_SOURCE)},
         "game": geo.to_json() if geo is not None else None,
@@ -373,16 +381,25 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
 
 # ------------------------------------------------------------------------------ run-dir loading --
 class RunDir:
-    """A run directory's three record stores, indexed for lookup: ``episodes/``, ``instances/``, ``annotations/``,
-    plus ``manifest.json``. Geometry is built lazily and CACHED per instance, so a run whose 120 episodes share 6
-    instances builds 6 utility matrices rather than 120."""
+    """A run directory's three record stores, indexed for lookup: ``episodes/``, ``instances/``, and the annotation
+    subdirectory named by ``annotations_dirname`` (``annotations/`` by default), plus ``manifest.json``. Geometry
+    is built lazily and CACHED per instance, so a run whose 120 episodes share 6 instances builds 6 utility
+    matrices rather than 120."""
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, annotations_dirname: str = "annotations"):
+        """``annotations_dirname`` selects which per-run subdirectory the post-hoc oracle annotations are read
+        from — mirrors ``analysis.campaign.load_campaign_rows``'s knob. The default ``"annotations"`` is the
+        original scoring pass and preserves the previous reads exactly. Point it at a re-annotated set (e.g.
+        ``"annotations_v1"``, written by the oracle seat-binding fix) to render the corrected ``bestresponse``
+        counterfactual instead of the contaminated v0 one; the chosen name is carried through to every page as
+        provenance. A directory that does not exist just yields no annotations (the page then reports the missing
+        counterfactual), so an absent re-annotation is graceful rather than fatal."""
         self.root = Path(root)
+        self.annotations_dirname = annotations_dirname
         self.episodes_dir = self.root / "episodes" if (self.root / "episodes").is_dir() else self.root
         self.instances, self.instance_paths = _index_records(self.root / "instances", "instance_id",
                                                             require="payload")
-        self.annotations, self.annotation_paths = _index_records(self.root / "annotations", "episode_id")
+        self.annotations, self.annotation_paths = _index_records(self.root / annotations_dirname, "episode_id")
         manifest = self.root / "manifest.json"
         self.manifest = json.loads(manifest.read_text()) if manifest.is_file() else None
         self._geometry: dict[str, GameGeometry | None] = {}
@@ -412,7 +429,8 @@ class RunDir:
             if table is not None:
                 paths[key] = str(table)
         return episode_payload(episode, instance, annotation, manifest=self.manifest,
-                               geometry=self.geometry(instance_id), reconstruct=reconstruct, paths=paths)
+                               geometry=self.geometry(instance_id), reconstruct=reconstruct, paths=paths,
+                               annotations_source=(self.annotations_dirname if annotation is not None else None))
 
 
 def _index_records(path: Path, key: str, require: str | None = None) -> tuple[dict[str, dict], dict[str, Path]]:

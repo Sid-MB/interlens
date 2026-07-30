@@ -74,16 +74,26 @@ def main(argv: list[str] | None = None) -> int:
              "Episodes recorded before per-turn view capture then show 'not recorded' instead of a reconstructed "
              "prompt. Use it when you want the pages to contain ONLY bytes that were actually recorded (an audit "
              "of what a model truly saw), or to skip the replay cost on a large export.")
+    ap.add_argument(
+        "--annotations-dir", default="annotations", metavar="NAME",
+        help="Per-run subdirectory to read the post-hoc oracle annotations from — above all the 'bestresponse' "
+             "counterfactual (what a rational agent would have done, and the per-turn regret). Default "
+             "'annotations' is the original scoring pass. Use 'annotations_v1' (written by the oracle "
+             "seat-binding fix's re-annotation) to render the CORRECTED counterfactual instead of the "
+             "contaminated one; the chosen name is shown on every page so an auditor sees which vintage they are "
+             "reading. A name that does not exist yields no counterfactual (reported as missing), not an error.")
     a = ap.parse_args(argv)
     reconstruct = not a.no_reconstruct_views
     if a.run:
-        m = export_run(a.run, a.out, limit=a.limit, reconstruct=reconstruct)
+        m = export_run(a.run, a.out, limit=a.limit, reconstruct=reconstruct,
+                       annotations_dirname=a.annotations_dir)
         print(f"[viz] {m['n_episodes']} episode page(s) -> {m['out_dir']}\n[viz] index: {m['index']}")
         for failure in m["failures"]:
             print(f"[viz] FAILED {failure['episode']}: {failure['error']}")
         return 0
     m = export_comparison(a.compare[0], a.compare[1], a.out, limit=a.limit,
-                          pair_fields=tuple(a.pair_key), reconstruct=reconstruct, select=a.select)
+                          pair_fields=tuple(a.pair_key), reconstruct=reconstruct, select=a.select,
+                          annotations_dirname=a.annotations_dir)
     r = m["report"]
     print(f"[viz] {m['n_comparisons']} comparison page(s) -> {m['out_dir']}\n[viz] index: {m['index']}")
     print(f"[viz] paired on {r['pair_fields']}: {r['n_left']} left / {r['n_right']} right episodes, "

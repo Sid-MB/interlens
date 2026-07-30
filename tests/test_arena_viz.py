@@ -506,3 +506,82 @@ def test_hostile_model_text_cannot_become_markup_or_script(episode):
     # the system-prompt audit renders server-side, so its escaping is visible in the document itself
     assert "&lt;script&gt;alert(3)" in head and "<script>alert(3)" not in head
     assert "<img src=x" not in head and "onerror=alert(1)" not in head
+
+
+# ------------------------------- annotation vintage / full-cloud hover / compare counterfactual toggle --
+def test_run_dir_selects_the_annotation_vintage_and_surfaces_it(episode, tmp_path):
+    """The visualizer must read whichever annotation subdirectory it is pointed at — default ``annotations``
+    unchanged, ``annotations_v1`` (the oracle seat-binding re-annotation) when asked — and the page must state
+    WHICH vintage it is showing so an auditor is never misled about which counterfactual they are reading.
+
+    Hermetic, mirroring ``tests/test_campaign_annotations_v1.py``: two annotation sets that DISAGREE on the
+    best-response values, with the episode's own inline oracle stripped so the annotation store is the sole
+    source. Asserts the knob selects the set, the default is unchanged, the provenance is carried into the page,
+    and a nonexistent set degrades gracefully rather than crashing or claiming a false provenance."""
+    ep, inst = episode
+    by_round_seat = {(t["round"], t["seat"]): t["idx"] for t in ep["turns"]}
+
+    def annotation(best_value):
+        turns = []
+        for r in ep["round_checkpoints"]:
+            if r.get("oracle") != "bestresponse":
+                continue
+            idx = r.get("turn_idx")
+            if idx is None or idx < 0:
+                idx = by_round_seat.get((r.get("round"), r.get("seat")))
+            rec = json.loads(json.dumps(r))
+            rec["best_value"] = best_value
+            rec["divergence"] = best_value - (rec.get("chosen_value") or 0.0)
+            turns.append({"turn_idx": idx, "oracle": {"bestresponse": rec}})
+        return {"episode_id": ep["episode_id"], "summary": {"total_regret": best_value}, "turns": turns}
+
+    stripped = json.loads(json.dumps(ep))
+    stripped["round_checkpoints"] = []          # the annotation store is now the SOLE source of the counterfactual
+    root = _write_run(tmp_path, "reann", [stripped], inst)
+    for name, value in (("annotations", 10.0), ("annotations_v1", 99.0)):
+        d = root / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{ep['episode_id']}.json").write_text(json.dumps(annotation(value)))
+    ep_path = viz.RunDir(root).episode_files()[0]
+
+    default = viz.RunDir(root).payload(ep_path)
+    v1 = viz.RunDir(root, annotations_dirname="annotations_v1").payload(ep_path)
+
+    assert default["annotations_source"] == "annotations"        # the default preserves the original reads
+    assert v1["annotations_source"] == "annotations_v1"
+    assert default["annotation_summary"]["total_regret"] == 10.0
+    assert v1["annotation_summary"]["total_regret"] == 99.0
+    dbest = [t["oracles"]["bestresponse"]["best_value"] for t in default["turns"] if "bestresponse" in t["oracles"]]
+    vbest = [t["oracles"]["bestresponse"]["best_value"] for t in v1["turns"] if "bestresponse" in t["oracles"]]
+    assert dbest and vbest, "both vintages must annotate at least one turn"
+    assert all(b == 10.0 for b in dbest) and all(b == 99.0 for b in vbest)
+    # the chosen vintage is carried into the document, so the provenance line can name it for an auditor
+    assert "annotations_v1" in viz.render_episode_html(v1)
+    # a nonexistent set is graceful: no counterfactual, no crash, and no false provenance claim
+    missing = viz.RunDir(root, annotations_dirname="annotations_v9").payload(ep_path)
+    assert missing["annotations_source"] is None and "bestresponse" not in missing["oracle_names"]
+
+
+def test_cli_accepts_the_annotations_dir_flag(two_runs, tmp_path):
+    """``--annotations-dir`` is accepted end to end and, pointed at an absent set, still produces pages (the
+    counterfactual is simply reported as missing) rather than failing the export."""
+    from interlens.arena.viz.__main__ import main
+    lrun, _ = two_runs
+    assert main(["--run", str(lrun), "--out", str(tmp_path / "ad"),
+                 "--annotations-dir", "annotations_v1"]) == 0
+    assert (tmp_path / "ad" / "index.html").exists()
+
+
+def test_frontier_chart_advertises_full_cloud_hover(payload):
+    """Every deal in the cloud is inspectable, not only the marked ones: the chart's accessible label says so and
+    the nearest-deal pointer handler is wired into the inlined browser layer (which draws the chart)."""
+    h = viz.render_episode_html(payload)
+    assert "Hover anywhere" in h                 # the chart aria-label advertises full-cloud inspection
+    assert "mousemove" in h                       # the nearest-deal handler ships in the page's script
+
+
+def test_comparison_page_ships_the_counterfactual_toggle(two_runs):
+    """The seat-swap page carries the opt-in per-turn rational-agent counterfactual toggle (off by default)."""
+    c = viz.pair_runs(*two_runs)[0][0]
+    h = viz.render_compare_html(c)
+    assert "cf-toggle" in h and "rational-agent counterfactual" in h.lower()

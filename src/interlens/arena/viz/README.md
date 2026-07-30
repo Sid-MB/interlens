@@ -45,7 +45,7 @@ With six parties a deal's utility vector has six dimensions, so there is no hone
 - **x — joint welfare**: mean normalized surplus. The utilitarian axis.
 - **y — worst-off party**: minimum normalized surplus. The egalitarian axis, and exactly what discrete Kalai-Smorodinsky maximizes.
 
-Up and to the right is better for everyone, so the frontier's image is the upper-right envelope. Marked on it: the play trajectory as numbered points, the deal that closed, the oracle's recommendation at each turn, the five solution concepts (NBS, KS, utilitarian, egalitarian, MNW), and each party's individually-best efficient deal. Hovering any deal — all `|D|` of them, not just the marked ones — opens its full per-party breakdown: utility, threshold, surplus, and share of that party's ideal.
+Up and to the right is better for everyone, so the frontier's image is the upper-right envelope. Marked on it: the play trajectory as numbered points, the deal that closed, the oracle's recommendation at each turn, the five solution concepts (NBS, KS, utilitarian, egalitarian, MNW), and each party's individually-best efficient deal. Hovering anywhere on the chart opens the **nearest** deal's full per-party breakdown — every one of the `|D|` deals is inspectable this way, not only the marked ones: utility, threshold, surplus, and share of that party's ideal. A marked deal keeps its own richer (titled) hover; clicking any deal pins it into the detail panel.
 
 The projection is lossy on purpose, and the code never uses it to decide anything: whether a deal is Pareto-optimal always comes from the exact `pareto_mask`, never from its position on the chart. A deal can therefore sit strictly inside the drawn envelope while being genuinely efficient.
 
@@ -63,9 +63,13 @@ Auditing what a model saw only means something if the page is honest about where
 
 `--no-reconstruct-views` disables reconstruction entirely, which is what you want when the pages must contain only bytes that were genuinely recorded.
 
+## Annotation vintage
+
+The per-turn rational-agent counterfactual (and its regret) is read from a run's annotation store. `--annotations-dir NAME` selects WHICH one: the default `annotations` is the original scoring pass, and a re-annotated set such as `annotations_v1` (written by the oracle seat-binding fix) carries the corrected best-response values. The Python API takes the same knob as `annotations_dirname=` on `RunDir`, `export_run`, `export_comparison`, `render_episode`, and `render_compare`. The chosen vintage is stated in a provenance line above the transcript, so a reader always knows which counterfactual they are auditing; a name that does not exist simply yields no counterfactual (reported as missing) rather than an error.
+
 ## Seat-swap comparison
 
-Pairs episodes on `(instance_id, seed, arm, cell)` — a key, not a heuristic; an unmatched episode is reported, never approximately matched. The page shows a table of paired deltas (right minus left), one shared frontier carrying both trajectories, and two synchronized transcript columns with the first behavioural divergence marked.
+Pairs episodes on `(instance_id, seed, arm, cell)` — a key, not a heuristic; an unmatched episode is reported, never approximately matched. The page shows a table of paired deltas (right minus left), one shared frontier carrying both trajectories, and two synchronized transcript columns with the first behavioural divergence marked. The columns show each turn's action by default; a **Show each turn's rational-agent counterfactual** toggle adds the per-turn oracle column (what a rational agent would have done, with the regret) inside each side — off by default because the seat swap is itself the rational-vs-LLM contrast.
 
 Turn slots are aligned on `(round, phase, seat)`, and after the divergence point the columns are deliberately presented as two independent trajectories rather than a line-by-line diff: from there on the two episodes are in different states, so the seats are answering different questions and a per-turn "diff" would be meaningless. Divergence is judged on *public* behaviour only (action, deal, offer, message) — two occupants that made the same move have not diverged just because one of them was a policy with no scratchpad to record.
 
