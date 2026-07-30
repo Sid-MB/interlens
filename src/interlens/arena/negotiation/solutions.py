@@ -293,10 +293,14 @@ def max_nash_welfare_index(U: np.ndarray, tau: np.ndarray) -> tuple[int, tuple[i
 
 # --- distance-to-frontier / distance-to-solution metrics -------------------------------------------------
 
-def _normalized_surplus(U: np.ndarray, tau: np.ndarray) -> np.ndarray:
+def normalized_surplus(U: np.ndarray, tau: np.ndarray) -> np.ndarray:
     """Per-deal nonnegative normalized surplus ``clip(x_i, 0) / b_i`` (``b_i`` = ideal over all deals), the
     scale-invariant coordinate the distance metrics live in. Below-threshold "gains" are clipped to 0 so they do
-    not count as progress."""
+    not count as progress.
+
+    Public because it is the ONE coordinate system in which deals are compared across parties on arbitrary
+    private scales: the distance metrics below and the frontier visualizer (``arena.viz``) must plot in the same
+    space, so they share this function rather than each re-deriving a normalizer."""
     X = U - tau
     b = X.max(axis=0)
     safe_b = np.where(b > 0, b, 1.0)
@@ -307,7 +311,7 @@ def distance_to_frontier(U: np.ndarray, tau: np.ndarray, index: int) -> float:
     """Euclidean distance, in normalized-surplus space, from deal ``index`` to the nearest Pareto-frontier deal
     (0 iff ``index`` is itself Pareto-optimal). Scale-invariant. This is the centipawn-loss-style denominator for
     per-turn divergence: how far a chosen deal sits below the efficient frontier."""
-    Xn = _normalized_surplus(U, tau)
+    Xn = normalized_surplus(U, tau)
     front = np.nonzero(pareto_mask(U))[0]
     diffs = Xn[front] - Xn[index]
     return float(np.sqrt((diffs * diffs).sum(axis=1)).min())
@@ -317,7 +321,7 @@ def distance_to_solution(U: np.ndarray, tau: np.ndarray, index: int, target_inde
     """Euclidean distance, in normalized-surplus space, between deal ``index`` and a reference solution deal
     ``target_index`` (e.g. the NBS or KS index). Scale-invariant; 0 iff the two deals give identical normalized
     surplus."""
-    Xn = _normalized_surplus(U, tau)
+    Xn = normalized_surplus(U, tau)
     diff = Xn[index] - Xn[target_index]
     return float(np.sqrt((diff * diff).sum()))
 
