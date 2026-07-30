@@ -483,3 +483,198 @@ def test_episode_pool_records_a_generation_failure_as_an_error_and_never_fabrica
 	assert ep.status == "error" and "out of memory" in ep.error
 	assert all(t.content != EMPTY_TURN_PLACEHOLDER for t in ep.turns)
 	assert gen_failures(ep) == []
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Heterogeneous (mixed) tables through the batched driver.
+#
+# A mixed table is ONE SeatRouter per episode fronting some model seats and some pure-Python policy seats. Keying
+# the co-stepped wave on the table object therefore put a single request in every group and batched nothing; the
+# engine keys on the participant that will actually SERVE each request (SeatRouter.participant_for), so the model
+# seats of every live episode — which share one cached model participant — collect into one real batch while
+# policy seats are looped. The bar is that this changes throughput and NOTHING else.
+# --------------------------------------------------------------------------------------------------------------
+
+class RecordingModel(Participant):
+	"""A deterministic shared model seat that records the batch widths the engine asked it for."""
+
+	self_role, others_role = "assistant", "user"
+
+	def __init__(self, text='```json\n{"action": "reject", "offer_id": "P1"}\n```'):
+		self.name, self.system_prompt, self.private_context = "recording_model", None, ()
+		self.text = text
+		self.widths: list[int] = []
+		self.single_calls = 0
+
+	def _msg(self):
+		return Message(self.name, self.text, {"n_tokens": 7, "n_tokens_in": 3})
+
+	def generate(self, view, **kwargs):
+		self.single_calls += 1
+		return self._msg()
+
+	def generate_batch(self, views, *, max_new_tokens=None, **kwargs):
+		self.widths.append(len(views))
+		return [self._msg() for _ in views]
+
+
+def _scorable_instances(n=2):
+	"""``n`` scorable instances, built ONCE. Shared between the two drivers of an identity comparison, because
+	``build_preset_instance`` mints a fresh random ``instance_id`` per call — rebuilding them per driver would make
+	the two runs incomparable (and quietly turn an identity assertion into a tautology or a false alarm)."""
+	from interlens.arena.negotiation.games import build_preset_instance
+	return [build_preset_instance("scorable", n_parties=6, n_issues=3, n_options=3, seed=k) for k in range(n)]
+
+
+def _mixed_jobs(model, n_seeds=6, arm="moves_only", instances=None, seat_factory=None):
+	"""Mixed-table jobs shaped like a campaign cell: a FRESH table per episode (policy seats hold per-episode
+	state, exactly as run.py builds them) over a model participant shared across episodes.
+
+	``seat_factory`` supplies a fresh model seat per episode instead of sharing ``model`` — for the case where the
+	seat itself carries state and the point is that its call ORDER is preserved."""
+	from interlens.arena.negotiation.sheets import GameSpec
+	from interlens.arena.scenarios.scorable import ScorableNegotiation
+	from interlens.arena.table import mixed_table
+	jobs = []
+	for inst, cfg in (instances if instances is not None else _scorable_instances()):
+		game = GameSpec.from_json(inst.payload)
+		for seed in range(n_seeds):
+			seat = seat_factory() if seat_factory is not None else model
+			jobs.append(dict(scenario=ScorableNegotiation(), instance=inst, arm=arm,
+			                 participant=mixed_table(game, {0: seat}, deadline=4), seed=seed, cfg=cfg))
+	return jobs
+
+
+def _fingerprint(episodes):
+	"""Turn-by-turn identity of a set of episodes, keyed so two drivers' outputs are directly comparable."""
+	return sorted(
+		(ep.instance_id, ep.seed, ep.arm, ep.status,
+		 tuple((t.idx, t.round, t.phase, t.seat, t.content) for t in ep.turns),
+		 json.dumps(ep.outcome, sort_keys=True, default=str))
+		for ep in episodes)
+
+
+def test_mixed_table_batches_model_seats_across_episodes(tmp_path):
+	"""The point of the change: model seats of different episodes share one batch. Keyed on the table object this
+	was impossible, because every episode holds its own table."""
+	model = RecordingModel()
+	pool = BatchedEpisodePool(EpisodeStore(tmp_path))
+	episodes = pool.run_pool(_mixed_jobs(model))
+	assert all(e.status == "done" for e in episodes)
+	assert model.widths, "the model must have been driven through its BATCHED entry point"
+	assert max(model.widths) > 1, "model seats of different episodes must share a batch"
+	# fewer model calls than model turns is exactly the win being bought
+	assert sum(model.widths) > len(model.widths)
+	assert pool.fabrication_report()["fabricated"] == 0
+
+
+def test_batched_and_looped_mixed_tables_produce_identical_episodes(tmp_path):
+	"""THE gate. Same jobs, same seeds, two drivers: the async pool (one generate at a time, through the router)
+	and the batched pool (grouped, addressing sub-participants directly). Every turn must match byte for byte."""
+	shared = _scorable_instances()
+	looped = run(EpisodePool(EpisodeStore(tmp_path / "looped")).run_pool(
+		_mixed_jobs(RecordingModel(), instances=shared)))
+	batched = BatchedEpisodePool(EpisodeStore(tmp_path / "batched")).run_pool(
+		_mixed_jobs(RecordingModel(), instances=shared))
+	assert len(looped) == len(batched) > 0
+	assert _fingerprint(looped) == _fingerprint(batched)
+
+
+def test_all_llm_grouping_is_unaffected(tmp_path):
+	"""Regression guard: a homogeneous table has no participant_for, so the wave still forms ONE group and the
+	existing co-stepping win is untouched."""
+	model = RecordingModel('```json\n{"answer": 1}\n```')
+	scen = InfoRelay()
+	inst = scen.generate_instance(0, 5)
+	jobs = [dict(scenario=scen, instance=inst, arm="team", participant=model, seed=s) for s in range(5)]
+	BatchedEpisodePool(EpisodeStore(tmp_path)).run_pool(jobs)
+	assert max(model.widths) == 5, "all five episodes' turns must still batch together"
+	assert model.single_calls == 0, "a homogeneous model table must never be driven one-at-a-time"
+
+
+def test_policy_only_table_runs_batched_without_a_batch_entry_point(tmp_path):
+	"""An all-policy table has no generate_batch anywhere. It must loop cleanly rather than raise AttributeError,
+	which is what routing any heterogeneous/rational table here used to do."""
+	from interlens.arena.negotiation.games import build_preset_instance
+	from interlens.arena.negotiation.sheets import GameSpec
+	from interlens.arena.scenarios.scorable import ScorableNegotiation
+	from interlens.arena.table import rational_table
+	inst, cfg = build_preset_instance("scorable", n_parties=6, n_issues=3, n_options=3, seed=0)
+	game = GameSpec.from_json(inst.payload)
+	jobs = [dict(scenario=ScorableNegotiation(), instance=inst, arm="moves_only",
+	             participant=rational_table(game, ["boulware", "conceder", "bayes-rational"], deadline=4),
+	             seed=s, cfg=cfg) for s in range(3)]
+	pool = BatchedEpisodePool(EpisodeStore(tmp_path))
+	episodes = pool.run_pool(jobs)
+	assert all(e.status == "done" for e in episodes) and all(e.turns for e in episodes)
+	assert pool.fabrication_report()["fabricated"] == 0
+
+
+def test_a_view_rewriting_table_is_never_bypassed(tmp_path):
+	"""A table that conditions the view per seat must keep the whole wave: it deliberately does NOT declare
+	participant_for, so the engine addresses the table, and its rewriting still runs. This is the advocate
+	pattern, and bypassing it would silently drop the planner conditioning."""
+	model = RecordingModel('```json\n{"answer": 1}\n```')
+
+	class Rewriting(Participant):
+		self_role, others_role = "assistant", "user"
+
+		def __init__(self):
+			self.name, self.system_prompt, self.private_context = "rewriting_table", None, ()
+			self.seen_whole_wave = []
+
+		def generate(self, view, *, seat=None, **kwargs):
+			return model.generate(view, seat=seat, **kwargs)
+
+		def generate_batch_with_seats(self, views, seats, *, max_new_tokens=None):
+			self.seen_whole_wave.append(len(views))
+			out = model.generate_batch(views, max_new_tokens=max_new_tokens)
+			for message in out:
+				message.metadata["rewritten"] = True
+			return out
+
+	table = Rewriting()
+	scen = InfoRelay()
+	inst = scen.generate_instance(0, 5)
+	jobs = [dict(scenario=scen, instance=inst, arm="team", participant=table, seed=s) for s in range(3)]
+	episodes = BatchedEpisodePool(EpisodeStore(tmp_path)).run_pool(jobs)
+	assert table.seen_whole_wave, "the rewriting table must receive the wave itself, not be bypassed"
+	assert max(table.seen_whole_wave) == 3
+	assert all(e.status == "done" for e in episodes)
+
+
+def test_provisional_probes_are_elicited_once_per_episode(tmp_path):
+	"""A heterogeneous episode has requests in several participant groups. Provisionals are gathered once per
+	episode across the whole wave, so it is probed once — not once per group."""
+	model = RecordingModel()
+	pool = BatchedEpisodePool(EpisodeStore(tmp_path))
+	episodes = pool.run_pool(_mixed_jobs(model, n_seeds=3, instances=_scorable_instances(1)))
+	for ep in episodes:
+		probes = [r for r in ep.round_checkpoints if r.get("oracle") is None]
+		keys = [(r["round"], r["seat"]) for r in probes]
+		assert len(keys) == len(set(keys)), f"duplicate provisional probe in {ep.episode_id}: {keys}"
+
+
+def test_stateful_policy_sees_the_same_call_order_batched_or_looped(tmp_path):
+	"""Grouping reorders calls ACROSS participants but never within one, so a policy carrying state (a seeded RNG,
+	a belief update) evolves identically either way. Asserted on a participant that records its own call order."""
+	class Counting(Participant):
+		"""A seat whose reply encodes how many times it has been called — so any reordering shows up in content."""
+
+		self_role, others_role = "assistant", "user"
+
+		def __init__(self):
+			self.name, self.system_prompt, self.private_context = "counting", None, ()
+			self.calls = 0
+
+		def generate(self, view, **kwargs):
+			self.calls += 1
+			return Message(self.name, '```json\n{"action": "reject", "offer_id": "P%d"}\n```' % self.calls,
+			               {"n_tokens": 5})
+
+	shared = _scorable_instances(1)
+	looped = run(EpisodePool(EpisodeStore(tmp_path / "l")).run_pool(
+		_mixed_jobs(None, n_seeds=4, instances=shared, seat_factory=Counting)))
+	batched = BatchedEpisodePool(EpisodeStore(tmp_path / "b")).run_pool(
+		_mixed_jobs(None, n_seeds=4, instances=shared, seat_factory=Counting))
+	assert _fingerprint(looped) == _fingerprint(batched)

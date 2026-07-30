@@ -92,6 +92,21 @@ class SeatRouter(Participant):
         ``seat`` comes from the engine (``SeatRequest.seat``). It is required: without it there is no reliable way
         to know which seat this turn is for, and guessing from the prompt text silently breaks whenever the
         wording changes — so a missing seat raises rather than picking a default."""
+        return self.participant_for(seat).generate(view, seat=seat, **kwargs)
+
+    def participant_for(self, seat: str | None):
+        """The sub-participant that owns ``seat``.
+
+        Declaring this method is how a table tells the batched engine "I am **pure dispatch** — you may address my
+        sub-participants directly". ``BatchedEpisodePool`` uses it to group a co-stepped wave by the participant
+        that will actually serve each request rather than by the table object, which is what makes a heterogeneous
+        lineup batchable at all: every episode gets its OWN table (policy seats hold per-episode state), so
+        grouping by table would put one request in each group and batch nothing, while grouping by owner collects
+        the model seats of every live episode — which DO share one cached model participant — into a single batch.
+
+        Only implement it on a table whose ``generate`` adds nothing of its own. A table that rewrites the view
+        per seat (a planner/advocate wrapper) must NOT expose this, or the engine would bypass that rewriting;
+        such a table supplies ``generate_batch_with_seats`` instead and keeps the whole wave."""
         if seat is None:
             raise ValueError(
                 f"SeatRouter {self.name!r} needs the seat identity; the caller passed none. The arena engine "
@@ -99,7 +114,7 @@ class SeatRouter(Participant):
                 "EpisodePool/BatchedEpisodePool.")
         if seat not in self.seats:
             raise KeyError(f"no participant assigned to seat {seat!r} (have {sorted(self.seats)})")
-        return self.seats[seat].generate(view, seat=seat, **kwargs)
+        return self.seats[seat]
 
 
 def policy_seat(policy_name: str, seat_idx: int, game: GameSpec, *, deadline: int,

@@ -129,6 +129,28 @@ def _is_transient_gpu_error(error: Exception) -> bool:
 	return ("out of memory" in text or "mha_graph" in text or "cudnn" in text or "is_good()" in text)
 
 
+def _serving_participant(participant, seat: str | None):
+	"""The participant that will actually generate ``seat``'s turn — the batching key for a co-stepped wave.
+
+	A **pure-dispatch** table (one declaring ``participant_for``, i.e. :class:`~interlens.arena.table.SeatRouter`)
+	is resolved to the sub-participant owning the seat, because addressing it directly is semantically identical to
+	going through the table and it is the only way a heterogeneous lineup batches at all: every episode holds its
+	own table, so keying on the table would put a single request in each group.
+
+	Anything else is returned unchanged — a plain model participant (there is nothing to resolve) and, crucially,
+	a table that REWRITES the view per seat, such as a planner/advocate wrapper. Those deliberately do not declare
+	``participant_for``, so the wave stays addressed to the wrapper and its per-seat conditioning still runs.
+	Resolution failures (an unknown seat) also fall back to the table, so the table's own error handling reports
+	the problem rather than this helper masking it."""
+	resolve = getattr(participant, "participant_for", None)
+	if resolve is None or seat is None:
+		return participant
+	try:
+		return resolve(seat)
+	except Exception:
+		return participant
+
+
 def _empty_cuda_cache() -> None:
 	"""Best-effort ``torch.cuda.empty_cache()`` — what makes a fragmentation-driven OOM worth retrying at all.
 	Silent no-op without torch or a GPU, so the engine stays importable on CPU-only machines."""
@@ -584,11 +606,17 @@ class BatchedEpisodePool:
 				wave.extend((run, request) for request in requests)
 			if not wave:
 				break
-			by_participant: dict[int, list[tuple[EpisodeRun, SeatRequest]]] = {}
+			# Group the wave by the participant that will actually SERVE each request, not by the table object
+			# fronting it. For a homogeneous table those are the same object. For a heterogeneous one they are
+			# not, and the difference is the whole point: every episode gets its OWN table (policy seats hold
+			# per-episode state), so grouping by table puts one request in each group and batches nothing,
+			# while grouping by owner collects the model seats of every live episode — which do share one
+			# cached model participant — into a single real batch. See ``SeatRouter.participant_for``.
+			by_participant: dict[int, tuple[object, list[tuple[EpisodeRun, SeatRequest]]]] = {}
 			for run, request in wave:
-				by_participant.setdefault(id(run.participant), []).append((run, request))
-			for pairs in by_participant.values():
-				participant = pairs[0][0].participant
+				target = _serving_participant(run.participant, request.seat)
+				by_participant.setdefault(id(target), (target, []))[1].append((run, request))
+			for participant, pairs in by_participant.values():
 				capped = [(r.turn_cap(q), q) for r, q in pairs]
 				# Unrecoverable failures are logged, the live episodes flushed as errored, and the exception
 				# re-raised inside _generate_batch (one home covering both the wave and the provisional probes),
@@ -608,24 +636,28 @@ class BatchedEpisodePool:
 						                 run.ep.episode_id, request.seat)
 						run.finalize(error=traceback.format_exc()[-2000:])
 						live.pop(run.ep.episode_id, None)
-			# provisional elicitations, batched per participant as well
-			for pairs in by_participant.values():
-				participant = pairs[0][0].participant
-				provisionals: list[tuple[EpisodeRun, SeatRequest]] = []
-				seen: set[str] = set()
-				for run, _request in pairs:
-					if run.ep.episode_id in seen or run.ep.episode_id not in live:
-						continue
-					seen.add(run.ep.episode_id)
-					for provisional in run.scenario.provisional_due(run.state):
-						provisional.episode_id = run.ep.episode_id
-						provisionals.append((run, provisional))
-				if provisionals:
-					messages = self._generate_batch(participant,
-					                                [(q.max_tokens, q) for _r, q in provisionals])
-					for (run, provisional), message in zip(provisionals, messages):
-						parsed, score = run.score_provisional(message)
-						run.record_provisional(provisional, message, parsed, score)
+			# Forked provisional elicitations. Gathered ONCE per episode across the whole wave — an episode with
+			# requests in several participant groups (any heterogeneous table) would otherwise be probed once per
+			# group — and then grouped by serving participant like the wave itself, so a probe for seat X is never
+			# sent to the participant that owns seat Y.
+			provisionals: list[tuple[EpisodeRun, SeatRequest]] = []
+			seen: set[str] = set()
+			for run, _request in wave:
+				if run.ep.episode_id in seen or run.ep.episode_id not in live:
+					continue
+				seen.add(run.ep.episode_id)
+				for provisional in run.scenario.provisional_due(run.state):
+					provisional.episode_id = run.ep.episode_id
+					provisionals.append((run, provisional))
+			by_prov: dict[int, tuple[object, list[tuple[EpisodeRun, SeatRequest]]]] = {}
+			for run, provisional in provisionals:
+				target = _serving_participant(run.participant, provisional.seat)
+				by_prov.setdefault(id(target), (target, []))[1].append((run, provisional))
+			for participant, group in by_prov.values():
+				messages = self._generate_batch(participant, [(q.max_tokens, q) for _r, q in group])
+				for (run, provisional), message in zip(group, messages):
+					parsed, score = run.score_provisional(message)
+					run.record_provisional(provisional, message, parsed, score)
 			for run in live.values():
 				run.save()
 			tick += 1
@@ -635,11 +667,19 @@ class BatchedEpisodePool:
 
 	def _call_batch(self, participant, requests: list[SeatRequest], cap: int) -> list[Message]:
 		"""The one place a participant's batched generate is actually invoked, preferring the seat-aware entry
-		point when the participant has one (a table fronting several seats needs each request's own seat)."""
+		point when the participant has one (a table fronting several seats needs each request's own seat).
+
+		A participant with NO batched entry point is driven one request at a time in order. That is what lets a
+		heterogeneous table co-step: a computable ``PolicyParticipant`` seat is pure Python with nothing to batch,
+		so looping it is both correct and already optimal, while the model seats of the same wave go through a real
+		batch. Order is preserved, so a policy holding state across calls (a seeded RNG, a belief update) sees
+		exactly the sequence it would have seen unbatched."""
 		views = [q.view for q in requests]
 		if hasattr(participant, "generate_batch_with_seats"):
 			return participant.generate_batch_with_seats(views, [q.seat for q in requests], max_new_tokens=cap)
-		return participant.generate_batch(views, max_new_tokens=cap)
+		if hasattr(participant, "generate_batch"):
+			return participant.generate_batch(views, max_new_tokens=cap)
+		return [participant.generate(q.view, seat=q.seat, max_new_tokens=cap) for q in requests]
 
 	def _generate_batch(self, participant, capped_requests: list[tuple[int, SeatRequest]],
 	                    *, wave_width: int | None = None) -> list[Message]:
