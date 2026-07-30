@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from ..actions import action_from_json
+from ..engine import gen_failures
 from .geometry import GameGeometry
 
 # Oracles whose verdict names a full counterfactual DEAL rather than only a value, i.e. the ones that can drive
@@ -291,6 +292,13 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
     stored_views = sum(1 for t in turns if t.get("view"))
     rebuilt = reconstruct_views(episode, instance) if (reconstruct and not stored_views and instance) else {}
 
+    # Turns whose text NO MODEL PRODUCED — the engine fabricated them after generation failed. Read through
+    # ``arena.engine.gen_failures`` rather than re-derived here, so the page and every audit share one detector
+    # (it reads the v1.2 ``gen_failed`` stamp and falls back to the legacy value signature on older episodes).
+    # Surfacing these is not cosmetic: the placeholder parses into a well-formed no-op, so an episode that is
+    # entirely fabricated otherwise renders as a clean transcript of a party that chose to say nothing.
+    fabricated = {row["idx"]: row for row in gen_failures(episode)}
+
     seat_party = {s.get("name"): i for i, s in enumerate(episode.get("seats") or [])}
     rows, trajectory, slots_seen = [], [], set()
     for t in turns:
@@ -327,6 +335,9 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
             "cap": t.get("cap"), "stop_reason": t.get("stop_reason"),
             "view": view, "view_source": source,
             "oracles": turn_oracles,
+            "gen_failed": idx in fabricated,
+            "gen_failure": (fabricated.get(idx) or {}).get("reason"),
+            "gen_failed_detected_by": (fabricated.get(idx) or {}).get("detected_by"),
         }
         if deal_index is not None and geo is not None:
             row["deal"] = geo.at(deal_index).to_json()
@@ -370,6 +381,10 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         "annotations_source": annotations_source,
         "views": {"stored": stored_views, "reconstructed": len(rebuilt), "n_turns": len(turns),
                   "reconstructed_pre_retry": sum(1 for r in rows if r["view_source"] == RETRY_SOURCE)},
+        # How much of this episode is not model behaviour at all. ``fraction`` of 0.0 is the only healthy value.
+        "generation": {"n_turns": len(turns), "fabricated": len(fabricated),
+                       "fraction": round(len(fabricated) / len(turns), 4) if turns else 0.0,
+                       "detected_by": sorted({r["detected_by"] for r in fabricated.values()}) or None},
         "game": geo.to_json() if geo is not None else None,
         "manifest": {k: (manifest or {}).get(k) for k in
                      ("run_name", "invocation", "table", "arms", "policies", "models", "oracles", "scaffold",

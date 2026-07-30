@@ -138,6 +138,10 @@ svg .sel{stroke:var(--ink);stroke-width:2.5}
 .meter u{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--ink)}
 .turn{border:1px solid var(--ring);border-radius:10px;background:var(--surface-1);padding:11px 13px;margin-bottom:11px}
 .turn.divergent{border-color:var(--s2);border-left-width:4px}
+.turn.fabricated{border-color:var(--critical);border-left-width:4px;background:color-mix(in oklab,var(--critical) 6%,var(--surface-1))}
+.badge.fabricated{color:var(--critical);border-color:var(--critical);font-weight:700}
+.fabnote{border-color:var(--critical);color:var(--ink)}
+.warn.danger{border-left-color:var(--critical)}
 .turn.sel{border-color:var(--s1);border-left-width:4px}
 .turnhd{display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap}
 .turnhd .who{font-weight:600}
@@ -414,14 +418,22 @@ function oracleColumn(t, game, oracle) {
 
 function turnCard(t, game, oracle, opts) {
   const a = t.action || {};
+  /* A fabricated turn is marked on the card itself, not only in the page banner: someone scrolling the
+     transcript must not read engine filler as something the model chose to say. */
+  const fabricatedNote = t.gen_failed
+    ? `<div class="gap fabnote"><b>This turn was not generated.</b> The engine substituted its placeholder text
+       after generation failed${t.gen_failure ? ` (${E(t.gen_failure)})` : ""}. It parses as a well-formed no-op,
+       so it looks like a deliberate pass — it is not. Detected by ${E(t.gen_failed_detected_by || "stamp")}.</div>`
+    : "";
   const dealLink = a.deal_index !== null && a.deal_index !== undefined
     ? `<div class="deal"><a href="#" data-deal="${a.deal_index}">${E(dealSummary(game, a.deal_index))}</a></div>`
     : (a.deal_named ? `<div class="deal neg">proposal did not resolve to a legal deal: ${E(JSON.stringify(a.deal_named))}</div>` : "");
   const w = t.deal_welfare;
   const oracles = Object.keys(t.oracles || {});
-  return `<article class="turn" id="turn-${t.idx}" data-turnidx="${t.idx}">
+  return `<article class="turn${t.gen_failed ? " fabricated" : ""}" id="turn-${t.idx}" data-turnidx="${t.idx}">
    <div class="turnhd">
-     <span class="who">[${t.idx}] ${E(t.seat)} <span class="badge ${E(t.kind)}">${E(t.kind)}</span></span>
+     <span class="who">[${t.idx}] ${E(t.seat)} <span class="badge ${E(t.kind)}">${E(t.kind)}</span>${
+       t.gen_failed ? ` <span class="badge fabricated" title="${E(t.gen_failure || "")}">NOT GENERATED</span>` : ""}</span>
      <span class="sub">${E(t.phase)} · round ${t.round}${t.n_tokens_out ? " · " + t.n_tokens_out + " tok out" : ""}${t.parse_ok ? "" : " · <b class='neg'>parse error</b>"}</span>
    </div>
    ${opts.showCounterfactual ? `<div class="cols">
@@ -429,6 +441,7 @@ function turnCard(t, game, oracle, opts) {
        ${w ? `<div class="pills"><span class="pill">USW <b>${N(w.usw, 1)}</b></span><span class="pill">worst-off <b class="${w.esw >= 0 ? "pos" : "neg"}">${SIGN(w.esw, 1)}</b></span>${w.n_below_threshold ? `<span class="pill"><b class="neg">${w.n_below_threshold}</b> below τ</span>` : ""}</div>` : ""}</div>
      ${oracleColumn(t, game, oracle)}</div>`
     : `<div class="act">${E(a.label || a.atype)}</div>${dealLink}`}
+   ${fabricatedNote}
    ${a.message ? `<div class="msg">${E(a.message)}</div>` : ""}
    ${a.syntax_error ? `<div class="gap neg">syntax error: ${E(a.syntax_error)}</div>` : ""}
    ${t.reasoning ? `<details><summary>Reasoning / scratchpad — provenance ${E(t.reasoning_provenance)}</summary>

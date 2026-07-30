@@ -87,10 +87,34 @@ def _tiles(payload: dict) -> str:
         tiles.append(_tile("below threshold", f"<span class='{'neg' if out.get('n_ir_violations') else 'zero'}'>"
                                              f"{out.get('n_ir_violations')}</span>",
                            _e(", ".join(out.get("ir_violations") or []) or "none")))
+    gen = payload.get("generation") or {}
+    if gen.get("fabricated"):
+        tiles.append(_tile("NOT generated", f"<span class='neg'>{gen['fabricated']}</span>",
+                           f"of {gen.get('n_turns')} turns — engine placeholders"))
     if summary.get("total_regret") is not None:
         tiles.append(_tile("total regret", _num(summary.get("total_regret"), 1),
                            f"mean {_num(summary.get('mean_regret'), 2)} / turn"))
     return f"<div class='tiles'>{''.join(tiles)}</div>"
+
+
+def _contamination_banner(payload: dict, label: str = "") -> str:
+    """A loud banner when any of this episode's turns were FABRICATED by the engine rather than generated.
+
+    This is the one thing on the page that must not be subtle. The substituted placeholder parses into a
+    well-formed no-op action, so a fabricated episode otherwise renders as a perfectly clean transcript of a party
+    that chose to stay quiet — which is exactly how a campaign cell reached 100% fabricated turns while reporting
+    ``status="done"`` and ``parse_ok=True`` throughout."""
+    gen = payload.get("generation") or {}
+    n = gen.get("fabricated") or 0
+    if not n:
+        return ""
+    who = f"{_e(label)}: " if label else ""
+    return (f"<div class='warn danger'><b>{who}{n} of {_e(gen.get('n_turns'))} turns "
+            f"({_num(100 * (gen.get('fraction') or 0), 1)}%) were NOT GENERATED.</b> The engine substituted a "
+            "placeholder after generation failed, so those turns are not model behaviour — they parse as a "
+            "well-formed no-op, which is why this is called out here rather than left to the reader to notice. "
+            f"Detected by {_e(', '.join(gen.get('detected_by') or []))}. Exclude these turns from any behavioural "
+            "measurement of this episode.</div>")
 
 
 def _meta_pills(payload: dict) -> str:
@@ -296,7 +320,7 @@ def render_episode_html(payload: dict) -> str:
  <div class='bar'>{selector}</div><div id='regret'></div></section>""" if oracles else "")
     body = f"""<h1>{_e(ep.get('scenario'))} — <code>{_e(ep.get('episode_id'))}</code></h1>
 {_meta_pills(payload)}{_source_links(payload)}
-{_tiles(payload)}{no_cf}
+{_tiles(payload)}{_contamination_banner(payload)}{no_cf}
 <div class='layout'><div>
 {chart}{regret}
 {_system_prompt_audit(payload)}
@@ -362,6 +386,7 @@ def render_compare_html(payload: dict) -> str:
 <div class='sub'>{_e(labels['left'])} <code>{_e(le.get('episode_id'))}</code> ({_e(le.get('model'))})
  vs {_e(labels['right'])} <code>{_e(re_.get('episode_id'))}</code> ({_e(re_.get('model'))})</div>
 {''.join(banner)}
+{_contamination_banner(L, labels['left'])}{_contamination_banner(R, labels['right'])}
 <section class='card'><h2>What changed, in numbers</h2>
  <div class='sub'>Paired deltas, right minus left. Green is the better direction for that metric; a dash means the
  metric was not recorded on one side.</div>

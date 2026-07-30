@@ -68,21 +68,41 @@ def _public_signature(turn: dict | None) -> tuple | None:
     return (a.get("atype"), a.get("deal_index"), a.get("offer"), (a.get("message") or "").strip())
 
 
+def _by_slot(turns: list[dict]) -> dict[tuple, dict]:
+    """Turns keyed by ``(round, phase, seat, occurrence)``.
+
+    The occurrence counter is load-bearing. A seat can legitimately take the SAME ``(round, phase, seat)`` slot
+    twice — the engine's one-retry rule re-asks after a malformed response — and keying on the slot alone silently
+    drops the first attempt, because the later turn overwrites it in the dict. That is exactly the turn worth
+    seeing: on the contaminated campaign cells the dropped attempt is the ENGINE-FABRICATED one, so a comparison
+    keyed without the counter under-reports the contamination it exists to show (measured: 24 of 24 fabricated
+    turns invisible on one page). Counting occurrences also pairs first-attempt with first-attempt and retry with
+    retry, rather than comparing one side's retry against the other side's original."""
+    seen: dict[tuple, int] = {}
+    out: dict[tuple, dict] = {}
+    for t in turns:
+        slot = _slot(t)
+        n = seen.get(slot, 0)
+        seen[slot] = n + 1
+        out[(*slot, n)] = t
+    return out
+
+
 def align(left: dict, right: dict) -> tuple[list[dict], int | None]:
     """Align two episode payloads slot by slot and locate the divergence point.
 
-    Returns ``(rows, divergence)`` where each row is ``{slot fields, left_idx, right_idx, different}`` — the turn
-    indices into each side's ``turns`` list, or ``None`` where only one side has that slot (one episode closed
-    early) — and ``divergence`` is the row position of the FIRST behavioural difference, or ``None`` if the two
-    episodes played identically throughout."""
-    lt = {_slot(t): t for t in left.get("turns") or []}
-    rt = {_slot(t): t for t in right.get("turns") or []}
+    Returns ``(rows, divergence)`` where each row is ``{round, phase, seat, attempt, left_idx, right_idx,
+    different}`` — the turn indices into each side's ``turns`` list, or ``None`` where only one side has that slot
+    (one episode closed early, or only one side needed a retry) — and ``divergence`` is the row position of the
+    FIRST behavioural difference, or ``None`` if the two episodes played identically throughout. ``attempt`` is 0
+    for a seat's first go at a slot and 1+ for an engine retry (see :func:`_by_slot`)."""
+    lt, rt = _by_slot(left.get("turns") or []), _by_slot(right.get("turns") or [])
     slots = list(lt) + [s for s in rt if s not in lt]
     slots.sort(key=lambda s: (min(lt.get(s, {}).get("idx", 10 ** 9), rt.get(s, {}).get("idx", 10 ** 9)), str(s)))
     rows = []
     for s in slots:
         l, r = lt.get(s), rt.get(s)
-        rows.append({"round": s[0], "phase": s[1], "seat": s[2],
+        rows.append({"round": s[0], "phase": s[1], "seat": s[2], "attempt": s[3],
                      "left_idx": (l or {}).get("idx"), "right_idx": (r or {}).get("idx"),
                      "left_kind": (l or {}).get("kind"), "right_kind": (r or {}).get("kind"),
                      "different": _public_signature(l) != _public_signature(r)})
@@ -210,7 +230,11 @@ def compare_payload(left: dict, right: dict, *, left_label: str = "A", right_lab
 #                      no-deal-on-both, showing nothing, while the same budget spent on the largest movers shows
 #                      the cases the aggregate effect is actually made of.
 #   "deal-flip"      — pairs where a deal closed on exactly one side; the qualitative transition, ranked by effect.
-SELECTIONS = ("first", "largest-effect", "deal-flip")
+#   "most-fabricated" — pairs ranked by how many turns the ENGINE fabricated rather than generated, on either
+#                      side. For showing what a generation-failure bug actually did to a run: pairing a
+#                      contaminated episode against its clean re-run makes the damage visible turn by turn, and
+#                      the arbitrary "first" pairs are usually the least illustrative ones.
+SELECTIONS = ("first", "largest-effect", "deal-flip", "most-fabricated")
 
 
 def pair_runs(left_run: str | Path, right_run: str | Path, *, pair_fields: tuple[str, ...] = DEFAULT_PAIR_KEY,
@@ -268,15 +292,24 @@ def pair_runs(left_run: str | Path, right_run: str | Path, *, pair_fields: tuple
 def _rank(candidates: list[tuple[Path, Path]], select: str) -> list[tuple[Path, Path]]:
     """Order candidate pairs by how much the outcome moved, reading only the stored ``outcome`` of each episode.
 
-    ``deal-flip`` keeps only the pairs where exactly one side closed a deal; ``largest-effect`` keeps everything.
-    Ties break on the file paths so the choice is deterministic across runs."""
+    ``deal-flip`` keeps only the pairs where exactly one side closed a deal; ``most-fabricated`` ranks by the count
+    of engine-fabricated turns across the pair and drops pairs with none (there is nothing to show);
+    ``largest-effect`` keeps everything. Ties break on the file paths so the choice is deterministic across runs."""
     import json
+    from ..engine import gen_failures
     scored = []
     for lpath, rpath in candidates:
         try:
-            lo = (json.loads(lpath.read_text()).get("outcome") or {})
-            ro = (json.loads(rpath.read_text()).get("outcome") or {})
+            left = json.loads(lpath.read_text())
+            right = json.loads(rpath.read_text())
         except (json.JSONDecodeError, OSError):
+            continue
+        lo, ro = (left.get("outcome") or {}), (right.get("outcome") or {})
+        if select == "most-fabricated":
+            n = len(gen_failures(left)) + len(gen_failures(right))
+            if not n:
+                continue
+            scored.append((-n, str(lpath), str(rpath), (lpath, rpath)))
             continue
         flip = bool(lo.get("deal")) != bool(ro.get("deal"))
         if select == "deal-flip" and not flip:

@@ -585,3 +585,100 @@ def test_comparison_page_ships_the_counterfactual_toggle(two_runs):
     c = viz.pair_runs(*two_runs)[0][0]
     h = viz.render_compare_html(c)
     assert "cf-toggle" in h and "rational-agent counterfactual" in h.lower()
+
+
+# ------------------------------------------------------------------- fabricated-turn visibility --
+def test_fabricated_turns_are_surfaced_and_impossible_to_miss(episode):
+    """A turn the ENGINE fabricated must be visible as such. Without this the page renders engine filler as a
+    party that chose to stay quiet, because the placeholder parses into a well-formed no-op — which is exactly how
+    a fully contaminated campaign cell read as clean."""
+    from interlens.arena.engine import EMPTY_TURN_PLACEHOLDER
+    ep, inst = episode
+    poisoned = json.loads(json.dumps(ep))
+    for t in poisoned["turns"][:2]:
+        # A genuine pre-v1.2 record: the value signature AND no stamp field at all. Dropping the key matters —
+        # an explicit `gen_failed: False` is authoritative and must NOT be re-screened by the legacy signature.
+        t["content"], t["n_tokens_out"], t["raw"] = EMPTY_TURN_PLACEHOLDER, 0, None
+        t.pop("gen_failed", None)
+    poisoned["turns"][2]["gen_failed"] = True           # and the explicit v1.2 stamp
+    poisoned["turns"][2]["gen_failure"] = "RuntimeError: CUDA error: out of memory"
+
+    payload = viz.episode_payload(poisoned, inst)
+    assert payload["generation"]["fabricated"] == 3
+    assert payload["generation"]["fraction"] > 0
+    assert sorted(payload["generation"]["detected_by"]) == ["legacy_signature", "stamp"]
+    flagged = [t for t in payload["turns"] if t["gen_failed"]]
+    assert [t["idx"] for t in flagged] == [0, 1, 2]
+    assert "out of memory" in flagged[2]["gen_failure"]
+
+    h = viz.render_episode_html(payload)
+    assert _missing(h, "were NOT GENERATED", "not model behaviour", "NOT generated") == []
+    assert "3" in h.split("NOT generated")[1][:120]      # the tile carries the count
+    # a clean episode says nothing about fabrication at all
+    assert "were NOT GENERATED" not in viz.render_episode_html(viz.episode_payload(ep, inst))
+
+
+def test_compare_page_labels_which_side_was_contaminated(two_runs, episode):
+    """The de-contamination view: a contaminated episode beside its clean counterpart must name which side is
+    which, per side, rather than showing one undifferentiated warning."""
+    from interlens.arena.engine import EMPTY_TURN_PLACEHOLDER
+    lrun, _ = two_runs
+    clean = viz.RunDir(lrun).payload(viz.RunDir(lrun).episode_files()[0])
+    ep, inst = episode
+    poisoned = json.loads(json.dumps(ep))
+    for t in poisoned["turns"][:2]:
+        t["content"], t["n_tokens_out"], t["raw"] = EMPTY_TURN_PLACEHOLDER, 0, None
+        t.pop("gen_failed", None)
+    dirty = viz.episode_payload(poisoned, inst)
+    h = viz.render_compare_html(viz.compare_payload(dirty, clean, left_label="contaminated", right_label="clean"))
+    assert "contaminated: 2 of" in h, "the banner must name the affected side"
+    assert h.count("were NOT GENERATED") == 1, "only the contaminated side gets a banner"
+
+
+def test_most_fabricated_selection_ranks_and_drops_clean_pairs(two_runs):
+    """`most-fabricated` exists to make a generation-failure bug visible; it must rank by fabricated count and
+    return nothing at all when no pair has any."""
+    lrun, rrun = two_runs
+    assert "most-fabricated" in viz.SELECTIONS
+    comparisons, report = viz.pair_runs(lrun, rrun, select="most-fabricated")
+    assert report["select"] == "most-fabricated"
+    # the fixture runs are clean, so there is deliberately nothing to show
+    assert comparisons == [] and report["n_comparisons"] == 0
+
+
+def test_alignment_keeps_retry_turns_instead_of_overwriting_them(episode):
+    """A seat can occupy the same (round, phase, seat) slot twice under the engine's one-retry rule. Keying the
+    alignment on the slot alone dropped the FIRST attempt — which on the contaminated campaign cells is precisely
+    the engine-fabricated turn, so the comparison hid the contamination it was built to show."""
+    ep, inst = episode
+    payload = viz.episode_payload(ep, inst)
+    slots = [(t["round"], t["phase"], t["seat"]) for t in payload["turns"]]
+    repeated = [s for s in set(slots) if slots.count(s) > 1]
+    assert repeated, "the fixture must contain a retry for this test to have teeth"
+
+    rows, _ = viz.align(payload, payload)
+    # every turn on each side reaches a row — nothing is silently swallowed
+    assert len([r for r in rows if r["left_idx"] is not None]) == len(payload["turns"])
+    assert len([r for r in rows if r["right_idx"] is not None]) == len(payload["turns"])
+    assert sorted(r["left_idx"] for r in rows) == sorted(t["idx"] for t in payload["turns"])
+    # retries are labelled as such, and first attempts pair with first attempts
+    assert any(r["attempt"] > 0 for r in rows)
+    assert all(r["left_idx"] == r["right_idx"] for r in rows), "an episode aligned to itself must pair exactly"
+
+
+def test_fabricated_turns_survive_into_the_comparison_view(episode):
+    """The de-contamination demo's core requirement: a contaminated episode's fabricated turns must be present in
+    the aligned rows, so they actually render in the transcript column."""
+    from interlens.arena.engine import EMPTY_TURN_PLACEHOLDER
+    ep, inst = episode
+    poisoned = json.loads(json.dumps(ep))
+    for t in poisoned["turns"]:
+        t["content"], t["n_tokens_out"], t["raw"] = EMPTY_TURN_PLACEHOLDER, 0, None
+        t.pop("gen_failed", None)
+    dirty = viz.episode_payload(poisoned, inst)
+    clean = viz.episode_payload(ep, inst)
+    fabricated = {t["idx"] for t in dirty["turns"] if t["gen_failed"]}
+    assert fabricated, "the poisoned episode must have fabricated turns"
+    rows, _ = viz.align(dirty, clean)
+    reached = {r["left_idx"] for r in rows if r["left_idx"] is not None}
+    assert fabricated <= reached, f"{len(fabricated - reached)} fabricated turn(s) missing from the comparison"

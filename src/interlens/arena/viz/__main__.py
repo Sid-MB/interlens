@@ -67,7 +67,10 @@ def main(argv: list[str] | None = None) -> int:
              "'largest-effect' takes the pairs whose primary score moved most between the two conditions, which is "
              "what you want for a spot check: it shows the cases the aggregate effect is made of. 'deal-flip' "
              "keeps only pairs where a deal closed on exactly one side, ranked by effect — the qualitative "
-             "transition. Ranking reads only stored outcomes, so it is free even over hundreds of pairs.")
+             "transition. 'most-fabricated' ranks by how many turns the ENGINE fabricated instead of generating "
+             "(dropping pairs with none): the right choice for showing what a generation-failure bug did to a run, "
+             "e.g. a contaminated cell against its clean re-run. Ranking reads only stored records, so it is free "
+             "even over hundreds of pairs.")
     ap.add_argument(
         "--no-reconstruct-views", action="store_true",
         help="Do not re-derive missing prompt views by replaying the episode through the scenario state machine. "
