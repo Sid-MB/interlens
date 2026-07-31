@@ -47,6 +47,15 @@ CLI (self-documenting, ``--help`` on every argument)::
 
 The pages are self-contained: inline CSS and JS, no network requests, no build step, light and dark aware. They
 open by double-click from a filesystem path.
+
+**Looking at them from a cluster node** — when the run is on a machine with no browser, drop ``--out`` (the
+pages go to a temporary directory) and add ``--serve`` (a stdlib HTTP server on a free port, which prints the URL
+and the ``ssh -L`` command to forward it)::
+
+    python -m interlens.arena.viz --run runs/p2_pilot --limit 5 --serve
+    python -m interlens.arena.viz --run runs/p2_pilot --serve --port 8899   # a standing tunnel's port
+
+See :func:`~interlens.arena.viz.serve.serve_directory` to do the same from Python.
 """
 from __future__ import annotations
 
@@ -56,10 +65,12 @@ from .episode import RETRY_SOURCE, RunDir, episode_payload, reconstruct_views, s
 from .export import export_comparison, export_episode, export_run, render_compare, render_episode
 from .geometry import DealGeometry, GameGeometry
 from .page import render_compare_html, render_episode_html, render_index_html
+from .serve import DEFAULT_HOST, make_server, serve_banner, serve_directory
 
 __all__ = [
-    "DEFAULT_PAIR_KEY", "DealGeometry", "GameGeometry", "RETRY_SOURCE", "RunDir", "SELECTIONS",
+    "DEFAULT_HOST", "DEFAULT_PAIR_KEY", "DealGeometry", "GameGeometry", "RETRY_SOURCE", "RunDir", "SELECTIONS",
     "align", "compare_payload", "episode_payload", "export_comparison", "export_episode", "export_run",
-    "focal_seats", "pair_key", "pair_runs", "reconstruct_views", "render_compare", "render_compare_html",
-    "render_episode", "render_episode_html", "render_index_html", "score_table", "seat_kinds",
+    "focal_seats", "make_server", "pair_key", "pair_runs", "reconstruct_views", "render_compare",
+    "render_compare_html", "render_episode", "render_episode_html", "render_index_html", "score_table",
+    "seat_kinds", "serve_banner", "serve_directory",
 ]

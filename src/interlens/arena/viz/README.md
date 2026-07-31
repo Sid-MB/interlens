@@ -16,9 +16,12 @@ python -m interlens.arena.viz --run /nlp/scr/$USER/ii_mats/rational_agents/p2_pi
 # seat-swap comparison: same instance + seed, one seat's occupant swapped
 python -m interlens.arena.viz --compare RUN_all_llm RUN_mixed \
                               --out .claude/products/episode_viz/seatswap --limit 4 --select deal-flip
+
+# your browser is not on the machine holding the run: render to a temp dir and serve it
+python -m interlens.arena.viz --run RUN_DIR --limit 5 --serve
 ```
 
-Every flag is documented in `--help`. From Python:
+`--out` is optional — without it the pages go to a fresh `$TMPDIR/interlens_viz_*` whose path is printed. `--serve` then hosts that directory over HTTP until Ctrl-C, printing the URL and the `ssh -L` command to forward the port (ephemeral by default; `--port N` to pin it). Every flag is documented in `--help`. From Python:
 
 ```python
 from interlens.arena import viz
@@ -27,6 +30,7 @@ viz.export_run(run_dir, out_dir, limit=3)                    # pages + index, re
 viz.export_comparison(left_run, right_run, out_dir, select="largest-effect")
 html = viz.render_episode(run_dir, episode_json_path)        # the HTML as a string, nothing written
 payload = viz.RunDir(run_dir).payload(episode_json_path)     # every number the page shows, as a dict
+viz.serve_directory(out_dir, port=0)                         # serve rendered pages until KeyboardInterrupt
 ```
 
 ## What a run directory needs
@@ -87,6 +91,7 @@ Where several seats were swapped at once (a `mixed` table against `all_llm` repl
 | `page.py` | pure `payload -> HTML`; renders every number server-side |
 | `assets.py` | the inline stylesheet and the browser layer (charts + transcript cards only) |
 | `export.py` | the file-writing layer: pages, indexes, manifests |
+| `serve.py` | `--serve`: a stdlib threading HTTP server over an output directory, plus the port-forward banner |
 | `__main__.py` | the CLI |
 
 The split keeps `page.py` testable without a filesystem and `geometry.py`/`compare.py` testable without HTML. Because every number is rendered in Python and only the charts and transcript cards are drawn in the browser, [`tests/test_arena_viz.py`](../../../../../tests/test_arena_viz.py) asserts on real structure and real values with no browser involved.

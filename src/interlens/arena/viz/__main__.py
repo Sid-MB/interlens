@@ -14,14 +14,24 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # [rational_agents: viz] 2026-07-29
+# [rational_agents: viz-serve] 2026-07-31
 
 """``python -m interlens.arena.viz`` — the self-documenting CLI for the episode visualizer."""
 from __future__ import annotations
 
 import argparse
+import tempfile
 
 from .compare import DEFAULT_PAIR_KEY, SELECTIONS
 from .export import export_comparison, export_run
+from .serve import serve_directory
+
+
+def scratch_out_dir() -> str:
+    """A fresh throwaway output directory under ``$TMPDIR``, used when ``--out`` is omitted. Not cleaned up on
+    exit: the pages must outlive the process for ``--serve`` to hand them to a browser, and a user who renders
+    without ``--out`` still gets a printed path they can open or copy later."""
+    return tempfile.mkdtemp(prefix="interlens_viz_")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,9 +57,24 @@ def main(argv: list[str] | None = None) -> int:
              "LLM seat (a reverse-mixed run vs its all-LLM baseline) or for any two runs that share an instance "
              "pool. LEFT is the reference; deltas are right minus left.")
     ap.add_argument(
-        "--out", required=True, metavar="OUT_DIR",
+        "--out", default=None, metavar="OUT_DIR",
         help="Output directory for the pages, 'index.html', and 'manifest.json'. Created if absent; existing "
-             "pages with the same episode ids are overwritten.")
+             "pages with the same episode ids are overwritten. OPTIONAL: omit it and the pages go to a fresh "
+             "temporary directory under $TMPDIR (printed on startup) — the right choice when you only want to "
+             "look, especially with --serve, and do not want to invent a save location for pages you will throw "
+             "away. Pass it when the pages are a deliverable you intend to keep or publish.")
+    ap.add_argument(
+        "--serve", action="store_true",
+        help="After rendering, serve the output directory over HTTP and block until Ctrl-C. Use it whenever the "
+             "run lives on a machine whose browser you cannot reach — the usual cluster case, where you are "
+             "ssh'd into a node and your browser is on your laptop. The startup message prints the URL and the "
+             "exact 'ssh -L' port-forward command with this host's name filled in. Omit it to just write the "
+             "pages and exit (they are self-contained files, so a copied-back directory opens by double-click).")
+    ap.add_argument(
+        "--port", type=int, default=0, metavar="N",
+        help="With --serve, the TCP port to listen on. Default 0 asks the OS for a free ephemeral port, which is "
+             "what you want on a shared node where a fixed port may already be taken. Pass a specific N when you "
+             "have a standing 'ssh -L' tunnel on that port and want the same URL every time.")
     ap.add_argument(
         "--limit", type=int, default=None, metavar="N",
         help="Render only the first N episodes (or N matched pairs), in sorted order. Omit to render everything: "
@@ -87,23 +112,30 @@ def main(argv: list[str] | None = None) -> int:
              "reading. A name that does not exist yields no counterfactual (reported as missing), not an error.")
     a = ap.parse_args(argv)
     reconstruct = not a.no_reconstruct_views
+    out = a.out
+    if out is None:
+        out = scratch_out_dir()
+        print(f"[viz] no --out given; rendering to a temporary directory: {out}")
     if a.run:
-        m = export_run(a.run, a.out, limit=a.limit, reconstruct=reconstruct,
+        m = export_run(a.run, out, limit=a.limit, reconstruct=reconstruct,
                        annotations_dirname=a.annotations_dir)
         print(f"[viz] {m['n_episodes']} episode page(s) -> {m['out_dir']}\n[viz] index: {m['index']}")
         for failure in m["failures"]:
             print(f"[viz] FAILED {failure['episode']}: {failure['error']}")
-        return 0
-    m = export_comparison(a.compare[0], a.compare[1], a.out, limit=a.limit,
-                          pair_fields=tuple(a.pair_key), reconstruct=reconstruct, select=a.select,
-                          annotations_dirname=a.annotations_dir)
-    r = m["report"]
-    print(f"[viz] {m['n_comparisons']} comparison page(s) -> {m['out_dir']}\n[viz] index: {m['index']}")
-    print(f"[viz] paired on {r['pair_fields']}: {r['n_left']} left / {r['n_right']} right episodes, "
-          f"{r['n_matched_keys']} shared key(s), {r['n_candidate_pairs']} candidate pair(s), "
-          f"rendered by select={r['select']}")
-    if r["unmatched_left"] or r["unmatched_right"]:
-        print(f"[viz] unmatched keys: {len(r['unmatched_left'])} left-only, {len(r['unmatched_right'])} right-only")
+    else:
+        m = export_comparison(a.compare[0], a.compare[1], out, limit=a.limit,
+                              pair_fields=tuple(a.pair_key), reconstruct=reconstruct, select=a.select,
+                              annotations_dirname=a.annotations_dir)
+        r = m["report"]
+        print(f"[viz] {m['n_comparisons']} comparison page(s) -> {m['out_dir']}\n[viz] index: {m['index']}")
+        print(f"[viz] paired on {r['pair_fields']}: {r['n_left']} left / {r['n_right']} right episodes, "
+              f"{r['n_matched_keys']} shared key(s), {r['n_candidate_pairs']} candidate pair(s), "
+              f"rendered by select={r['select']}")
+        if r["unmatched_left"] or r["unmatched_right"]:
+            print(f"[viz] unmatched keys: {len(r['unmatched_left'])} left-only, "
+                  f"{len(r['unmatched_right'])} right-only")
+    if a.serve:
+        serve_directory(out, port=a.port)
     return 0
 
 

@@ -22,7 +22,11 @@ import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from .conversation import Conversation, PromptLike
-from .participant.participants.model_participant import ModelParticipant
+# Import via the ``participants`` PACKAGE, not ``model_participant`` directly: the family subclasses register
+# themselves in ``ModelParticipant._REGISTRY`` at class-creation time, so ``for_model_type`` below only resolves
+# qwen/gemma/llama once their modules have executed. The top-level ``interlens`` package no longer imports them
+# eagerly (see its lazy export table), which makes this the load-bearing registration point.
+from .participant.participants import ModelParticipant
 
 # A model to build a participant from: an HF id (str), a local path (str / Path), or an already-loaded model.
 ModelLike = str | Path | PreTrainedModel

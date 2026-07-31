@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import socket
 from pathlib import Path
 
 import numpy as np
@@ -487,6 +488,81 @@ def test_cli_renders_a_run_and_a_comparison(two_runs, tmp_path, capsys):
     assert main(["--compare", str(lrun), str(rrun), "--out", str(tmp_path / "b")]) == 0
     assert "comparison page(s)" in capsys.readouterr().out
     assert (tmp_path / "a" / "index.html").exists() and (tmp_path / "b" / "index.html").exists()
+
+
+# [rational_agents: viz-serve] 2026-07-31 --- serving the rendered pages over HTTP ---
+
+def test_cli_renders_to_a_temp_dir_when_out_is_omitted(two_runs, capsys):
+    """``--out`` is optional: without it the pages go to a fresh $TMPDIR directory whose path is printed, so a
+    user who only wants to look never has to invent a save location. No --serve required for this."""
+    from interlens.arena.viz.__main__ import main
+    lrun, _ = two_runs
+    assert main(["--run", str(lrun), "--limit", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "temporary directory" in out
+    scratch = Path(re.search(r"temporary directory: (\S+)", out).group(1))
+    assert scratch.name.startswith("interlens_viz_")
+    assert (scratch / "index.html").exists(), "the temp dir must actually hold the rendered pages"
+
+
+def test_scratch_out_dirs_are_fresh_each_time():
+    from interlens.arena.viz.__main__ import scratch_out_dir
+    a, b = scratch_out_dir(), scratch_out_dir()
+    assert a != b and Path(a).is_dir() and Path(b).is_dir()
+
+
+def test_server_hands_the_rendered_bytes_to_an_http_client(two_runs, tmp_path):
+    """The --serve payload check, without a browser: bind on port 0 (a free ephemeral port), fetch
+    /index.html over real HTTP from a client thread, and confirm the bytes are the rendered file."""
+    import threading
+    from urllib.request import urlopen
+    lrun, _ = two_runs
+    out = tmp_path / "served"
+    viz.export_run(lrun, out, limit=1)
+
+    server = viz.make_server(out, port=0)
+    port = server.server_address[1]
+    assert port != 0, "port 0 must be resolved to a real ephemeral port at bind time"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/index.html", timeout=10) as response:
+            assert response.status == 200
+            assert response.read() == (out / "index.html").read_bytes()
+    finally:
+        server.shutdown()
+        thread.join(timeout=10)
+        server.server_close()
+    assert not thread.is_alive(), "shutdown() must stop the serving thread"
+
+
+def test_serve_banner_gives_the_url_and_a_usable_port_forward():
+    """The banner is the whole point of --serve on a cluster: it must name a real host, the URL to open, and an
+    'ssh -L' line that forwards the SAME port the server actually bound."""
+    banner = viz.serve_banner("/tmp/pages", 8899)
+    hostname = socket.getfqdn()
+    assert f"http://{hostname}:8899/index.html" in banner
+    assert f"ssh -L 8899:localhost:8899 {hostname}" in banner
+    assert "http://localhost:8899/index.html" in banner
+    assert "all interfaces" in banner, "binding 0.0.0.0 must be stated, never silent"
+
+
+def test_serve_directory_exits_cleanly_on_keyboard_interrupt(tmp_path, capsys, monkeypatch):
+    """Ctrl-C is the documented way to stop serving, so it must return normally (CLI exit 0) rather than
+    propagate, and must close the socket on the way out."""
+    closed = []
+    real_make_server = viz.make_server
+
+    def interrupting_server(directory, port=0, host=viz.DEFAULT_HOST):
+        server = real_make_server(directory, port=port, host=host)
+        monkeypatch.setattr(server, "serve_forever", lambda: (_ for _ in ()).throw(KeyboardInterrupt))
+        monkeypatch.setattr(server, "server_close", lambda: closed.append(True))
+        return server
+
+    monkeypatch.setattr("interlens.arena.viz.serve.make_server", interrupting_server)
+    viz.serve_directory(tmp_path)                       # must NOT raise
+    assert closed == [True]
+    assert "stopped" in capsys.readouterr().out
 
 
 def test_hostile_model_text_cannot_become_markup_or_script(episode):

@@ -19,8 +19,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, overload
 
-import torch
-
 from .participant import Participant
 from .functional import Functional, sugar_fields
 from .message import Message
@@ -36,6 +34,8 @@ from .interp.capture import CaptureRequest
 from .hooks.message_hook import HookAction
 
 if TYPE_CHECKING:
+	import torch
+
 	from .factories import ModelLike
 	from .runner import RunReport
 
@@ -175,7 +175,7 @@ class Conversation(Functional):
 
 	@classmethod
 	def from_models(cls, models: tuple[ModelLike, ...], names: tuple[str, ...] = ("a", "b"),
-	                device: str | torch.device = "cuda", dtype: torch.dtype = torch.bfloat16,
+	                device: str | torch.device | None = None, dtype: torch.dtype | None = None,
 	                shared_context: str | None = None, shared_system_prompt: str | None = None,
 	                prompt: PromptLike = None, **gen_kwargs) -> "Conversation":
 		"""Scaffold a conversation directly from a tuple of ``models`` — each an HF id or an already-loaded
@@ -187,10 +187,15 @@ class Conversation(Functional):
 		Scenario framing is available here too: ``shared_system_prompt`` (instructions, system role) and
 		``shared_context`` (a neutral ``moderator``-voiced opening seen by everyone). ``prompt`` is a separate
 		convenience for a *participant*-voiced opener (a ``str`` is attributed to the last participant). See that
-		function for the details."""
+		function for the details.
+
+		``device`` / ``dtype`` default to ``None`` here purely so this signature holds no second copy of the real
+		defaults (``"cuda"`` / ``bfloat16``, which live on ``conversation_from_models``) — and so importing this
+		module does not need ``torch`` just to evaluate a default. ``None`` means "leave it to the factory"."""
 		from .factories import conversation_from_models  # lazy: factories imports this module
 
-		return conversation_from_models(models, names=names, device=device, dtype=dtype,
+		loading = {k: v for k, v in (("device", device), ("dtype", dtype)) if v is not None}
+		return conversation_from_models(models, names=names, **loading,
 		                                shared_context=shared_context, shared_system_prompt=shared_system_prompt,
 		                                prompt=prompt, **gen_kwargs)
 
