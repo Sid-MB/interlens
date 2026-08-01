@@ -31,6 +31,8 @@ from .bridge import soft_embed, gumbel_softmax_tokens, LinearBridge
 from .routing import (RoutingCapture, RoutingStats, RouterSteeringSpec, capture_router_logits, routing_stats,
                       message_token_spans, moe_num_experts, moe_topk, moe_layer_indices, kl_divergence,
                       js_divergence, topk_expert_overlap)
+from .softtokens import VirtualTokenInjector, span_pooled_residuals
+from .pooling import span_pool, group_pool, Pool, Span
 
 __all__ = [
 	"ActivationCache",
@@ -65,4 +67,10 @@ __all__ = [
 	"kl_divergence",
 	"js_divergence",
 	"topk_expert_overlap",
+	"VirtualTokenInjector",
+	"span_pooled_residuals",
+	"span_pool",
+	"group_pool",
+	"Pool",
+	"Span",
 ]
