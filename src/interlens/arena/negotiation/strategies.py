@@ -869,5 +869,14 @@ ZOO = {
     "greedy-holdout": GreedyHoldoutPolicy,
     # declared-commitment variants (identical behaviour, announced up front — chat arms only)
     "greedy-holdout-declared": DeclaredGreedyHoldoutPolicy,
-    "demand-90-declared": DemandFractionPolicy,
 }
+
+# The declared demand ladder, one registered name per demand level. The grid is chosen against the GEOMETRY of
+# the games rather than against intuition: in the 6-party / 5-issue / 3-option family these experiments use,
+# the number of deals that clear `frac` x own-max AND remain individually rational for every seat roughly
+# halves per 0.1 step — 29 deals at 0.50, 17 at 0.65, 5.7 at 0.80, 2.5 at 0.90 (with 5 of 24 games offering
+# none at all at 0.90). So 0.90 is not a "demand with a margin" at all, it is a hold-out by construction, and
+# a ladder needs the lower rungs to find where the extraction/closure trade-off actually bends.
+for _pct in (50, 65, 80, 90):
+    ZOO[f"demand-{_pct}-declared"] = (lambda pct=_pct: DemandFractionPolicy(accept_frac=pct / 100))
+del _pct
