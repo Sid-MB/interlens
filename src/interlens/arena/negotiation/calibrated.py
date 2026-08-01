@@ -139,8 +139,11 @@ class AcceptanceCurve:
         ascending interior edges), ``p`` (K probabilities, or a list of K-wide rows when ``r_edges`` is given)
         and optional ``r_edges``.
     rounds_feature : str
-        What ``r`` means in the logistic forms: ``"frac_elapsed"`` = ``1 - rounds_left/total`` in ``[0, 1]``
-        (deadline pressure rising to 1, the scale-free default), or ``"rounds_left"`` = the raw integer count.
+        What ``r`` means in the logistic forms. ``"rounds_left"`` (the default) = the raw integer count of
+        rounds remaining AFTER the current one, 0 on the forced final — this is the fitting lane's convention
+        and the default is deliberately the same as theirs, because a curve fitted on raw counts and evaluated
+        on a fraction is wrong by a silent rescaling that nothing would raise on.
+        ``"frac_elapsed"`` = ``1 - rounds_left/total`` in ``[0, 1]``, for a fit that chose scale-free pressure.
         Ignored by ``step``/``logistic``.
     p_min, p_max : float
         Clamp on the returned probability. The default floor/ceiling of 0/1 leaves the curve untouched; a small
@@ -158,7 +161,7 @@ class AcceptanceCurve:
 
     form: str
     params: dict = field(default_factory=dict)
-    rounds_feature: str = "frac_elapsed"
+    rounds_feature: str = "rounds_left"
     p_min: float = 0.0
     p_max: float = 1.0
     n_events: int = 0
@@ -317,6 +320,77 @@ class AcceptanceCurveSet:
                    provenance=blob.get("provenance", {}))
 
     @classmethod
+    def from_fit_artifact(cls, path: str | Path, *, spec: str = "base") -> "AcceptanceCurveSet":
+        """Load the acceptance-curve fitting lane's NATIVE artifact
+        (``schema == "rational_agents/acceptance_curves/v1"``), as written by
+        ``experiments/rational_agents/self_benefit/fit_acceptance.py``.
+
+        That artifact is organised around the fit rather than around the consumer: each responder carries
+        several candidate ``specs`` plus validation blocks, coefficients are a flat
+        ``[intercept, *slopes]`` list, and the regressors are named in ``base_features``. This adapter reads it
+        as-is rather than asking the fitting lane to reshape its output — the artifact of record should stay
+        the fitter's own.
+
+        Parameters
+        ----------
+        path : str | Path
+            The fitted JSON.
+        spec : str
+            Which candidate fit to consume. ``"base"`` (``logit p = b0 + b_z z + b_r rounds_left``) is the
+            preregistered one and the default; ``"interaction"`` adds ``z * rounds_left``. Selecting a
+            non-preregistered spec is a deliberate act and is recorded in ``provenance["spec"]``.
+
+        The fit's ``z`` is ``(u_i(d) - tau_i) / (max_d' u_i(d') - tau_i)`` — this module's ``surplus_norm`` —
+        and its ``rounds_left`` is the count AFTER the current round. Both are asserted against the artifact's
+        own ``base_features`` so a change of regressors upstream fails loudly here instead of being evaluated
+        under the old meaning.
+        """
+        blob = json.loads(Path(path).read_text())
+        schema = blob.get("schema", "")
+        if not schema.startswith("rational_agents/acceptance_curves/"):
+            raise ValueError(f"{path}: not an acceptance-curve fit artifact (schema={schema!r})")
+        models: dict[str, AcceptanceCurve] = {}
+        for key, block in blob.get("models", {}).items():
+            fit = block.get("specs", {}).get(spec)
+            if fit is None:
+                raise ValueError(f"{path}: responder {key!r} has no {spec!r} spec")
+            feats, coef = list(fit.get("features", [])), list(fit["coef"])
+            if len(coef) != len(feats) + 1:
+                raise ValueError(f"{path}: responder {key!r} has {len(coef)} coefficients for "
+                                 f"{len(feats)} features (expected intercept + one per feature)")
+            if feats == ["z", "rounds_left"]:
+                params = {"a": coef[0], "b": coef[1], "c": coef[2]}
+                form = "logistic_rounds"
+            elif feats == ["z"]:
+                params, form = {"a": coef[0], "b": coef[1]}, "logistic"
+            elif feats == []:
+                params, form = {"a": coef[0], "b": 0.0}, "logistic"
+            else:
+                raise ValueError(f"{path}: responder {key!r} uses regressors {feats}, which this policy does "
+                                 "not know how to evaluate; extend AcceptanceCurve before consuming it")
+            val = block.get("validation", {}).get(spec, {}).get("logo_cv", {})
+            models[key] = AcceptanceCurve(
+                form=form, params=params, rounds_feature="rounds_left",
+                n_events=int(block.get("n_events", 0)), n_accepts=int(block.get("n_accept", 0)),
+                heldout_ece=val.get("ece"),
+                notes=(f"spec={spec} brier={val.get('brier')} n_games={block.get('n_games')} "
+                       f"separated={fit.get('separated')} converged={fit.get('converged')}"))
+            if fit.get("separated"):
+                # A separated fit has no finite optimum; the ridge is holding the coefficients down. The
+                # numbers are usable but the reader must be told, so it goes in the notes AND is surfaced here.
+                print(f"[calibrated] WARNING: fit for {key!r} reports separated=true (ridge-stabilised)")
+        fallback = blob.get("fallback_model")
+        return cls(z_space="surplus_norm", curves=models,
+                   default=models.get(fallback) if fallback else None,
+                   provenance={"artifact": str(path), "schema": schema, "spec": spec,
+                               "generated_at": blob.get("generated_at"),
+                               "invocation": blob.get("invocation"),
+                               "events_path": blob.get("events_path"),
+                               "population": blob.get("population"),
+                               "fallback_model": fallback,
+                               "n_events_total": blob.get("n_events_total")})
+
+    @classmethod
     def step(cls, z_space: str = "surplus") -> "AcceptanceCurveSet":
         """The degenerate set every model of which is the Bayesian agent's own step model. Exists for the
         equivalence regression test and as a sanity control cell (a "calibrated" run that must reproduce the
@@ -393,7 +467,13 @@ class CalibratedRationalPolicy(BayesianRationalPolicy):
             return super()._accept_prob_table(state, tables)
         self.last_path = "calibrated"
         total = int(getattr(state, "deadline", 0)) + 1
-        r_left = max(int(state.deadline) - int(state.round) + 1, 1)
+        # The FIT's convention: rounds remaining AFTER this one, 0 on the forced final. This is deliberately
+        # NOT the `max(deadline - round + 1, 1)` used by the inherited optimal-stopping code — that one counts
+        # the current round and floors at 1 because a reservation over zero remaining rounds is meaningless.
+        # They differ by one, and on the forced final by the difference between 0 and 1, which is exactly the
+        # turn where deadline pressure matters most. Evaluating a fitted coefficient against the wrong one is
+        # a silent off-by-one in every acceptance probability, so the two are kept visibly separate.
+        r_left = max(int(state.deadline) + 1 - int(state.round), 0)
         ap = super()._accept_prob_table(state, tables)
         for opp in state.opponents:
             z = self.curves.z_of(tables.utility, tables.thresholds, int(opp))

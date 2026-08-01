@@ -99,7 +99,8 @@ def test_logistic_is_overflow_safe_at_extreme_z():
 def test_rounds_feature_frac_elapsed_rises_toward_the_deadline():
     """With c > 0 the same offer is accepted more readily late — the deadline-pressure story the fit is
     supposed to capture."""
-    c = AcceptanceCurve(form="logistic_rounds", params={"a": 0.0, "b": 1.0, "c": 3.0})
+    c = AcceptanceCurve(form="logistic_rounds", params={"a": 0.0, "b": 1.0, "c": 3.0},
+                        rounds_feature="frac_elapsed")
     early = c.prob(np.array([0.0]), rounds_left=10, total_rounds=10)
     late = c.prob(np.array([0.0]), rounds_left=1, total_rounds=10)
     assert late > early
@@ -189,6 +190,110 @@ def test_json_without_z_space_is_rejected(tmp_path):
     p.write_text(json.dumps({"models": {}}))
     with pytest.raises(ValueError):
         AcceptanceCurveSet.from_json(p)
+
+
+def _fit_artifact(tmp_path, *, key=f"{MODEL}:thinking-off", separated=False):
+    """A minimal but faithful copy of what ``self_benefit/fit_acceptance.py`` writes."""
+    blob = {
+        "schema": "rational_agents/acceptance_curves/v1",
+        "generated_at": "2026-08-01T05:00:00",
+        "invocation": "python -m self_benefit.fit_acceptance ...",
+        "events_path": "/nlp/scr/.../events.jsonl", "population": "llm",
+        "link": "logistic", "base_features": ["z", "rounds_left"],
+        "fallback_model": "pooled-llm", "n_events_total": 2000,
+        "models": {
+            key: {"n_events": 900, "n_accept": 400, "n_games": 6,
+                  "specs": {"base": {"features": ["z", "rounds_left"], "coef": [0.4, 2.5, -0.3],
+                                     "separated": separated, "converged": True},
+                            "interaction": {"features": ["z", "rounds_left", "z*rounds_left"],
+                                            "coef": [0.4, 2.5, -0.3, 0.1]}},
+                  "validation": {"base": {"logo_cv": {"brier": 0.19, "ece": 0.03}}}},
+            "pooled-llm": {"n_events": 2000, "n_accept": 950, "n_games": 6,
+                           "specs": {"base": {"features": ["z", "rounds_left"], "coef": [0.2, 2.0, -0.2],
+                                              "separated": False, "converged": True}},
+                           "validation": {"base": {"logo_cv": {"brier": 0.21, "ece": 0.05}}}},
+        },
+    }
+    p = tmp_path / "acceptance_curves.json"
+    p.write_text(json.dumps(blob))
+    return p
+
+
+def test_fit_artifact_adapter_reads_the_fitting_lane_schema(tmp_path):
+    """The consumer adapts to the fitter's native artifact, so the artifact of record stays the fitter's own."""
+    cs = AcceptanceCurveSet.from_fit_artifact(_fit_artifact(tmp_path))
+    assert cs.z_space == "surplus_norm"                 # the fit's z IS this module's surplus_norm
+    c = cs.for_model(f"{MODEL}:thinking-off")
+    assert c.form == "logistic_rounds" and c.rounds_feature == "rounds_left"
+    assert (c.params["a"], c.params["b"], c.params["c"]) == (0.4, 2.5, -0.3)
+    assert c.n_events == 900 and c.n_accepts == 400 and c.heldout_ece == 0.03
+    assert cs.for_model("never-fitted-model").params["a"] == 0.2      # falls back to pooled-llm
+    assert cs.provenance["spec"] == "base" and cs.provenance["events_path"].endswith("events.jsonl")
+
+
+def test_fit_artifact_adapter_evaluates_to_the_fitters_own_arithmetic(tmp_path):
+    """The whole point of the adapter: P(accept) here must equal sigmoid(b0 + b_z z + b_r rounds_left) as the
+    fitter defines it. A rescaled or reordered regressor would pass every other test in this file."""
+    cs = AcceptanceCurveSet.from_fit_artifact(_fit_artifact(tmp_path))
+    c = cs.for_model(f"{MODEL}:thinking-off")
+    z, rl = 0.3, 2
+    assert c.prob(np.array([z]), rounds_left=rl)[0] == pytest.approx(
+        1.0 / (1.0 + np.exp(-(0.4 + 2.5 * z + -0.3 * rl))))
+
+
+def test_fit_artifact_rejects_unknown_regressors(tmp_path):
+    """If the fitting lane changes its regressors, this must fail loudly rather than evaluate new coefficients
+    under the old meaning."""
+    blob = json.loads(_fit_artifact(tmp_path).read_text())
+    blob["models"][f"{MODEL}:thinking-off"]["specs"]["base"] = {
+        "features": ["z", "opponent_count"], "coef": [0.1, 0.2, 0.3]}
+    p = tmp_path / "changed.json"
+    p.write_text(json.dumps(blob))
+    with pytest.raises(ValueError, match="regressors"):
+        AcceptanceCurveSet.from_fit_artifact(p)
+
+
+def test_fit_artifact_rejects_coefficient_count_mismatch(tmp_path):
+    blob = json.loads(_fit_artifact(tmp_path).read_text())
+    blob["models"]["pooled-llm"]["specs"]["base"]["coef"] = [0.1, 0.2]      # missing the rounds slope
+    p = tmp_path / "short.json"
+    p.write_text(json.dumps(blob))
+    with pytest.raises(ValueError, match="coefficients"):
+        AcceptanceCurveSet.from_fit_artifact(p)
+
+
+def test_fit_artifact_rejects_a_foreign_schema(tmp_path):
+    p = tmp_path / "foreign.json"
+    p.write_text(json.dumps({"schema": "something/else", "models": {}}))
+    with pytest.raises(ValueError, match="not an acceptance-curve fit artifact"):
+        AcceptanceCurveSet.from_fit_artifact(p)
+
+
+def test_separated_fit_is_surfaced_not_swallowed(tmp_path, capsys):
+    """A separated fit is ridge-stabilised, not estimated. It stays usable, but the reader must be told."""
+    cs = AcceptanceCurveSet.from_fit_artifact(_fit_artifact(tmp_path, separated=True))
+    assert "separated" in capsys.readouterr().out
+    assert "separated=True" in cs.for_model(f"{MODEL}:thinking-off").notes
+
+
+def test_rounds_left_matches_the_fitting_lanes_convention():
+    """The fit defines rounds_left as rounds remaining AFTER this one, 0 on the forced final. The inherited
+    optimal-stopping code uses a different, current-round-inclusive count floored at 1. Evaluating the fitted
+    coefficient against the wrong one is a silent off-by-one in every probability, so pin it.
+
+    Constructed so the curve reads the covariate and nothing else (b_z = 0), making the returned probability a
+    direct readout of the rounds_left the policy passed in.
+    """
+    game = _game()
+    cs = AcceptanceCurveSet(z_space="surplus_norm", curves={}, default=AcceptanceCurve(
+        form="logistic_rounds", params={"a": 0.0, "b": 0.0, "c": 1.0}, rounds_feature="rounds_left"))
+    p = CalibratedRationalPolicy(curves=cs, opponent_model=MODEL)
+    deadline = 6
+    for rnd, expect in [(1, 6), (2, 5), (deadline, 1), (deadline + 1, 0)]:
+        st = _state(game, rnd=rnd, deadline=deadline)
+        ap = p._accept_prob_table(st, p._tables(st))
+        got = ap[0, 1]
+        assert got == pytest.approx(1.0 / (1.0 + np.exp(-float(expect)))), f"round {rnd}"
 
 
 def test_unknown_opponent_model_raises_rather_than_silently_defaulting():
