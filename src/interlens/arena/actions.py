@@ -108,6 +108,26 @@ class Walk(Action):
 	kind: ClassVar[str] = "walk"
 
 
+@dataclass(frozen=True)
+class Pass(Action):
+	"""Take NO formal move this turn — the typed form of the talk-only pass a scenario already accepts as
+	``{"action": "none"}``.
+
+	It is not part of the package-deal move vocabulary :func:`parse_action` validates: a scenario recognizes the
+	``none``/``pass`` wire tag BEFORE it reaches the parser (``ScorableNegotiation.apply``), records the turn as
+	``atype="none"``, and charges neither a syntax nor a legality error. It exists so a
+	``PolicyParticipant`` can express "stand pat" in the same typed vocabulary as the other moves instead of
+	being forced into a move it does not want — the alternatives are all worse: ``Walk`` permanently removes the
+	seat (and kills the deal outright if it holds a veto), ``Reject`` needs a live offer id and is illegal in the
+	forced-final proposal phase, and re-``Propose``-ing a deal already on the table mints a SECOND offer id for
+	it, splitting the accept votes across two ids so neither can reach unanimity.
+
+	One caveat, from the same short-circuit: a MOVES-ONLY game (no talk channel) treats a turn with no formal
+	action as a syntax error, so a policy that can emit ``Pass`` belongs in a chat-enabled arm."""
+
+	kind: ClassVar[str] = "none"
+
+
 def action_from_json(d: dict) -> Action:
 	"""Reconstruct a typed :class:`Action` from its stored dict — the inverse of ``Action.to_json()``. Accepts
 	the kind under ``"action"`` / ``"type"`` / ``"kind"`` (so it reads both the canonical flat form and a stored
@@ -123,6 +143,8 @@ def action_from_json(d: dict) -> Action:
 		return Reject(offer_id=str(d.get("offer_id") or d.get("id") or d.get("offer")))
 	if kind == Walk.kind:
 		return Walk()
+	if kind in (Pass.kind, "pass"):
+		return Pass()
 	raise ValueError(f"not a serialized action: {d!r}")
 
 
@@ -400,7 +422,7 @@ def action_from_key(key: str | None) -> Action | None:
 
 # ------------------------------------------------------------- action -> message envelope ---
 
-def action_message(action: Action, space=None, *, preface: str = "") -> str:
+def action_message(action: Action, space=None, *, preface: str = "", message: str | None = None) -> str:
 	"""Render ``action`` as a message body: an optional free-text ``preface``, then the fenced ``json`` action
 	block — the exact envelope an LLM seat produces, so a transcript is symmetric across seat types (a
 	``PolicyParticipant`` emits through here).
@@ -410,9 +432,18 @@ def action_message(action: Action, space=None, *, preface: str = "") -> str:
 	:class:`~interlens.arena.negotiation.space.DealSpace`) to render a ``Propose``'s deal as
 	``{issue_name: option_label}`` instead, which is what an LLM-legible transcript wants; ``DealSpace.parse`` is
 	the inverse when reading one back. ``space`` is duck-typed, so this module keeps no dependency on the
-	negotiation package."""
+	negotiation package.
+
+	``message`` puts public cheap talk INSIDE the envelope, under the ``"message"`` key an LLM seat uses and a
+	chat-enabled scenario republishes to every other seat. That is the only speaking channel a scripted seat
+	has: ``preface`` is free text OUTSIDE the fence, which the scenario's parser never reads, so a preface is
+	transcript decoration whereas a ``message`` is an actual public statement. Key order matches the LLM
+	envelope (message first, then the formal action) so the two are indistinguishable on the wire. A
+	moves-only game has no talk channel and drops the key, so a speaking policy belongs in a chat arm."""
 	payload = action.to_json()
 	if space is not None and isinstance(action, Propose):
 		payload = {**payload, "deal": space.named(action.deal)}
+	if message:
+		payload = {"message": message, **payload}
 	body = "```json\n" + json.dumps(payload) + "\n```"
 	return f"{preface}\n{body}" if preface else body

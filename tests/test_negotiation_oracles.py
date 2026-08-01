@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 
 from interlens import Conversation, RoundRobinPolicy
-from interlens.arena.actions import Accept, Propose, Reject, Walk, parse_action
+from interlens.arena.actions import Accept, Pass, Propose, Reject, Walk, parse_action
 from interlens.arena.negotiation.space import DealSpace, Issue
 from interlens.arena.negotiation.sheets import GameSpec, ScoreSheet
 from interlens.arena.negotiation.oracle_context import GameTables
@@ -359,7 +359,9 @@ def test_strategy_zoo_returns_valid_actions():
     policies = [make() for make in ZOO.values()] + [NaiveTitForTatPolicy()]
     for pol in policies:
         action = pol(state)
-        assert isinstance(action, (Propose, Accept, Walk))
+        # Reject / Pass joined the vocabulary with the trivial decomposition baselines (a policy that neither
+        # concedes nor signs has to decline the standing offer explicitly, or stand pat where reject is illegal).
+        assert isinstance(action, (Propose, Accept, Reject, Pass, Walk))
         if isinstance(action, Propose):
             assert game.sheets[0].surplus(action.deal) >= 0        # IR: never below own threshold
 

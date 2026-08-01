@@ -119,8 +119,23 @@ class PolicyParticipant(Participant):
         state = (self.state_provider(view) if self.state_provider is not None
                  else self._state_from_view(view))
         action = self.policy(state)
-        return Message(author=self.name, content=action_message(action, self.space),
-                       metadata={"action": action.to_json()})
+        message = self._declaration(state, view)
+        return Message(author=self.name, content=action_message(action, self.space, message=message),
+                       metadata={"action": action.to_json(),
+                                 **({"message": message} if message else {})})
+
+    def _declaration(self, state, view: list[dict]) -> str | None:
+        """The bound policy's one-time public declaration, or ``None``.
+
+        Emitted on this seat's FIRST turn only, and "first turn" is read off the view — no segment carries
+        this seat's own role yet — rather than remembered on the participant. Deriving it from the transcript
+        is what keeps the rule correct when one policy object serves several seats or several concurrent
+        episodes, and it is also retry-safe: a turn the scenario rejected was never published, so the view on
+        the retry still shows no prior turn and the same declaration is re-sent rather than lost."""
+        declare = getattr(self.policy, "declaration", None)
+        if declare is None or any(seg.get("role") == self.self_role for seg in (view or [])):
+            return None
+        return declare(state)
 
     def act(self, state: NegotiationState):
         """Compute this seat's action from a ``NegotiationState`` directly — no view parsing, no engine. The

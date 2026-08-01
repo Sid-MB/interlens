@@ -41,7 +41,7 @@ import numpy as np
 # The typed actions and the Oracle ABC / OracleVerdict are owned by interlens-core; import them directly (no
 # import cycle — the arena action/oracle layer does not import the negotiation package). ``_jsonify`` is the ONE
 # JSON-coercion for oracle diagnostics, owned by ``arena.oracles`` and reused here by ``make_verdict``.
-from ..actions import Accept, Propose, Reject, Walk
+from ..actions import Accept, Pass, Propose, Reject, Walk
 from ..oracles import Oracle, OracleVerdict, _jsonify
 
 if TYPE_CHECKING:  # concrete game classes, used only in type hints (the real space.py / sheets.py types)

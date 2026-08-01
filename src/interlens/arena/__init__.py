@@ -43,7 +43,7 @@ from .schema import (Episode, EpisodeStore, Instance, PERSONAS, SeatRequest, Tur
                      load_instances, save_instances)
 from .scenario import Scenario
 from .actions import (Accept, Action, Deal, LEGALITY, Offer, OfferId, OfferRegistry, ParseResult,
-                      Propose, Reject, SYNTAX, Walk, action_from_json, parse_action)
+                      Pass, Propose, Reject, SYNTAX, Walk, action_from_json, parse_action)
 from .oracles import Oracle, OracleRecord, OracleVerdict, annotate
 from .engine import (BatchedEpisodePool, EMPTY_TURN_PLACEHOLDER, EpisodePool, EpisodeRun,
                      GenerationFailureBudgetExceeded, gen_failures)
@@ -68,6 +68,7 @@ __all__ = [
 	"Accept",
 	"Reject",
 	"Walk",
+	"Pass",
 	"Deal",
 	"OfferId",
 	"Offer",
