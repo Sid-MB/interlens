@@ -47,6 +47,7 @@ theme:
     - navigation.indexes
     - content.code.copy
     - content.action.edit
+    - content.tooltips
     - search.suggest
     - toc.follow
   palette:
