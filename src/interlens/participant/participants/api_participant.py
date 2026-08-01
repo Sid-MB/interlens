@@ -158,7 +158,24 @@ class APIParticipant(Functional, Participant):
 	"""Reasoning control, Anthropic only: ``None`` keeps the model's default (adaptive thinking on current
 	Claude models — which spends from ``max_tokens``), ``"disabled"`` turns thinking off, an ``int`` sets an
 	explicit thinking budget, and a dict passes through verbatim. Non-Anthropic providers raise on a non-None
-	value rather than silently ignoring it."""
+	value rather than silently ignoring it.
+
+	**Prefer an explicit dict on current Claude models.** ``None`` leaves the condition implicit — it records
+	as "whatever the model defaulted to" — and the ``int`` budget path is DEAD on Claude 5 (the API 400s with
+	*"thinking.type.enabled is not supported for this model"*). The condition-defining value is
+	``{"type": "adaptive", "display": "summarized"}``: ``adaptive`` is the only on-mode, and **``display``
+	decides whether any reasoning text is persistable at all** — it defaults to ``"omitted"``, which returns a
+	thinking block whose text is an empty string alongside an encrypted signature. Measured on
+	``claude-sonnet-5``: default/adaptive → ``thinking=''``; ``display="summarized"`` → a readable summary of
+	the reasoning. The raw chain of thought is never returned under any setting, so a summary is the most that
+	can be saved for a hosted Claude seat."""
+
+	effort: str | None = None
+	"""Reasoning-effort level, Anthropic only: ``"low"``/``"medium"``/``"high"``/``"xhigh"``/``"max"``, sent as
+	``output_config={"effort": ...}``. This is the control that REPLACED the removed ``budget_tokens`` on
+	current Claude models — it sets reasoning depth and overall token spend. ``None`` omits the parameter,
+	which is equivalent to ``"high"`` (the API default) on current models. Non-Anthropic providers raise on a
+	non-None value rather than silently ignoring it."""
 
 	# Anthropic needs strictly alternating user/assistant turns, so reuse the same merge the local families use.
 	requires_alternating_roles: bool = True
@@ -197,6 +214,7 @@ class APIParticipant(Functional, Participant):
 		client = self.client or _default_client(self.provider)
 		max_tokens = self._effective_cap(max_new_tokens)
 		kw = {"thinking": self.thinking} if self.thinking is not None else {}
+		kw.update(self._reasoning_kwargs())
 		kw.update(self._routing_kwargs())
 		text = client(system=system, messages=messages, model=self.model_id,
 		              max_tokens=max_tokens, temperature=self.temperature, **kw)
@@ -226,7 +244,7 @@ class APIParticipant(Functional, Participant):
 			requests.append(dict(system=system, messages=messages, model=self.model_id,
 			                     max_tokens=max_tokens, temperature=self.temperature,
 			                     **({"thinking": self.thinking} if self.thinking is not None else {}),
-			                     **self._routing_kwargs()))
+			                     **self._reasoning_kwargs(), **self._routing_kwargs()))
 		if self.batch:
 			if not hasattr(client, "submit_batch"):
 				raise NotImplementedError(
@@ -249,6 +267,27 @@ class APIParticipant(Functional, Participant):
 		if self.turn_token_floor is not None:
 			cap = max(cap, self.turn_token_floor)
 		return cap
+
+	def _reasoning_kwargs(self) -> dict:
+		"""The ``output_config`` request kwarg carrying ``effort``, or ``{}`` when no effort is set."""
+		if self.effort is None:
+			return {}
+		if self.provider != "anthropic":
+			raise ValueError(
+				f"effort={self.effort!r} is Anthropic-only (it maps to output_config.effort); provider is "
+				f"{self.provider!r}. Refusing to silently drop a reasoning-depth setting.")
+		return {"output_config": {"effort": self.effort}}
+
+	def request_config(self) -> dict:
+		"""The reasoning-relevant request parameters this participant will actually send.
+
+		Exists so a run manifest can record the condition it ran rather than the condition it *meant* to run:
+		``thinking=None`` and an explicit adaptive dict produce identical behaviour on current Claude models but
+		are not the same record, and a cell labelled "thinking on" is uninterpretable without knowing which one
+		it sent."""
+		return {"model": self.model_id, "provider": self.provider, "thinking": self.thinking,
+		        "effort": self.effort, "max_tokens": self.max_tokens,
+		        "turn_token_floor": self.turn_token_floor, "temperature": self.temperature}
 
 	def _routing_kwargs(self) -> dict:
 		if self.provider != "openrouter":
@@ -309,6 +348,12 @@ class APIParticipant(Functional, Participant):
 		if provenance and provenance != "none":
 			metadata["reasoning"] = getattr(completion, "reasoning", None)
 			metadata["reasoning_provenance"] = provenance
+		# Reasoning tokens are recorded even when provenance is "none": on a model whose thinking text is
+		# sealed, this count is the ONLY per-turn evidence that thinking occurred, and recording it only when
+		# text came back would delete exactly the case it exists for. 0 on a thinking-disabled turn.
+		reasoning_tokens = int(getattr(completion, "reasoning_tokens", 0) or 0)
+		if reasoning_tokens:
+			metadata["reasoning_tokens"] = reasoning_tokens
 		if refusal:
 			metadata["refusal"] = True
 		if self.meter is not None:

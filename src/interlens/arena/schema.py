@@ -121,6 +121,12 @@ class TurnRecord:
 	# episode JSON via to_json() and from there into any exported dataset rows built from episodes.
 	reasoning: str | None = None
 	reasoning_provenance: str = "none"
+	# Hidden reasoning tokens the provider billed for this turn (Anthropic
+	# ``usage.output_tokens_details.thinking_tokens``; 0 when unreported or thinking was disabled). On models
+	# whose reasoning text is sealed this is the ONLY per-turn evidence that thinking actually happened, so it
+	# is recorded independently of `reasoning`: a turn can legitimately have reasoning_tokens > 0 and
+	# reasoning=None. Also the clean on/off discriminator for a thinking-condition audit.
+	reasoning_tokens: int = 0
 	# The exact rendered view (list of {role, content} messages) the seat was conditioned on for this turn — the
 	# ground-truth prompt, so a transcript is faithful even after prompt code drifts (reconstruction-by-replay
 	# breaks the moment it does). The engine records it by default (``EpisodePool(record_views=...)`` to disable);

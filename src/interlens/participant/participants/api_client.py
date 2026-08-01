@@ -57,6 +57,7 @@ class Completion(str):
 	batched: bool
 	reasoning: str | None
 	reasoning_provenance: str
+	reasoning_tokens: int
 	upstream_provider: str | None
 	response_model: str | None
 	generation_id: str | None
@@ -64,6 +65,7 @@ class Completion(str):
 	def __new__(cls, text: str, *, input_tokens: int = 0, output_tokens: int = 0,
 	            stop_reason: str | None = None, batched: bool = False,
 	            reasoning: str | None = None, reasoning_provenance: str = REASONING_NONE,
+	            reasoning_tokens: int = 0,
 	            upstream_provider: str | None = None, response_model: str | None = None,
 	            generation_id: str | None = None) -> "Completion":
 		self = super().__new__(cls, text)
@@ -73,6 +75,7 @@ class Completion(str):
 		self.batched = batched
 		self.reasoning = reasoning
 		self.reasoning_provenance = reasoning_provenance
+		self.reasoning_tokens = reasoning_tokens
 		self.upstream_provider = upstream_provider
 		self.response_model = response_model
 		self.generation_id = generation_id
@@ -132,17 +135,17 @@ class _RetryingClient:
 		raise NotImplementedError
 
 	def _call_once(self, system, messages, model, max_tokens, temperature, thinking=None,
-	               provider_routing=None) -> "Completion":
+	               provider_routing=None, output_config=None) -> "Completion":
 		raise NotImplementedError
 
 	def __call__(self, system, messages, model, max_tokens, temperature, thinking=None,
-	             provider_routing=None) -> "Completion":
+	             provider_routing=None, output_config=None) -> "Completion":
 		attempt = 0
 		while True:
 			try:
 				with self._sem:  # bound concurrent in-flight requests across all caller threads
 					return self._call_once(system, messages, model, max_tokens, temperature, thinking,
-					                       provider_routing)
+					                       provider_routing, output_config=output_config)
 			except Exception as exc:
 				attempt += 1
 				if attempt > self.max_retries or not self._transient(exc):
@@ -194,8 +197,21 @@ class AnthropicClient(_RetryingClient):
 			return thinking
 		raise ValueError(f"thinking must be None, 'disabled', an int budget, or a dict; got {thinking!r}")
 
+	@staticmethod
+	def _thinking_tokens(usage) -> int:
+		"""Hidden reasoning tokens the provider billed for this call, from
+		``usage.output_tokens_details.thinking_tokens``.
+
+		This is the **auditable evidence that thinking actually happened** on models whose reasoning text is
+		sealed: current Claude models never return the raw chain of thought, so a run that wants to prove its
+		thinking condition was live cannot do it from the text. It is 0 on a thinking-disabled call and on
+		providers that report no details, which makes it a clean on/off discriminator as well as a volume
+		measure."""
+		details = getattr(usage, "output_tokens_details", None) if usage is not None else None
+		return int(getattr(details, "thinking_tokens", 0) or 0)
+
 	def _call_once(self, system, messages, model, max_tokens, temperature, thinking=None,
-	               provider_routing=None) -> "Completion":
+	               provider_routing=None, output_config=None) -> "Completion":
 		if provider_routing is not None:
 			raise ValueError("provider_routing is OpenRouter-only; Anthropic does not accept it.")
 		# Newer models (e.g. Opus 4.8) DEPRECATE the `temperature` param and 400 if it is sent at all. Omit it when
@@ -206,6 +222,11 @@ class AnthropicClient(_RetryingClient):
 			kw["temperature"] = temperature
 		if thinking is not None:
 			kw["thinking"] = self._thinking_param(thinking)
+		# `output_config` carries the reasoning-effort control (`{"effort": "low"|...|"max"}`) that replaced the
+		# removed `budget_tokens` on current Claude models. Passed verbatim so a caller can also set other
+		# output-config keys without a library change.
+		if output_config is not None:
+			kw["output_config"] = output_config
 		resp = self._client.messages.create(**kw)
 		text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 		usage = getattr(resp, "usage", None)
@@ -214,7 +235,8 @@ class AnthropicClient(_RetryingClient):
 		                  input_tokens=getattr(usage, "input_tokens", 0) or 0,
 		                  output_tokens=getattr(usage, "output_tokens", 0) or 0,
 		                  stop_reason=getattr(resp, "stop_reason", None),
-		                  reasoning=reasoning, reasoning_provenance=provenance)
+		                  reasoning=reasoning, reasoning_provenance=provenance,
+		                  reasoning_tokens=self._thinking_tokens(usage))
 
 	def submit_batch(self, requests: list[dict], *, poll_interval: float = 30.0) -> "list[Completion]":
 		"""Anthropic **Message Batches API**: one ``messages.batches.create`` submits every request (tagged with a
@@ -227,6 +249,7 @@ class AnthropicClient(_RetryingClient):
 			            **({"temperature": r["temperature"]} if r.get("temperature") is not None else {}),
 			            **({"thinking": self._thinking_param(r["thinking"])}
 			               if r.get("thinking") is not None else {}),
+			            **({"output_config": r["output_config"]} if r.get("output_config") is not None else {}),
 			            **({"system": r["system"]} if r.get("system") else {})}}
 			for i, r in enumerate(requests)])
 		while self._client.messages.batches.retrieve(batch.id).processing_status != "ended":
@@ -243,7 +266,8 @@ class AnthropicClient(_RetryingClient):
 				input_tokens=getattr(usage, "input_tokens", 0) or 0,
 				output_tokens=getattr(usage, "output_tokens", 0) or 0,
 				stop_reason=getattr(msg, "stop_reason", None), batched=True,
-				reasoning=reasoning, reasoning_provenance=provenance)
+				reasoning=reasoning, reasoning_provenance=provenance,
+				reasoning_tokens=self._thinking_tokens(usage))
 		return [texts[f"req-{i}"] for i in range(len(requests))]
 
 
@@ -280,10 +304,14 @@ class _OpenAICompatClient(_RetryingClient):
 		return ([{"role": "system", "content": system}] if system else []) + list(messages)
 
 	def _call_once(self, system, messages, model, max_tokens, temperature, thinking=None,
-	               provider_routing=None) -> "Completion":
+	               provider_routing=None, output_config=None) -> "Completion":
 		if thinking is not None:
 			raise NotImplementedError(
 				f"{self._label} does not support the 'thinking' control (Anthropic-only); leave thinking=None.")
+		if output_config is not None:
+			raise NotImplementedError(
+				f"{self._label} does not support 'output_config' (Anthropic-only; it carries the reasoning "
+				f"effort level); leave output_config=None rather than having it silently dropped.")
 		# Some models (e.g. GPT-5) only accept the default temperature; omit the param when None to avoid a 400.
 		kw = {self._tokens_param: max_tokens}
 		if temperature is not None:

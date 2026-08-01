@@ -326,6 +326,7 @@ class EpisodeRun:
 			cap=cap,
 			raw=(raw if raw != text or think else None),
 			reasoning=reasoning, reasoning_provenance=provenance,
+			reasoning_tokens=int(message.metadata.get("reasoning_tokens") or 0),
 			# A participant wrapper may add private, per-turn decision support after the scenario creates the
 			# request. Persist the exact post-wrapper view when supplied; otherwise keep the scenario view.
 			view=(message.metadata.get("conditioned_view", request.view) if self.record_views else None),

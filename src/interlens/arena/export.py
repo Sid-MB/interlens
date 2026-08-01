@@ -157,7 +157,15 @@ def render_markdown(episode: dict, instance: dict | None = None) -> str:
             L.append(f"- **message:** {msg}")
         think = (pa.get("thinking") if isinstance(pa, dict) else None) or t.get("reasoning")
         if think:
-            L.append(f"- **scratchpad/reasoning:** {think}")
+            prov = t.get("reasoning_provenance") or "none"
+            note = " _(provider summary — the raw chain of thought is not returned)_" if (
+                prov == "withheld_or_summarized" and t.get("reasoning")) else ""
+            L.append(f"- **scratchpad/reasoning:**{note} {think}")
+        # Printed even with no reasoning text: on a sealed-CoT model this count is the only evidence the turn
+        # involved hidden reasoning at all, and a transcript that omitted it would read as thinking-off.
+        rtok = int(t.get("reasoning_tokens") or 0)
+        if rtok:
+            L.append(f"- **hidden reasoning tokens:** {rtok}")
         reg = _regret_str(oracle.get(t.get("idx"), []))
         if reg:
             L.append(f"- **oracle regret:** {reg}")
