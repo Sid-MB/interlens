@@ -68,7 +68,23 @@ class AutoModelParticipant:
 		``quant`` / ``revision`` / ``weights_path``) are recorded for that deferred load and ``participant_kwargs``
 		go to the participant (see :meth:`ModelParticipant.from_pretrained`)."""
 		from transformers import AutoConfig  # lazy: avoids importing transformers at module import
-		lk = load_kwargs or {}
+		lk = dict(load_kwargs or {})
+		# A PEFT/LoRA adapter directory is accepted wherever a model id is: the base model and the family are
+		# read out of ``adapter_config.json`` and the adapter is attached on load. This is what lets a ladder of
+		# training checkpoints be evaluated by the ordinary "point the runner at a model" path — no merged copy
+		# of the base weights per checkpoint (tens of GB each) and no separate trained-model code path in the
+		# harness, which is exactly the kind of special case that has burned evaluations here before.
+		adapter_cfg = Path(id_or_path) / "adapter_config.json"
+		if adapter_cfg.is_file():
+			import json
+			base = json.loads(adapter_cfg.read_text()).get("base_model_name_or_path")
+			if not base:
+				raise ValueError(f"{adapter_cfg} has no base_model_name_or_path, so the base model to attach "
+				                 f"the adapter to cannot be resolved; pass the base id and "
+				                 f"load_kwargs={{'adapter_path': ...}} explicitly")
+			lk["adapter_path"] = str(id_or_path)
+			id_or_path = base
+			load_kwargs = lk
 		cfg = AutoConfig.from_pretrained(id_or_path, revision=lk.get("revision"))
 		cls = ModelParticipant.for_model_type(getattr(cfg, "model_type", None))
 		return cls.from_pretrained(id_or_path, name=name, device=device, load_kwargs=load_kwargs,

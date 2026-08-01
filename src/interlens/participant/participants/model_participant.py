@@ -98,6 +98,14 @@ class ModelParticipant(Functional, Participant):
 	# tokenizer/config; dtype is stored as a str so the participant serializes and pickles without a torch handle.
 	hf_id: str | None = None
 	weights_path: str | None = None
+	# A PEFT/LoRA adapter directory to attach on top of the loaded base weights, as the alternative to merging a
+	# checkpoint into standalone weights first (``weights_path``). Evaluating a ladder of training checkpoints is
+	# the case this exists for: merging each one materializes a full copy of the base model per checkpoint, which
+	# is tens of GB apiece on shared scratch, while an adapter is a few hundred MB. NOTE that PEFT injects its
+	# layers into the base model IN PLACE, so two participants with DIFFERENT adapters must not share one cached
+	# base — ``batch_signature`` keys on the adapter to keep them apart, but a single process should still stick
+	# to one adapter per base model.
+	adapter_path: str | None = None
 	dtype: str = "bfloat16"
 	attn: str = "flash_attention_2"
 	quant: str | None = None
@@ -186,14 +194,15 @@ class ModelParticipant(Functional, Participant):
 	                    load_kwargs: dict | None = None, **participant_kwargs) -> Self:
 		"""Build a participant of THIS class that will load ``id_or_path`` (an HF id or local path) **lazily on first
 		use** — no weights are touched here. ``load_kwargs`` (``dtype`` / ``attn`` / ``quant`` / ``revision`` /
-		``weights_path``) are recorded for that deferred load; ``participant_kwargs`` (``temperature``,
+		``weights_path`` / ``adapter_path``) are recorded for that deferred load; ``participant_kwargs`` (``temperature``,
 		``max_new_tokens``, ``system_prompt``, ``tools``, ``kv_reuse``, …) go to the participant. When the load fires
 		it is process-cached, so all same-(id, device, dtype, …) participants share ONE model object. As with
 		``from_model``, the class is ``cls`` — use ``AutoModelParticipant.from_pretrained`` to resolve the family
 		from ``config.model_type`` (it reads only the config, still no weights)."""
 		lk = dict(load_kwargs or {})
 		return cls(name=name, device=device, hf_id=str(id_or_path),
-		           weights_path=lk.get("weights_path"), dtype=dtype_to_str(lk.get("dtype", torch.bfloat16)),
+		           weights_path=lk.get("weights_path"), adapter_path=lk.get("adapter_path"),
+		           dtype=dtype_to_str(lk.get("dtype", torch.bfloat16)),
 		           attn=lk.get("attn", "flash_attention_2"), quant=lk.get("quant"), revision=lk.get("revision"),
 		           **participant_kwargs)
 
@@ -248,11 +257,16 @@ class ModelParticipant(Functional, Participant):
 		from ...loading import load_model, derive_chat_flags  # lazy: loading imports this module
 		model, tokenizer = load_model(source, device=device, dtype=str_to_dtype(self.dtype), attn=self.attn,
 		                              quant=self.quant, revision=self.revision)
+		if self.adapter_path:
+			from peft import PeftModel   # lazy: only an adapter run needs peft installed
+			model = PeftModel.from_pretrained(model, self.adapter_path)
+			model.eval()
 		self._model = model
 		self._tokenizer = tokenizer
 		self.supports_system_role, self.requires_alternating_roles = derive_chat_flags(tokenizer)
-		logger.info("%s: loaded %s on %s (kv_reuse %s)", self.name, source, device,
-		            "ENABLED" if self._kv_reuse_enabled else "disabled")
+		logger.info("%s: loaded %s on %s (kv_reuse %s)%s", self.name, source, device,
+		            "ENABLED" if self._kv_reuse_enabled else "disabled",
+		            f" + adapter {self.adapter_path}" if self.adapter_path else "")
 
 	def batch_signature(self) -> tuple:
 		"""Key identifying which model this participant would batch AS (used by the co-stepper). When loaded, the
@@ -261,8 +275,8 @@ class ModelParticipant(Functional, Participant):
 		load."""
 		if self._model is not None:
 			return ("model", id(self._model))
-		return ("model", self.weights_path or self.hf_id, str(self.device), self.dtype, self.attn, self.quant,
-		        self.revision)
+		return ("model", self.weights_path or self.hf_id, self.adapter_path, str(self.device), self.dtype,
+		        self.attn, self.quant, self.revision)
 
 	def __getstate__(self) -> dict:
 		# Drop the heavy/device-bound state on pickle: weights (reloaded lazily on the worker's device via hf_id),
