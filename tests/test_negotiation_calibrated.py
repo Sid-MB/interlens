@@ -426,3 +426,59 @@ def test_per_seat_models_are_looked_up_independently():
     ap = p._accept_prob_table(st, p._tables(st))
     assert ap[:, 1].mean() > ap[:, 2].mean() + 0.5
     assert p.model_for_seat(1) == "caves" and p.model_for_seat(2) == "stubborn"
+
+
+# ------------------------------------------------------- the vote grain (endgame acceptance) --
+def test_vote_grain_bins_are_built_from_the_reported_rates_and_the_mixture_identity(tmp_path):
+    """The vote-conditional curve needs no new fit: the artifact already reports the below-IR, high-z and
+    overall vote rates, and the middle bin follows exactly from the count-weighted mixture. Pinning that
+    arithmetic matters because a wrong middle bin would be invisible — it sits between two correct ones."""
+    blob = {"schema": "rational_agents/acceptance_curves/v1", "fallback_model": "pooled-llm", "models": {
+        "pooled-llm": {"empirical": {"n_voted": 1000, "accept_rate_when_voted": 0.9,
+                                     "n_below_ir_voted": 100, "accept_rate_below_ir_when_voted": 0.5,
+                                     "n_high_z_voted": 400, "accept_rate_high_z_when_voted": 1.0}}}}
+    p = tmp_path / "a.json"
+    p.write_text(json.dumps(blob))
+    c = AcceptanceCurveSet.vote_grain_from_fit_artifact(p).for_model("pooled-llm")
+    # accepts: 900 total = 100*0.5 + 500*mid + 400*1.0  =>  mid = 0.90
+    assert c.prob(np.array([-0.5, 0.2, 0.8])).tolist() == pytest.approx([0.5, 0.9, 1.0])
+
+
+def test_vote_grain_only_applies_in_the_endgame():
+    """During regular rounds the panel curve is the right object; only the forced final is priced at the vote
+    grain. If the switch leaked into ordinary rounds it would make the agent wildly over-optimistic all game."""
+    game = _game()
+    panel = AcceptanceCurveSet(z_space="surplus_norm", curves={}, default=AcceptanceCurve(
+        form="logistic", params={"a": -5.0, "b": 0.0}))                      # ~0.007 everywhere
+    vote = AcceptanceCurveSet(z_space="surplus_norm", curves={}, default=AcceptanceCurve(
+        form="bins", params={"z_edges": [0.0], "p": [0.99, 0.99]}))
+    p = CalibratedRationalPolicy(curves=panel, opponent_model=MODEL, vote_curves=vote, endgame_rounds=0)
+    deadline = 6
+    early = _state(game, rnd=2, deadline=deadline)
+    ap_early = p._accept_prob_table(early, p._tables(early))
+    assert ap_early[0, 1] < 0.05 and p.last_path == "calibrated"
+    final = _state(game, rnd=deadline + 1, deadline=deadline)               # rounds_left == 0
+    ap_final = p._accept_prob_table(final, p._tables(final))
+    assert ap_final[0, 1] > 0.9 and p.last_path == "calibrated-vote"
+
+
+def test_without_vote_curves_nothing_changes():
+    """The vote grain is opt-in; the two-rung ladder must be unaffected by the feature existing."""
+    game = _game()
+    st = _state(game, rnd=7, deadline=6)
+    plain = CalibratedRationalPolicy(curves=_step_set(), opponent_model=MODEL)
+    assert np.array_equal(plain._accept_prob_table(st, plain._tables(st)),
+                          BayesianRationalPolicy()._accept_prob_table(st, plain._tables(st)))
+    assert plain.last_path == "calibrated"
+
+
+def test_low_power_flag_is_carried_so_a_consumer_can_refuse(tmp_path):
+    """The fitting lane flags unquotable curves (Qwen3-8B:thinking-on: 60 events, 3 games, zero below-threshold
+    votes). Dropping that flag on load would let a cell be run against an opponent model nobody can defend."""
+    blob = json.loads(_fit_artifact(tmp_path).read_text())
+    blob["models"]["pooled-llm"]["low_power"] = True
+    p = tmp_path / "lp.json"
+    p.write_text(json.dumps(blob))
+    cs = AcceptanceCurveSet.from_fit_artifact(p)
+    assert cs.for_model("pooled-llm").low_power is True
+    assert cs.for_model(f"{MODEL}:thinking-off").low_power is False

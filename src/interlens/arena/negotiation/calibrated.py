@@ -47,7 +47,7 @@ Worked example
 
     from interlens.arena.negotiation.calibrated import AcceptanceCurveSet, CalibratedRationalPolicy
 
-    curves = AcceptanceCurveSet.from_json("acceptance_curves_v1.json")
+    curves = AcceptanceCurveSet.from_fit_artifact("self_benefit/acceptance_curves.json")
     policy = CalibratedRationalPolicy(curves=curves, opponent_model="Qwen/Qwen3-8B")
     # ... seat it exactly as BayesianRationalPolicy is seated (table.policy_seat / mixed_table)
 
@@ -155,6 +155,11 @@ class AcceptanceCurve:
         able to see it was fit on 30 events.
     heldout_ece : float | None
         Held-out expected calibration error, if the fitting lane computed one.
+    low_power : bool
+        The fitting lane's own flag that this curve is not quotable — too few events, too few game clusters,
+        or no variation in the outcome. Carried through so a consumer can REFUSE it rather than discover the
+        problem in a results table. The fit that motivated this (``Qwen3-8B:thinking-on``) has 60 events across
+        3 games and zero below-threshold votes.
     notes : str
         Free text from the fitting lane (run dirs, exclusions, caveats).
     """
@@ -167,6 +172,7 @@ class AcceptanceCurve:
     n_events: int = 0
     n_accepts: int = 0
     heldout_ece: float | None = None
+    low_power: bool = False
     notes: str = ""
 
     _FORMS = ("step", "logistic", "logistic_rounds", "bins")
@@ -244,7 +250,7 @@ class AcceptanceCurve:
         """Build from one model's JSON block, ignoring keys the schema does not define (the fitting lane is
         free to carry extra diagnostics alongside the coefficients)."""
         known = {"form", "params", "rounds_feature", "p_min", "p_max", "n_events", "n_accepts",
-                 "heldout_ece", "notes"}
+                 "heldout_ece", "low_power", "notes"}
         return cls(**{k: v for k, v in d.items() if k in known})
 
 
@@ -372,9 +378,10 @@ class AcceptanceCurveSet:
             models[key] = AcceptanceCurve(
                 form=form, params=params, rounds_feature="rounds_left",
                 n_events=int(block.get("n_events", 0)), n_accepts=int(block.get("n_accept", 0)),
-                heldout_ece=val.get("ece"),
+                heldout_ece=val.get("ece"), low_power=bool(block.get("low_power", False)),
                 notes=(f"spec={spec} brier={val.get('brier')} n_games={block.get('n_games')} "
-                       f"separated={fit.get('separated')} converged={fit.get('converged')}"))
+                       f"n_games_is_the_real_power_number separated={fit.get('separated')} "
+                       f"converged={fit.get('converged')} low_power={block.get('low_power', False)}"))
             if fit.get("separated"):
                 # A separated fit has no finite optimum; the ridge is holding the coefficients down. The
                 # numbers are usable but the reader must be told, so it goes in the notes AND is surfaced here.
@@ -389,6 +396,53 @@ class AcceptanceCurveSet:
                                "population": blob.get("population"),
                                "fallback_model": fallback,
                                "n_events_total": blob.get("n_events_total")})
+
+    @classmethod
+    def vote_grain_from_fit_artifact(cls, path: str | Path) -> "AcceptanceCurveSet":
+        """Build the **vote-conditional** curve set from the fit artifact's `empirical` block.
+
+        WHY A SECOND GRAIN EXISTS. The fitted logistic is a **panel-grain** quantity: "next time this seat
+        moves, does it accept this offer" — which folds in crowding and inattention, because a seat facing five
+        standing offers can formally take at most one. Measured panel acceptance is 0.15-0.45. But the protocol
+        ends in a **forced vote**, and among offers actually voted on, acceptance is ~0.99 (Qwen3-8B 0.992 over
+        n=7,420; gemma 0.991 over n=8,971) — even *below* the voter's own reservation it is 0.81 and 0.96
+        respectively. Feeding the panel curve into the endgame therefore tells the agent that closure is nearly
+        impossible exactly where it is nearly certain, which is a large and one-directional error.
+
+        No new fit is needed: the three vote-conditional rates the artifact already reports
+        (``accept_rate_below_ir_when_voted`` for ``z < 0``, ``accept_rate_high_z_when_voted`` for ``z >= 0.5``,
+        and ``accept_rate_when_voted`` over all votes) determine the middle bin exactly, since the overall rate
+        is their count-weighted mixture. The result is a three-bin step in ``z`` per responder — assumption-free
+        and reported rather than extrapolated.
+
+        Use with :class:`CalibratedRationalPolicy`'s ``vote_curves`` argument, which applies it only in the
+        endgame; during regular rounds the panel curve is the right object.
+        """
+        blob = json.loads(Path(path).read_text())
+        curves: dict[str, AcceptanceCurve] = {}
+        for key, block in blob.get("models", {}).items():
+            e = block.get("empirical") or {}
+            n_v, r_v = e.get("n_voted"), e.get("accept_rate_when_voted")
+            if not n_v or r_v is None:
+                continue
+            n_lo, r_lo = e.get("n_below_ir_voted", 0) or 0, e.get("accept_rate_below_ir_when_voted")
+            n_hi, r_hi = e.get("n_high_z_voted", 0) or 0, e.get("accept_rate_high_z_when_voted")
+            r_lo = r_v if r_lo is None else r_lo
+            r_hi = r_v if r_hi is None else r_hi
+            n_mid = max(n_v - n_lo - n_hi, 0)
+            # Solve the middle bin from the mixture identity rather than guessing it.
+            mid = (n_v * r_v - n_lo * r_lo - n_hi * r_hi) / n_mid if n_mid > 0 else r_v
+            p = [float(np.clip(r_lo, 0.0, 1.0)), float(np.clip(mid, 0.0, 1.0)), float(np.clip(r_hi, 0.0, 1.0))]
+            curves[key] = AcceptanceCurve(
+                form="bins", params={"z_edges": [0.0, 0.5], "p": p},
+                n_events=int(n_v), n_accepts=int(round(n_v * r_v)),
+                notes=(f"vote-conditional empirical bins from the fit artifact: z<0 {p[0]:.3f} "
+                       f"(n={n_lo}), 0<=z<0.5 {p[1]:.3f} (n={n_mid}), z>=0.5 {p[2]:.3f} (n={n_hi})"))
+        return cls(z_space="surplus_norm", curves=curves,
+                   default=curves.get(blob.get("fallback_model") or ""),
+                   provenance={"artifact": str(path), "grain": "vote_conditional",
+                               "derivation": "empirical vote-conditional rates, middle bin solved from the "
+                                             "count-weighted mixture identity"})
 
     @classmethod
     def step(cls, z_space: str = "surplus") -> "AcceptanceCurveSet":
@@ -429,18 +483,24 @@ class CalibratedRationalPolicy(BayesianRationalPolicy):
     """
 
     def __init__(self, *, curves: AcceptanceCurveSet, opponent_model: str,
-                 seat_models: dict[int, str] | None = None, discount: float | None = None,
+                 seat_models: dict[int, str] | None = None, vote_curves: AcceptanceCurveSet | None = None,
+                 endgame_rounds: int = 0, discount: float | None = None,
                  walk_if_hopeless: bool = True, name: str = "calibrated-rational"):
         super().__init__(discount=discount, walk_if_hopeless=walk_if_hopeless, name=name)
         self.curves = curves
         self.opponent_model = str(opponent_model)
         self.seat_models = dict(seat_models or {})
+        self.vote_curves = vote_curves
+        self.endgame_rounds = int(endgame_rounds)
         self.last_path: str | None = None
         # Fail at construction, not mid-episode: resolving the curve now turns "nobody fit this opponent" into
         # a launch-time error instead of a crash 40 minutes into a GPU cell.
-        self.curves.for_model(self.opponent_model)
-        for m in self.seat_models.values():
-            self.curves.for_model(m)
+        for cs in (self.curves, self.vote_curves):
+            if cs is None:
+                continue
+            cs.for_model(self.opponent_model)
+            for m in self.seat_models.values():
+                cs.for_model(m)
 
     def model_for_seat(self, seat: int) -> str:
         """Model id seated at ``seat`` — the per-seat override if given, else ``opponent_model``."""
@@ -465,7 +525,6 @@ class CalibratedRationalPolicy(BayesianRationalPolicy):
         if state.tables is None:
             self.last_path = "belief"
             return super()._accept_prob_table(state, tables)
-        self.last_path = "calibrated"
         total = int(getattr(state, "deadline", 0)) + 1
         # The FIT's convention: rounds remaining AFTER this one, 0 on the forced final. This is deliberately
         # NOT the `max(deadline - round + 1, 1)` used by the inherited optimal-stopping code — that one counts
@@ -474,10 +533,25 @@ class CalibratedRationalPolicy(BayesianRationalPolicy):
         # turn where deadline pressure matters most. Evaluating a fitted coefficient against the wrong one is
         # a silent off-by-one in every acceptance probability, so the two are kept visibly separate.
         r_left = max(int(state.deadline) + 1 - int(state.round), 0)
+        # ENDGAME GRAIN SWITCH. The panel curve answers "next time this seat moves, does it take this offer",
+        # which folds in crowding — a seat with five standing offers can formally take at most one. The
+        # protocol, though, ends in a FORCED vote where acceptance is ~0.99 even below the voter's own
+        # reservation. Applying the panel curve there tells the agent closure is near-impossible exactly where
+        # it is near-certain. When `vote_curves` is supplied, the last `endgame_rounds` rounds (and the forced
+        # final itself, r_left == 0) are priced at the vote grain instead.
+        #
+        # LIMITATION, stated because it bounds the claim: the best-response oracle takes ONE static
+        # acceptance table per call, so this makes the agent vote-aware once it ARRIVES in the endgame, not in
+        # anticipation of it from earlier rounds. It therefore tests vote-aware endgame play, which is the
+        # highest-leverage moment (the forced-final proposal is the last thing anyone votes on), rather than a
+        # fully round-indexed opponent model.
+        use_vote = self.vote_curves is not None and r_left <= self.endgame_rounds
+        active = self.vote_curves if use_vote else self.curves
+        self.last_path = "calibrated-vote" if use_vote else "calibrated"
         ap = super()._accept_prob_table(state, tables)
         for opp in state.opponents:
-            z = self.curves.z_of(tables.utility, tables.thresholds, int(opp))
-            curve = self.curves.for_model(self.model_for_seat(int(opp)))
+            z = active.z_of(tables.utility, tables.thresholds, int(opp))
+            curve = active.for_model(self.model_for_seat(int(opp)))
             ap[:, int(opp)] = curve.prob(z, rounds_left=r_left, total_rounds=total)
         ap[:, state.seat] = 1.0
         return ap
