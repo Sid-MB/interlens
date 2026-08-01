@@ -1,3 +1,18 @@
+# interlens: a framework for scaffolding and interpreting multi-agent conversations
+# Copyright (C) 2026 Siddharth M. Bhatia
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of version 3 of the GNU Affero General Public License
+# as published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 # [rational_agents: grpo-fairness] 2026-08-01 — property tests for the smoothed log-Nash training reward.
 """The reward's load-bearing properties, as tests: monotonicity, the C1 join at ``eps``, the walk-away ordering,
 concavity (which is what does the fairness work), and the lambda-mixture identities."""
