@@ -26,9 +26,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .chrome import distance_to_nbs, inject_nav, nav_group
 from .compare import DEFAULT_PAIR_KEY, pair_runs
 from .episode import RunDir
 from .page import render_compare_html, render_episode_html, render_index_html
+
+
+def _link_pages(paths: list[Path], rows: list[dict]) -> None:
+    """Give every written page its prev/next links and the picker of its siblings.
+
+    Done as a second pass over the files rather than at render time because neither half knows enough on its own:
+    a page is rendered from ONE payload and cannot know what else the run holds, while the exporter only knows the
+    full set after the last page is written. So each page reserves a marker (see :data:`~.chrome.NAV_MARKER`) and
+    this replaces it — a string substitution on an already-written file, no re-render and no second parse of the
+    episode records."""
+    for i, path in enumerate(paths):
+        path.write_text(inject_nav(path.read_text(), nav_group(rows, i)))
 
 
 def render_episode(run: str | Path, episode_path: str | Path, *, reconstruct: bool = True,
@@ -77,7 +90,7 @@ def export_run(run: str | Path, out_dir: str | Path, *, limit: int | None = None
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     files = run_dir.episode_files()[:limit] if limit is not None else run_dir.episode_files()
-    rows, failures = [], []
+    rows, paths, failures = [], [], []
     for f in files:
         try:
             payload = run_dir.payload(f, reconstruct=reconstruct)
@@ -85,12 +98,17 @@ def export_run(run: str | Path, out_dir: str | Path, *, limit: int | None = None
             failures.append({"episode": str(f), "error": f"{type(exc).__name__}: {exc}"})
             continue
         ep, out = payload["episode"], payload.get("outcome") or {}
+        gen = payload.get("generation") or {}
         name = f"{ep['episode_id']}.html"
         (out_dir / name).write_text(render_episode_html(payload))
+        paths.append(out_dir / name)
         rows.append({"href": name, "label": ep["episode_id"], "model": ep.get("model"), "arm": ep.get("arm"),
-                     "seed": ep.get("seed"), "deal": bool(out.get("deal")), "primary": out.get("primary"),
+                     "instance": ep.get("instance_id"), "seed": ep.get("seed"), "deal": bool(out.get("deal")),
+                     "primary": out.get("primary"), "dist_nbs": distance_to_nbs(payload),
                      "usw": out.get("usw"), "esw": out.get("esw"),
+                     "fabricated_pct": round(100 * (gen.get("fraction") or 0), 2),
                      "regret": (payload.get("annotation_summary") or {}).get("total_regret")})
+    _link_pages(paths, rows)
     note = (f"{len(rows)} episode(s) from <code>{run_dir.root}</code>. "
             + (f"{len(failures)} episode(s) failed to render." if failures else ""))
     (out_dir / "index.html").write_text(render_index_html(rows, f"Episodes — {run_dir.root.name}", note))
@@ -121,24 +139,29 @@ def export_comparison(left_run: str | Path, right_run: str | Path, out_dir: str 
                                     annotations_dirname=annotations_dirname)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    rows = []
+    rows, paths = [], []
     for cmp_payload in comparisons:
         le, re_ = cmp_payload["left"]["episode"], cmp_payload["right"]["episode"]
         name = f"compare-{le['episode_id']}--{re_['episode_id']}.html"
         (out_dir / name).write_text(render_compare_html(cmp_payload))
+        paths.append(out_dir / name)
         focal = cmp_payload.get("focal_seats") or []
         scores = {r["metric"]: r for r in cmp_payload["scores"]}
+        fab = max((cmp_payload[side].get("generation") or {}).get("fraction") or 0 for side in ("left", "right"))
         rows.append({"href": name,
                      "label": f"{le['instance_id']} seed {le['seed']} · {le['arm']}"
                               + (f" · swapped {', '.join(f['name'] for f in focal)}" if focal else
                                  " · no seat swap"),
                      "model": f"{le.get('model')} vs {re_.get('model')}", "arm": le.get("arm"),
-                     "seed": le.get("seed"),
+                     "instance": le.get("instance_id"), "seed": le.get("seed"),
                      "deal": bool((cmp_payload["right"].get("outcome") or {}).get("deal")),
                      "primary": scores.get("primary score", {}).get("delta"),
+                     "dist_nbs": None,
                      "usw": scores.get("joint welfare USW", {}).get("delta"),
                      "esw": scores.get("egalitarian ESW", {}).get("delta"),
+                     "fabricated_pct": round(100 * fab, 2),
                      "regret": None})
+    _link_pages(paths, rows)
     note = (f"{len(rows)} of {report['n_candidate_pairs']} matched pair(s), paired on "
             f"<code>{', '.join(pair_fields)}</code> and selected by <code>{select}</code>. "
             f"{report['n_left']} episode(s) left, {report['n_right']} right, "

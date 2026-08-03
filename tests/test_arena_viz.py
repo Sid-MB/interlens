@@ -758,3 +758,212 @@ def test_fabricated_turns_survive_into_the_comparison_view(episode):
     rows, _ = viz.align(dirty, clean)
     reached = {r["left_idx"] for r in rows if r["left_idx"] is not None}
     assert fabricated <= reached, f"{len(fabricated - reached)} fabricated turn(s) missing from the comparison"
+
+
+# ------------------------------------------------- [rational_agents: viz-ux] 2026-08-03 — the UX layer --
+# Navigation, the sortable index, the summary strip, the message pool, and the action grammar. The pages'
+# behaviour still renders server-side wherever it can, so these assert on the emitted document; what genuinely
+# only exists in the browser (handlers) is asserted as "the binding ships", and the demo sets are separately
+# executed in a DOM harness.
+
+def test_page_wears_the_shell_with_navigation_theme_and_help(payload):
+    """Every page carries the same shell: a sticky top bar with the quick read, a theme toggle that can beat the
+    OS setting, a help overlay, and a skip link. Without the shell the keyboard bindings have nothing to drive."""
+    h = viz.render_episode_html(payload)
+    assert _missing(h, "class='topbar'", "id='theme-toggle'", "id='help-toggle'", "id='help'",
+                    "class='skip'", "id='content'", "class='quick'") == []
+    # the nav slot is reserved but not filled: one payload cannot know its siblings
+    assert viz.NAV_MARKER in h
+
+
+def test_export_run_links_every_page_to_its_siblings(two_runs, tmp_path):
+    """The exporter fills each page's reserved nav slot once the whole run is known: prev/next links that really
+    point at the neighbouring files, a picker listing every page, and a disabled link at each end rather than a
+    missing one (so the control row never changes width)."""
+    lrun, _ = two_runs
+    # three copies of the one fixture episode, so there is a genuine middle page to test
+    run = tmp_path / "many"
+    (run / "episodes").mkdir(parents=True)
+    src = viz.RunDir(lrun).episode_files()[0]
+    ep = json.loads(src.read_text())
+    for i in range(3):
+        ep["episode_id"] = f"ep{i}"
+        (run / "episodes" / f"ep{i}.json").write_text(json.dumps(ep))
+    for name in ("instances",):
+        for f in (viz.RunDir(lrun).root / name).glob("*.json"):
+            (run / name).mkdir(exist_ok=True)
+            (run / name / f.name).write_text(f.read_text())
+    manifest = viz.export_run(run, tmp_path / "nav")
+    assert manifest["n_episodes"] == 3
+    pages = [Path(p).read_text() for p in manifest["pages"]]
+    assert all(viz.NAV_MARKER not in p for p in pages), "every exported page must have its nav slot filled"
+    assert "data-nav='prev'" not in pages[0] and "ep1.html" in pages[0]      # first page: no prev, next is ep1
+    assert "data-nav='prev'" in pages[1] and "data-nav='next'" in pages[1]   # the middle page walks both ways
+    assert "data-nav='next'" not in pages[2]
+    for p in pages:                                     # the picker lists every sibling, on every page
+        assert p.count("id='ep-picker'") == 1
+        assert all(f"value='ep{i}.html'" in p for i in range(3))
+    assert pages[1].count(" selected>") == 1, "the picker marks exactly the page you are on"
+    assert "<option value='ep1.html' selected>" in pages[1]
+
+
+def test_nav_group_marks_position_and_disables_the_ends():
+    rows = [{"href": "a.html", "label": "a"}, {"href": "b.html", "label": "b"}]
+    first, last = viz.nav_group(rows, 0), viz.nav_group(rows, 1)
+    assert "1/2" in first and "2/2" in last
+    assert "aria-disabled='true'" in first and "aria-disabled='true'" in last
+    assert "<option value='a.html' selected>" in first and "<option value='b.html' selected>" in last
+
+
+def test_index_is_a_sortable_filterable_table_with_the_columns_that_decide_what_to_open():
+    """The index has to answer "which episode is worth opening" without opening any. That means the deciding
+    numbers as COLUMNS (outcome, primary, distance to the Nash solution, fabricated share, arm/seed/instance), a
+    machine-sortable value on every numeric cell, and filters — all client-side over the rows already present, so
+    the file stays one static table rather than a table plus a JSON copy of itself."""
+    rows = [{"href": "a.html", "label": "a", "model": "m", "arm": "moves_chat", "instance": "inst1", "seed": 0,
+             "deal": True, "primary": 0.7, "dist_nbs": 0.12, "usw": 3.0, "esw": 0.5, "fabricated_pct": 0.0,
+             "regret": 2.0},
+            {"href": "b.html", "label": "b", "model": "m", "arm": "moves_only", "instance": "inst2", "seed": 1,
+             "deal": False, "primary": 0.0, "dist_nbs": None, "usw": 0.0, "esw": -1.0, "fabricated_pct": 40.0,
+             "regret": None}]
+    h = viz.render_index_html(rows, "Episodes — run")
+    assert _missing(h, "class='sortable'", "id='idx-search'", "data-filter='outcome:1'",
+                    "data-filter='outcome:0'", "data-filter='flag:fabricated'", "id='idx-count'",
+                    "dist NBS", "fabricated", "instance", "total regret") == []
+    assert "data-sort='0.7'" in h and "data-sort='0.12'" in h, "numeric cells sort on the number"
+    assert "data-fabricated='40.0'" in h, "the fabricated filter reads a row attribute, not the rendered text"
+    assert h.count("<tr data-hay=") == 2
+    assert "inst1" in h and "moves_only" in h
+    assert "40.0%" in h and "class='flag'" in h, "a fabricated share is flagged, not just printed"
+    assert "http://" not in h and " src=" not in h                       # still self-contained
+
+
+def test_summary_strip_carries_the_whole_episode_in_one_row(payload):
+    """The strip replaced a grid of tiles because it sits above the chart and the chart is what a reader came
+    for. It must still carry every number the tiles did, plus the ones the brief added."""
+    h = viz.render_episode_html(payload)
+    assert "class='strip'" in h
+    for key in ("outcome", "primary", "dist to NBS", "joint welfare", "worst-off", "Gini", "turns"):
+        assert f">{key}</div>" in h, f"the summary strip must carry {key!r}"
+
+
+def test_distance_to_nbs_is_zero_when_the_deal_that_closed_is_the_nash_solution(episode):
+    """The fixture table proposes the Nash bargaining solution, so if it closed, the distance is exactly zero —
+    which is the only value that pins the metric down rather than merely looking plausible."""
+    ep, inst = episode
+    p = viz.episode_payload(ep, inst)
+    d = viz.distance_to_nbs(p)
+    if (p["outcome"] or {}).get("deal_index") is not None:
+        nash = p["game"]["solutions"]["nash"]["index"]
+        expected = 0.0 if p["outcome"]["deal_index"] == nash else None
+        if expected is not None:
+            assert d == pytest.approx(0.0, abs=1e-9)
+    # and it is absent, not zero, when nothing closed
+    no_deal = json.loads(json.dumps(p))
+    no_deal["outcome"].pop("deal_index", None)
+    assert viz.distance_to_nbs(no_deal) is None
+
+
+def test_prompt_views_travel_as_a_shared_message_pool_and_rehydrate_exactly(payload):
+    """The biggest thing on a page was the same prompt text repeated per turn: a six-seat episode re-states its
+    system prompt every turn and each view carries the whole history. Pooling identical messages is a pure
+    transport change, so it must (a) shrink the wire form and (b) rebuild every view byte for byte."""
+    wire = viz.slim_payload(payload)
+    pool = wire["msgpool"]
+    assert pool and all(isinstance(t["view"][0], int) for t in wire["turns"] if t["view"])
+    for original, slim in zip(payload["turns"], wire["turns"]):
+        if not original["view"]:
+            assert slim["view"] == original["view"]
+            continue
+        rebuilt = [{"role": pool[i][0], "content": pool[i][1]} for i in slim["view"]]
+        assert rebuilt == original["view"], "a pooled view must rebuild exactly"
+    assert len(json.dumps(wire)) < len(json.dumps(payload)), "the whole point is that the wire form is smaller"
+    # the caller's payload is a public API and must not be mutated by rendering
+    assert all(isinstance(t["view"][0], dict) for t in payload["turns"] if t["view"])
+
+
+def test_page_embeds_the_pooled_payload_and_ships_its_rehydrator(payload):
+    h = viz.render_episode_html(payload)
+    data = h.partition('<script type="application/json" id="viz-payload">')[2].partition("</script>")[0]
+    assert '"msgpool"' in data
+    assert "function viewOf" in h, "the page must carry the code that turns pool indices back into messages"
+    # the server-rendered system-prompt audit reads the UNSLIMMED payload, so the text is still in the document
+    assert "System prompts" in h
+
+
+def test_transcript_wears_the_action_grammar_and_defers_prompt_bodies(payload):
+    """Action types are states, so they wear the reserved status palette with a glyph and a word beside the
+    colour; and a prompt panel ships its summary with an EMPTY body, filled on first open — the difference
+    between a page that appears instantly and one that hitches on a few hundred kilobytes of prompt text."""
+    h = viz.render_episode_html(payload)
+    for cls in ("a-propose", "a-accept", "a-reject", "a-walk"):
+        assert f".turn.{cls}" in h and f".chip.{cls}" in h, f"{cls} needs both a card and a scrubber style"
+    assert "ACT_KINDS" in h and 'word: "propose"' in h
+    assert 'data-lazy="view"' in h and "function fillLazy" in h
+    assert "function scrubberHtml" in h, "the turn rail is what makes a 30-turn transcript navigable"
+
+
+def test_keyboard_bindings_ship_and_are_self_documenting(payload):
+    """A shortcut that is not in the help overlay does not exist as far as a reader is concerned, so the overlay
+    is generated from the SAME list the handler reads."""
+    h = viz.render_episode_html(payload)
+    assert "function registerKeys" in h
+    for key in ('keys: ["j", "ArrowDown"]', 'keys: ["k", "ArrowUp"]', 'keys: ["n"]', 'keys: ["p"]',
+                'keys: ["f"]', 'keys: ["?"]', 'keys: ["e"]', 'keys: ["c"]'):
+        assert key in h, f"missing binding {key}"
+    assert "next turn" in h and "previous episode" in h          # the help text for them
+    assert "ev.ctrlKey || ev.metaKey || ev.altKey" in h, "modified keystrokes must stay with the browser"
+    assert '["INPUT", "TEXTAREA", "SELECT", "OPTION"]' in h, "shortcuts must not fire while typing"
+
+
+def test_comparison_page_opens_with_a_verdict_and_gives_each_column_its_own_ids(two_runs):
+    """Two things the compare page was missing: a one-line answer to "who won" above the delta table, and
+    per-column element-id prefixes. Both columns numbered their turns from zero, so a single prefix put two
+    elements with the same id on one page and every lookup silently resolved to whichever came first."""
+    c = viz.pair_runs(*two_runs)[0][0]
+    h = viz.render_compare_html(c)
+    assert "class='verdict'" in h
+    assert "Verdict" in h or "Neither side won" in h
+    assert 'PREFIX = { left: "lturn-", right: "rturn-" }' in h
+    assert "id='expand-all'" in h and "id='collapse-all'" in h and "id='cf-toggle'" in h
+    assert 'keys: ["d"]' in h, "jump-to-divergence must have a key, it is the page's whole point"
+
+
+def test_verdict_names_the_side_that_won_and_counts_the_ties():
+    """The verdict must use each metric's OWN better-direction (a lower Gini is a win for whoever lowered it) and
+    state the ties, because "better on 3" with nine metrics on screen reads as six losses otherwise."""
+    from interlens.arena.viz.page import _verdict_strip
+    payload = {"labels": {"left": "baseline", "right": "swapped"},
+               "scores": [{"metric": "primary score", "delta": 0.4, "higher_is_better": 1},
+                          {"metric": "Gini of surplus", "delta": -0.2, "higher_is_better": -1},
+                          {"metric": "deal reached", "delta": 0, "higher_is_better": 1},
+                          {"metric": "turns", "delta": 3, "higher_is_better": 0}]}
+    h = _verdict_strip(payload)
+    assert "swapped" in h and "all 2 metric(s)" in h            # both movers favour the right side
+    assert "primary score +0.4" in h                            # the largest is named
+    assert "2 scored metric(s) tied" in h
+    flipped = {**payload, "scores": [{"metric": "primary score", "delta": -0.4, "higher_is_better": 1},
+                                     {"metric": "Gini of surplus", "delta": -0.2, "higher_is_better": -1}]}
+    assert "split" in _verdict_strip(flipped)
+
+
+def test_every_page_kind_emits_syntactically_valid_javascript(payload, two_runs, tmp_path):
+    """The pages are executed in a DOM harness before release, but that needs node and a DOM library. This is the
+    always-available floor: the emitted script must at least PARSE, on all three page kinds, so a stray backtick
+    in a template literal cannot ship silently. Skipped where node is unavailable."""
+    import shutil
+    import subprocess
+    node = shutil.which("node") or str(Path.home() / ".nvm/versions/node/v25.9.0/bin/node")
+    if not Path(node).exists():
+        pytest.skip("node is not available on this machine")
+    c = viz.pair_runs(*two_runs)[0][0]
+    pages = {"episode": viz.render_episode_html(payload), "compare": viz.render_compare_html(c),
+             "index": viz.render_index_html([{"href": "a.html", "label": "a", "deal": True, "primary": 0.5}],
+                                            "Episodes")}
+    for kind, html in pages.items():
+        script = html.rpartition("<script>")[2].partition("</script>")[0]
+        assert script.strip(), f"the {kind} page must carry an executable script"
+        f = tmp_path / f"{kind}.js"
+        f.write_text(script)
+        done = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
+        assert done.returncode == 0, f"{kind} page script does not parse:\n{done.stderr[:600]}"
