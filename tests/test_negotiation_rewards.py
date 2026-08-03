@@ -23,6 +23,7 @@ import math
 import pytest
 
 from interlens.arena.negotiation.rewards import (DEFAULT_EPS, mixture_rewards, no_deal_utility, potential,
+                                                 violation_decomposition,
                                                  shaping_reward, smoothed_log_utility, table_reward)
 
 
@@ -109,3 +110,114 @@ def test_rejects_bad_lambda_and_eps():
 		smoothed_log_utility(0.5, eps=0.0)
 	with pytest.raises(ValueError):
 		mixture_rewards(None, lam=0.5)      # no-deal without n_agents cannot be sized
+
+
+# ---------------------------------------------------------------- g_floor (fairness-GRPO v2) --
+# [rational_agents: grpo-v2 lane] 2026-08-03 — the clipped violation branch. v1's diagnosis (note 0023) was that
+# the unbounded linear tail made the objective an IR-violation penalty wearing a Nash-welfare costume; g_floor is
+# the surgery, and these pin the two things that must survive it (the walk-away ordering) and the one thing that
+# must not change (v1's numbers at the default).
+
+FLOOR = -8.0
+
+
+def test_default_is_byte_identical_to_v1():
+	"""No g_floor means the v1 shape exactly — note 0023's reward numbers must stay reproducible."""
+	for z in (-5.0, -0.2, 0.0, 0.005, DEFAULT_EPS, 0.3, 1.0, 4.0):
+		assert smoothed_log_utility(z, g_floor=None) == smoothed_log_utility(z)
+	assert table_reward([0.1, -0.3, 0.5], g_floor=None) == table_reward([0.1, -0.3, 0.5])
+	assert no_deal_utility(g_floor=None) == no_deal_utility()
+
+
+def test_floor_clips_the_tail_and_leaves_the_ir_region_untouched():
+	assert smoothed_log_utility(-5.0, g_floor=FLOOR) == FLOOR
+	assert smoothed_log_utility(-0.2, g_floor=FLOOR) == FLOOR      # v1 valued this at -25.6
+	for z in (DEFAULT_EPS, 0.05, 0.3, 1.0):                        # above threshold: unchanged
+		assert smoothed_log_utility(z, g_floor=FLOOR) == smoothed_log_utility(z)
+
+
+def test_walk_away_still_beats_a_below_threshold_deal_PER_PARTY():
+	"""The per-party ordering the linear branch exists to protect, and the one a legal floor keeps: from the
+	point of view of the party being shorted, being shorted is worse than no agreement at all."""
+	walk = no_deal_utility(g_floor=FLOOR)
+	for z in (-0.02, -0.5, -5.0):
+		assert smoothed_log_utility(z, g_floor=FLOOR) < walk
+	assert walk == no_deal_utility()                               # a legal floor cannot move the walk value
+
+
+def test_clipping_KNOWINGLY_relaxes_the_table_level_walk_ordering():
+	"""**The named cost of the surgery, pinned so it cannot be forgotten.**
+
+	Under the v1 unbounded branch a single shorted party dragged the whole table below the walk-away value, so
+	the objective could never prefer "short one, serve five" to no deal. A constant floor caps that party's
+	contribution at ``g_floor / n``, so a sufficiently well-served majority now outweighs it — which is the same
+	property that moves reward variance out of the IR region and into the distribution term. The two cannot be
+	separated: any floor tight enough to fix v1's dynamic range is loose enough to permit this.
+
+	v2 therefore does NOT rely on the reward to deter below-threshold agreements. That deterrent moves to a
+	preregistered evaluation guard on the below-threshold rate. This test exists to make the trade explicit."""
+	assert table_reward([0.5, 0.5, -0.5]) < table_reward(None)                    # v1: majority cannot outweigh
+	assert table_reward([0.5, 0.5, -0.5], g_floor=FLOOR) > table_reward(None, g_floor=FLOOR)   # v2: it can
+
+
+def test_violation_tolerance_is_monotone_in_the_floor():
+	"""How many parties at ``z`` it takes to outweigh one clipped party, the scalar version of the trade above:
+	a deeper floor buys back more deterrence and less distributional gradient."""
+
+	def tolerance(floor: float, *, z: float = 0.5, n: int = 6) -> bool:
+		"""Does a table of ``n`` parties, one shorted and the rest at ``z``, still score below walking?"""
+		return table_reward([z] * (n - 1) + [-0.5], g_floor=floor) < no_deal_utility(g_floor=floor)
+
+	assert tolerance(-60.0)          # a floor deep enough to keep v1's deterrent...
+	assert not tolerance(-8.0)       # ...and one tight enough to be useful does not
+
+
+def test_floor_at_or_above_the_walk_value_is_refused():
+	for bad in (no_deal_utility(), -5.0, 0.0, 1.0):
+		with pytest.raises(ValueError, match="strictly below"):
+			smoothed_log_utility(-1.0, g_floor=bad)
+
+
+def test_floor_preserves_monotonicity_weakly_and_concavity_above_the_crossing():
+	zs = [-4.0, -1.0, -0.3, -0.02, 0.0, 0.005, 0.02, 0.2, 1.0]
+	vals = [smoothed_log_utility(z, g_floor=FLOOR) for z in zs]
+	assert all(b >= a for a, b in zip(vals, vals[1:]))             # non-decreasing (flat below the crossing)
+	# Concavity — the property that does the fairness work — still holds among IR outcomes.
+	rich, poor = [0.8, 0.05], [0.6, 0.25]
+	assert table_reward(poor, g_floor=FLOOR) > table_reward(rich, g_floor=FLOOR)
+
+
+def test_violation_decomposition_sums_to_the_table_reward():
+	for z, floor in [([0.4, 0.2, 0.1], None), ([0.4, -0.2, 0.1], None),
+	                 ([0.4, -0.2, 0.1], FLOOR), ([0.4, 0.2, 0.1], FLOOR)]:
+		among, viol = violation_decomposition(z, g_floor=floor)
+		assert among + viol == pytest.approx(table_reward(z, g_floor=floor))
+
+
+def test_violation_term_is_zero_exactly_on_ir_deals_and_on_no_deal():
+	assert violation_decomposition([0.4, 0.2, 0.1])[1] == 0.0
+	among, viol = violation_decomposition(None)
+	assert (among, viol) == (no_deal_utility(), 0.0)               # walking is not a violation
+	assert violation_decomposition([0.4, -0.01, 0.1])[1] < 0.0
+
+
+def test_the_floor_shrinks_the_violation_term_and_not_the_distribution_term():
+	"""The whole point, as an inequality: clipping compresses the violation branch's range while leaving the
+	among-IR term identical, which is what shifts reward variance from 'was anyone shorted' to 'how was it
+	divided'."""
+	z = [0.5, 0.3, -0.4]
+	among_v1, viol_v1 = violation_decomposition(z)
+	among_v2, viol_v2 = violation_decomposition(z, g_floor=FLOOR)
+	assert among_v2 == among_v1
+	assert abs(viol_v2) < abs(viol_v1)
+
+
+def test_mixture_and_shaping_thread_the_floor():
+	z = [0.5, 0.3, -0.4]
+	assert mixture_rewards(z, lam=1.0, g_floor=FLOOR) == pytest.approx(
+		[table_reward(z, g_floor=FLOOR)] * 3)
+	assert mixture_rewards(z, lam=0.0, g_floor=FLOOR) == pytest.approx(
+		[smoothed_log_utility(v, g_floor=FLOOR) for v in z])
+	# potential is floored twice over (by g_floor per party, then by the walk value); shaping telescopes either way
+	assert shaping_reward(None, z, g_floor=FLOOR) == pytest.approx(
+		potential(z, g_floor=FLOOR) - potential(None, g_floor=FLOOR))
