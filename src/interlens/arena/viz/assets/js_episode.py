@@ -47,11 +47,14 @@ function buildMarks() {
     const o = (t.oracles || {})[ORACLE];
     if (o && o.best_deal_index !== null && o.best_deal_index !== undefined)
       marks.push({ index: o.best_deal_index, kind: "circle", color: "s2", r: 4.5, role: "oracle",
-        title: `${ORACLE} oracle's deal at turn ${t.idx} (${t.seat})`, turn: t.idx });
+        title: `${ORACLE} oracle's deal at turn ${t.idx} (${t.seat})`, turn: t.idx, seat: t.seat });
   });
   P.trajectory.forEach(p => marks.push({
     index: p.index, kind: "circle", color: "s1", r: 6.5, label: String(p.ordinal), dx: 8, dy: -7,
-    title: `move ${p.ordinal}: ${p.seat} ${p.atype} at turn ${p.turn_idx}`, role: "proposal", turn: p.turn_idx }));
+    title: `move ${p.ordinal}: ${p.seat} ${p.atype} at turn ${p.turn_idx}`, role: "proposal", turn: p.turn_idx,
+    /* The same three facts the title states, kept as FIELDS as well, so the hover card can phrase them itself
+       rather than re-parsing a sentence. */
+    ordinal: p.ordinal, seat: p.seat, atype: p.atype }));
   if (P.outcome.deal_index !== null && P.outcome.deal_index !== undefined)
     marks.push({ index: P.outcome.deal_index, kind: "square", color: "s1", r: 8, label: "AGREED", dx: 10, dy: 4,
       title: "the deal that closed", role: "agreed" });

@@ -202,6 +202,42 @@ svg.pannable{cursor:grab}
 .meter i.ok{background:var(--s3)} .meter i.bad{background:var(--critical)}
 .meter u{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--ink)}
 
+/* --- the frontier chart's rich hover card (js_hover) -------------------------------------------------------
+   One floating element per page, positioned in viewport coordinates beside the pointer. `pointer-events:none`
+   while un-pinned is load-bearing: a card that could take the pointer would steal the hover keeping it open.
+   Everything is a shared token, so it follows the theme with the rest of the page and prints away cleanly. */
+.hcard{position:fixed;left:0;top:0;z-index:60;width:min(360px,calc(100vw - 24px));max-height:min(78vh,560px);
+ overflow:auto;pointer-events:none;opacity:0;visibility:hidden;transition:opacity .08s linear;
+ background:var(--surface-1);border:1px solid var(--ring-2);border-radius:var(--r-2);
+ box-shadow:0 8px 26px rgba(0,0,0,.18),var(--shadow);padding:var(--sp-2) var(--sp-3) var(--sp-1);
+ font-size:var(--t-xs);line-height:1.45;color:var(--ink)}
+.hcard.on{opacity:1;visibility:visible}
+.hcard.pinned{pointer-events:auto;border-color:var(--s1)}
+.hcard .hhd{display:flex;gap:var(--sp-2);align-items:baseline;justify-content:space-between;
+ font-size:var(--t-sm);font-weight:600}
+.hcard .hsub{color:var(--ink-2);margin-top:1px}
+.hcard .hnote{margin-top:var(--sp-2);padding:var(--sp-1) var(--sp-2);border-left:2px solid var(--s3);
+ background:var(--surface-2);border-radius:0 var(--r-1) var(--r-1) 0;color:var(--ink-2)}
+.hcard .hmath{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--t-xs);
+ color:var(--ink);margin-bottom:2px}
+.hcard .hmath sub{font-size:.78em}
+.hcard .hdeal{margin-top:var(--sp-2);display:flex;flex-wrap:wrap;gap:3px 5px;align-items:baseline}
+.hcard .hsep{color:var(--muted)}
+.hcard .pills{margin:var(--sp-2) 0 0}
+.hcard .hcap{margin-top:var(--sp-2);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.04em;
+ color:var(--muted)}
+.hcard table.hrank{width:100%;border-collapse:collapse;font-size:var(--t-xs);
+ font-variant-numeric:tabular-nums;margin-top:2px}
+.hcard table.hrank th{font-size:.66rem;padding:1px 3px}
+.hcard table.hrank td{padding:1px 3px;border-bottom:0}
+.hcard table.hrank tbody tr:hover td{background:none}
+.hcard .hrk{color:var(--muted);width:1.2em}
+.hcard .hnm{max-width:11ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hcard .hnum{text-align:right}
+.hcard .hbar{width:54px}
+.hcard .hbar .meter{height:6px}
+.hcard .hfoot{margin-top:var(--sp-1);color:var(--muted);font-size:.66rem}
+
 /* --- transcript: the turn-type visual grammar -------------------------------------------------------------
    Action types are STATES, so they wear the reserved status palette, never a categorical series slot — and every
    one of them carries a glyph and a word beside the colour, so nothing is colour-alone. */
@@ -375,6 +411,6 @@ svg.issuesvg .dealdot{fill:var(--s1);stroke:var(--surface-1);stroke-width:1.5}
 @media (max-width:760px){.cols,.two{grid-template-columns:1fr}
  .topbar{position:static} .turnhd,.scrub,.colhd{position:static} main{padding:var(--sp-3)}
  .strip .stat{border-right:0}}
-@media print{aside,button,select,.topbar,.scrub,.zoombar,#help{display:none}
+@media print{aside,button,select,.topbar,.scrub,.zoombar,#help,.hcard{display:none}
  .card{break-inside:avoid;border:1px solid #ccc} .turn{break-inside:avoid}}
 """

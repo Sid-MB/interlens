@@ -1083,6 +1083,139 @@ def test_comparison_page_keeps_the_plain_side_panel(two_runs):
     h = viz.render_compare_html(c)
     assert "Who is at the table" in h and "id='sidebar'" not in h and "id='pane-chat'" not in h
 
+# --- the rich hover card every chart point carries (assets/js_hover.py) --------------------------------------
+# The card's MARKUP only exists once a pointer event happens, so it is exercised in the DOM harness at the end of
+# this section. What is assertable without a browser is that the explanation library, the wiring, and the name
+# table the card decodes deals against all ship in the document.
+def test_every_solution_concept_ships_its_definition_and_what_separates_it(payload):
+    """A solution concept is a definition, not a label. Each of the five marked concepts must ship its objective
+    AND the one property that distinguishes it, because a reader who cannot tell KS from EGAL on hover cannot
+    read the chart — and the utilitarian point must keep its not-scale-invariant warning."""
+    h = viz.render_episode_html(payload)
+    assert _missing(h, *viz.geometry.CONCEPT_LABELS.keys()) == [], "every concept needs an explanation entry"
+    assert _missing(h,
+                    "Nash bargaining solution", "Nash's four axioms",          # NBS
+                    "Kalai&ndash;Smorodinsky", "fraction of its own ideal", "monotonicity",  # KS
+                    "maximizes <b>total</b> surplus", "NOT scale-invariant</b>",  # UTIL
+                    "Rawlsian maximin",                                        # EGAL
+                    "maximum Nash welfare", "<b>Caragiannis</b>",              # MNW
+                    ) == []
+    # the non-concept point kinds carry standing explanations too
+    assert _missing(h, "frontier deal this party would dictate", "best-response oracle</b>",
+                    "<b>on the table</b>", "closed on</b>", "standing on the table</b>") == []
+
+
+def test_the_card_renders_maths_with_no_maths_library(payload):
+    """The pages open off ``file://`` with no network, so the formulae are HTML ``<sub>`` plus Unicode operators.
+    A maths library would either be a CDN request (blank card) or a large vendored blob."""
+    h = viz.render_episode_html(payload)
+    assert "argmax<sub>d</sub>" in h and "&Sigma;<sub>i</sub>" in h and "&tau;<sub>i</sub>" in h
+    assert "katex" not in h.lower() and "mathjax" not in h.lower()
+    assert ".hcard .hmath sub" in h, "the subscripts need to be sized, or the formula looks like a typo"
+
+
+def test_the_card_layer_is_wired_to_the_cloud_and_to_every_mark(payload):
+    """One card per page, opened from exactly two places in the chart — the nearest-deal handler (which covers all
+    |D| cloud dots and frontier rings) and the per-mark listeners (which cover stars, diamonds, oracle circles,
+    the trajectory and the AGREED square). Anything that draws a mark therefore gets a card for free, including
+    the sidebar's mini chart, which calls the same function."""
+    h = viz.render_episode_html(payload)
+    assert "function hoverCard()" in h and "function hoverCardHtml(" in h
+    assert "const CARD = hoverCard();" in h
+    assert 'CARD.show(game, { index: i, role: "deal" }, evt)' in h, "the cloud must open cards, not only marks"
+    assert "CARD.show(game, mk, evt)" in h and "CARD.pin(game, mk, evt)" in h
+    assert "<title>${tip}</title>" not in h, "a native SVG tooltip on top of the card is two tooltips"
+    assert 'aria-label="${tip}"' in h, "dropping the title must not drop the accessible name"
+    assert ".hcard{" in h and "pointer-events:none" in h, "an un-pinned card must not eat its own hover"
+    assert "#help,.hcard{display:none}" in h, "a floating card must not print"
+
+
+def test_the_payload_carries_the_name_table_the_card_decodes_deals_against(payload):
+    """Deals travel as INDICES plus one issue/option name table, and the card composes the words client-side —
+    |D| x n_issues option strings would be most of the page. The per-deal reward stats the card reads must all be
+    present and one value per deal per party."""
+    g = payload["game"]
+    assert [i["name"] for i in g["issues"]] and all(i["options"] for i in g["issues"])
+    assert len(g["strides"]) == len(g["issues"]), "the client decodes an index with the strides"
+    d, n = g["deals"], g["n_parties"]
+    assert d["n"] == len(d["u"]) == len(d["s"]) == len(d["xn"]) == len(d["d_frontier"])
+    assert all(len(row) == n for row in d["xn"]) and len(g["thresholds"]) == n
+    assert _missing(json.dumps(g["deals"]), "named") == ["named"], "no per-deal strings in the deal tables"
+
+
+def test_hover_cards_open_for_every_point_kind_in_a_dom(payload, tmp_path):
+    """The whole feature in a real DOM: hover each kind of point in turn and read the card back.
+
+    Every kind gets the same four blocks (identity, the deal in words, the reward pills, the ranking table), and
+    the special points additionally get their explanation — so the assertions below are one row per kind rather
+    than one test per kind. The last two steps check the two things a hover card most easily gets wrong: leaving
+    the chart must dismiss it, and a click must pin it (which is also the touch path, where there is no hover)."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    oracle = payload["counterfactual_oracles"][0]
+    first_move = payload["trajectory"][0]
+    kinds = {                                  # step -> (expected identity fragment, expected explanation fragment)
+        "NBS": ("Nash bargaining solution", "product"),
+        "KS": ("Kalai", "ideal"),
+        "UTIL": ("utilitarian", "NOT scale-invariant"),
+        "EGAL": ("egalitarian", "maximin"),
+        "MNW": ("maximum Nash welfare", "Caragiannis"),
+        "best efficient deal for": ("Party-best", "would dictate"),
+        f"{oracle} oracle's deal at turn": ("Oracle's move at turn", "best-response oracle"),
+        f"move {first_move['ordinal']}:": (f"Move {first_move['ordinal']}", "on the table"),
+    }
+    # The two roles a given episode may not draw — an episode that closed no deal has no AGREED square, and the
+    # standing offer belongs to the sidebar's mini chart — are rendered through the page's own card controller.
+    undrawn = {"agreed": ("AGREED", "closed on"), "standing": ("On the table", "standing on the table")}
+    steps = ([{"hover": k} for k in kinds] + [{"hover": "cloud"}, {"hover": "out"}, {"click": "cloud"}]
+             + [{"card": {"index": 0, "role": r}} for r in undrawn])
+    report = _run_harness(viz.render_episode_html(payload), steps, tmp_path)
+    assert report["ok"] and not report["errors"]
+    marked = report["steps"][1:1 + len(kinds)]
+    cloud, left, pinned = report["steps"][1 + len(kinds):4 + len(kinds)]
+    for (role, (identity, why)), got in zip(undrawn.items(), report["steps"][-len(undrawn):]):
+        assert got["card_on"] and identity in got["card_kind"] and why in got["card_note"], \
+            f"the {role} card renders even where this episode draws no such mark: {got['card_kind']!r}"
+
+    issue = payload["game"]["issues"][0]
+    n = payload["game"]["n_parties"]
+    for (target, (identity, why)), got in zip(kinds.items(), marked):
+        assert got["hovered"], f"no mark on the chart matched {target!r}"
+        assert got["card_on"] and not got["card_pinned"], f"hovering {target!r} must open one un-pinned card"
+        assert identity in got["card_kind"], f"{target!r} says it is {got['card_kind']!r}, wanted {identity!r}"
+        assert why in got["card_note"], f"{target!r} must explain itself: wanted {why!r} in {got['card_note']!r}"
+        # the deal in words, the deal-level stats, and the party ranking, on every kind
+        assert issue["name"] in got["card_deal"] and any(o in got["card_deal"] for o in issue["options"])
+        assert _missing(" ".join(got["card_pills"]), "mean z", "worst-off z", "Nash welfare") == []
+        assert len(got["card_rank"]) == len(set(got["card_rank"])) == n, "one ranked row per party, named once"
+        assert got["card_bars"] == n, "every ranked row carries its bar"
+        z = [int(v.rstrip("%")) for v in got["card_rank_z"]]
+        assert z == sorted(z, reverse=True), f"the ranking must be sorted by z descending, got {z}"
+
+    assert "argmax" in marked[0]["card_math"], "the NBS card carries its objective, not only prose"
+    # an ordinary cloud deal needs no explanation, but still gets its identity, deal and numbers
+    assert cloud["card_on"] and cloud["card_kind"] in ("Deal in the space", "Efficient deal")
+    assert not cloud["card_note"] and len(cloud["card_rank"]) == n
+    assert not left["card_on"], "leaving the chart dismisses the card"
+    assert pinned["card_on"] and pinned["card_pinned"], "a click pins the card (and is the touch path)"
+
+
+def test_the_comparison_chart_gets_cards_too_and_never_invents_an_explanation(two_runs, tmp_path):
+    """The comparison page draws the same chart, so it inherits the cards. It marks a point by SIDE rather than by
+    the roles this layer knows, which is the case worth pinning down: an unknown role must fall back to what the
+    mark says about itself, never to some other kind's explanation."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    c = viz.pair_runs(*two_runs)[0][0]
+    report = _run_harness(viz.render_compare_html(c), [{"hover": 0}, {"hover": "cloud"}], tmp_path)
+    assert report["ok"] and not report["errors"]
+    mark, cloud = report["steps"][1], report["steps"][2]
+    for got in (mark, cloud):
+        assert got["card_on"] and got["card_kind"], "a point with no card is a point a reader cannot read"
+        assert got["card_rank"] and got["card_bars"] == len(got["card_rank"])
+        assert _missing(" ".join(got["card_pills"]), "mean z", "Nash welfare") == []
+    assert "on the table" not in mark["card_note"], "a side-tagged mark must not borrow the proposal explanation"
+
 
 # --- executing the page in a stubbed DOM: the scroll sync only exists once the script runs -------------------
 def _dom_harness():

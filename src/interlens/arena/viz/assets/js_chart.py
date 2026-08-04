@@ -20,7 +20,9 @@
 **The frontier chart** places every deal in the instance's deal space, draws the efficient envelope, the play
 trajectory, and the reference marks, and lets a reader inspect any of the ``|D|`` deals — not only the marked
 ones — by hovering: one handler on the SVG finds the nearest deal in plot coordinates rather than attaching
-thousands of listeners. Hover opens the headline read; a click *pins* the full per-party breakdown.
+thousands of listeners. Hover opens the headline read in the side panel AND the rich hover card at the pointer
+(``js_hover``: what the point is, the deal in named options, the reward stats, and the party ranking); a click
+*pins* both. Every mark kind is covered by the same two calls, so a mark can never exist without a card.
 
 It also zooms and pans, in plain SVG with no library: the view is the ``viewBox``, so zooming is arithmetic on
 four numbers and every mark stays vector-crisp. Wheel-zoom is deliberately gated behind Ctrl/⌘ or Shift — an
@@ -105,10 +107,13 @@ function frontierChart(host, game, marks, paths, onPick) {
     const x = px(d.wx[mk.index]), y = py(d.wy[mk.index]), r = mk.r || 6.5;
     const tip = E(mk.title || mk.label || "");
     /* `mk.cls` is a STATE of a mark (e.g. a proposal the reader has not scrolled to yet), never an identity:
-       it changes weight, not hue, so the chart never spends a categorical slot on "later". */
+       it changes weight, not hue, so the chart never spends a categorical slot on "later".
+       No `<title>` child: the rich hover card (js_hover) opens instantly on the same pointer, and the browser's
+       native SVG tooltip would land on top of it a second later saying less. `aria-label` still carries the
+       identity for assistive technology, and the mark still takes keyboard focus (which opens the card). */
     s.push(shapeAt(mk.kind, x, y, r, "mark" + (mk.cls ? " " + mk.cls : ""),
       `fill="var(--${mk.color})" data-mark="${k}"${mk.turn !== undefined ? ` data-markturn="${mk.turn}"` : ""}
-       tabindex="0" role="button" aria-label="${tip}"`, `<title>${tip}</title>`));
+       tabindex="0" role="button" aria-label="${tip}"`, ""));
     if (mk.label) s.push(`<text class="lab" x="${(x + (mk.dx ?? 9)).toFixed(1)}" y="${(y + (mk.dy ?? -8)).toFixed(1)}">${E(mk.label)}</text>`);
   });
   // the full-cloud hover anchor, drawn last so it sits on top; positioned + revealed on hover, never intercepts
@@ -121,6 +126,9 @@ function frontierChart(host, game, marks, paths, onPick) {
     aria-label="Deal space in a scale-invariant two-dimensional embedding: joint welfare against the worst-off party's surplus. Hover anywhere to inspect the nearest deal and click to pin its per-party breakdown; the marked deals also take keyboard focus. Drag to pan, Ctrl or Shift with the wheel to zoom.">${s.join("")}</svg></div>`;
   const svg = host.querySelector("svg");
   const ring = svg.querySelector("circle.hoverpt");
+  /* The rich hover card (js_hover). One per page, shared by every chart on it, so the main frontier chart and the
+     sidebar's mini chart both get cards and two can never be open at once. */
+  const CARD = hoverCard();
 
   /* ---- zoom & pan: the view IS the viewBox, so both are arithmetic on four numbers ---- */
   let VB = { x: 0, y: 0, w: W, h: H };
@@ -193,26 +201,36 @@ function frontierChart(host, game, marks, paths, onPick) {
       clamp(); applyVB();
       return;
     }
-    if (evt.target.closest("[data-mark]")) { clearRing(); return; }   // a mark owns its own hover
+    if (evt.target.closest("[data-mark]")) { clearRing(); return; }   // a mark owns its own hover AND its card
     const i = nearest(evt);
-    if (i < 0) { clearRing(); return; }
+    if (i < 0) { clearRing(); CARD.hide(); return; }
     ring.setAttribute("cx", px(d.wx[i]).toFixed(1)); ring.setAttribute("cy", py(d.wy[i]).toFixed(1));
     ring.style.opacity = "1";
-    if (i !== lastIdx) { lastIdx = i; onPick({ index: i, role: "deal", title: "deal #" + i }); }
+    /* The card's CONTENT is rebuilt only when the nearest deal changes; it merely follows the pointer in
+       between, so sweeping the cloud does not re-render a table on every mouse event. */
+    if (i !== lastIdx) {
+      lastIdx = i;
+      onPick({ index: i, role: "deal", title: "deal #" + i });
+      CARD.show(game, { index: i, role: "deal" }, evt);
+    } else CARD.move(evt);
   });
-  svg.addEventListener("mouseleave", clearRing);
+  svg.addEventListener("mouseleave", () => { clearRing(); CARD.hide(); });
   svg.addEventListener("click", (evt) => {
     if (drag && drag.moved) return;                     // a pan is not a click
     if (evt.target.closest("[data-mark]")) return;
     const i = nearest(evt);
-    if (i >= 0) onPick({ index: i, role: "deal", title: "deal #" + i }, true);
+    if (i >= 0) {
+      onPick({ index: i, role: "deal", title: "deal #" + i }, true);
+      CARD.pin(game, { index: i, role: "deal" }, evt);   // a click pins, which is also how touch reads the card
+    }
   });
   host.querySelectorAll("[data-mark]").forEach(node => {
     const mk = marks[Number(node.dataset.mark)];
-    const fire = () => onPick(mk);
+    const fire = (evt) => { onPick(mk); CARD.show(game, mk, evt); };
     node.addEventListener("mouseenter", fire);
-    node.addEventListener("focus", fire);
-    node.addEventListener("click", () => onPick(mk, true));
+    node.addEventListener("focus", fire);       // keyboard focus anchors the card off the mark's own box
+    node.addEventListener("blur", () => CARD.hide());
+    node.addEventListener("click", (evt) => { onPick(mk, true); CARD.pin(game, mk, evt); });
   });
 
   /* Light up the mark a given TURN put on the table — the transcript-to-chart half of the sync. */

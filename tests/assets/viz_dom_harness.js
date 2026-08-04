@@ -11,7 +11,12 @@
 // a synthetic "these turn cards are in the viewport" event, which is exactly the input the sidebar consumes. So
 // scrolling is simulated deterministically rather than approximated.
 //
-// Usage:  node viz_dom_harness.js PAGE.html '[{"turns":[5,6]},{"turns":[9]}]'
+// A step may also HOVER a chart mark (`{"hover": 3}` = the mark at that index or the one whose accessible name
+// starts with that string, `{"hover": "cloud"}` = a pointer move over the deal cloud, `{"hover": "out"}` = leave
+// the chart) and pin it (`{"click": ...}`), which is how the rich hover card is tested. `{"card": {mark}}` opens
+// a card for a mark the fixture does not draw, through the page's own controller.
+//
+// Usage:  node viz_dom_harness.js PAGE.html '[{"turns":[5,6]},{"turns":[9]},{"hover":0}]'
 // Output: one JSON object on stdout — {ok, steps:[...], errors:[...]}.  Exit code 1 on any thrown error.
 const fs = require("fs");
 const { parseHTML } = require("linkedom");
@@ -25,10 +30,13 @@ const { window, document } = parseHTML(html);
 
 // --- browser APIs a DOM library does not carry -------------------------------------------------------------
 const ElementProto = window.Element.prototype;
-if (!ElementProto.getBoundingClientRect)
-  ElementProto.getBoundingClientRect = function () {
-    return { top: 0, left: 0, right: 760, bottom: 470, width: 760, height: 470, x: 0, y: 0 };
-  };
+// Unconditionally, not only when absent: linkedom HAS a getBoundingClientRect and it reports a ZERO-sized box,
+// which the chart correctly reads as "not laid out yet" and bails out of all pointer maths. The box below is the
+// frontier chart's own viewBox, so a client coordinate is a chart coordinate and a synthetic pointer event can
+// aim at a mark's cx/cy exactly.
+ElementProto.getBoundingClientRect = function () {
+  return { top: 0, left: 0, right: 760, bottom: 470, width: 760, height: 470, x: 0, y: 0 };
+};
 if (!ElementProto.scrollIntoView) ElementProto.scrollIntoView = function () {};
 if (!ElementProto.scrollTo) ElementProto.scrollTo = function () {};
 if (!("scrollTop" in ElementProto)) ElementProto.scrollTop = 0;
@@ -64,8 +72,14 @@ window.IntersectionObserver = IntersectionObserverStub;
 // --- run the page's own script -----------------------------------------------------------------------------
 const scripts = Array.from(document.querySelectorAll("script")).filter(s => !s.getAttribute("type"));
 if (scripts.length !== 1) { console.log(JSON.stringify({ ok: false, errors: ["expected exactly one executable script, found " + scripts.length] })); process.exit(1); }
+// The script also hands back the few functions a test needs to call DIRECTLY: a mark kind that a given fixture
+// happens not to produce (an episode that closed no deal has no AGREED square) still has to be renderable, and
+// asking the page's own function for that card is honest in a way a re-implementation in the test would not be.
+let api = {};
 try {
-  new Function(scripts[0].textContent)();
+  api = new Function(scripts[0].textContent + `
+    ;return { game: (typeof G !== "undefined") ? G : null,
+              hoverCard: (typeof hoverCard === "function") ? hoverCard : null };`)() || {};
 } catch (e) {
   console.log(JSON.stringify({ ok: false, errors: ["page script threw: " + (e && e.stack || e)] }));
   process.exit(1);
@@ -76,10 +90,55 @@ const q = (sel) => document.querySelector(sel);
 const all = (sel) => Array.from(document.querySelectorAll(sel));
 const classesOf = (sel) => all(sel).map(n => n.getAttribute("class") || "");
 
-function snapshot(label) {
+// --- driving the frontier chart's pointer ------------------------------------------------------------------
+// The card only exists once the script runs and only opens on a pointer event, so the harness synthesizes those.
+// The stubbed layout box is 760x470 at the origin, which is exactly the chart's viewBox, so a client coordinate
+// IS a chart coordinate and aiming at a dot's own cx/cy is a guaranteed hit on the nearest-deal handler.
+function mouseAt(node, type, x, y) {
+  const ev = new window.Event(type, { bubbles: true });
+  if (x !== undefined) { ev.clientX = x; ev.clientY = y; }
+  node.dispatchEvent(ev);          // linkedom sets `target` itself, which is what the chart's handlers read
+}
+function driveChart(step) {
+  const svg = q("#chart svg");
+  if (!svg) return null;
+  if (step.hover === "out") { mouseAt(svg, "mouseleave"); return "out"; }
+  if (step.hover === "cloud" || step.click === "cloud") {
+    const dot = q("#chart svg circle.dot") || q("#chart svg circle.front");
+    if (!dot) return null;
+    const x = Number(dot.getAttribute("cx")), y = Number(dot.getAttribute("cy"));
+    mouseAt(svg, step.click === "cloud" ? "click" : "mousemove", x, y);
+    return "cloud";
+  }
+  const marks = all("#chart [data-mark]");
+  const which = step.hover !== undefined ? step.hover : step.click;
+  const node = typeof which === "number" ? marks[which]
+    : marks.find(n => (n.getAttribute("aria-label") || "").startsWith(String(which)));
+  if (!node) return null;
+  mouseAt(node, step.click !== undefined ? "click" : "mouseenter");
+  return node.getAttribute("aria-label");
+}
+
+function snapshot(label, hovered) {
   const shownSeat = all("#issue-seats .issueseat").filter(n => !n.hasAttribute("hidden"));
+  const card = q(".hcard");
+  // Always a string, never undefined: JSON.stringify DROPS undefined values, and a key vanishing out of the
+  // report reads to the test as a broken harness rather than as "that block is absent from this card".
+  const txt = (sel) => ((card && q(sel)) || {}).textContent || "";
   return {
     label,
+    hovered: hovered === undefined ? null : hovered,
+    card_on: Boolean(card && card.classList.contains("on")),
+    card_pinned: Boolean(card && card.classList.contains("pinned")),
+    card_kind: txt(".hcard .hkind"),
+    card_sub: txt(".hcard .hsub"),
+    card_note: txt(".hcard .hnote"),
+    card_math: ((card && q(".hcard .hmath")) || {}).innerHTML || "",
+    card_deal: txt(".hcard .hdeal"),
+    card_pills: all(".hcard .pills .pill").map(n => n.textContent),
+    card_rank: all(".hcard table.hrank tbody .hnm").map(n => n.textContent),
+    card_rank_z: all(".hcard table.hrank tbody tr").map(r => (r.lastElementChild || {}).textContent),
+    card_bars: all(".hcard table.hrank tbody .hbar .meter i").length,
     tabs: all("#sidebar .tab").map(t => t.dataset.tab),
     activeTab: (q('#sidebar .tab[aria-selected="true"]') || {}).dataset,
     bubbles: all("#chatlog .bubble").length,
@@ -113,7 +172,10 @@ try {
       pick.dispatchEvent(new window.Event("change"));
     }
     if (step.turns) observers.forEach(o => o.fire(step.turns));
-    out.steps.push(snapshot(JSON.stringify(step)));
+    // `{"card": {...mark...}}` renders that mark's card through the page's own controller, no pointer involved
+    if (step.card && api.hoverCard && api.game) api.hoverCard().pin(api.game, step.card, null);
+    const hovered = (step.hover !== undefined || step.click !== undefined) ? driveChart(step) : undefined;
+    out.steps.push(snapshot(JSON.stringify(step), hovered));
   }
 } catch (e) {
   out.ok = false;
