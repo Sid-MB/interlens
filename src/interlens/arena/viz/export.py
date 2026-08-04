@@ -32,6 +32,40 @@ from .episode import RunDir
 from .page import preference_visibility, render_compare_html, render_episode_html, render_index_html
 
 
+def _parameter_fields(payload: dict) -> dict:
+    """Return the parameter-set fields shown on run and comparison indexes.
+
+    Current instances store ``solution.difficulty`` and therefore expose it as ``game.difficulty`` in a render
+    payload. The episode, cell configuration, and manifest fallbacks accept campaign outputs that mirror the same
+    metadata. ``score_differential`` is optional because an unpaired condition has no effect estimate unless its
+    campaign wrote one explicitly.
+    """
+    ep, manifest, game = payload.get("episode") or {}, payload.get("manifest") or {}, payload.get("game") or {}
+    cell = ep.get("cell_cfg") or {}
+    difficulty = (game.get("difficulty") or ep.get("difficulty") or cell.get("difficulty")
+                  or manifest.get("difficulty") or {})
+    if isinstance(difficulty, (int, float)):
+        difficulty = {"score": difficulty}
+    if not isinstance(difficulty, dict):
+        difficulty = {}
+    tags = difficulty.get("tags") or ep.get("tags") or cell.get("tags") or manifest.get("tags") or []
+    if isinstance(tags, str):
+        tags = [tags]
+    components = difficulty.get("components") or {}
+    component_text = (", ".join(f"{key}={value:.3g}" if isinstance(value, float) else f"{key}={value}"
+                                for key, value in sorted(components.items()))
+                      if isinstance(components, dict) else "")
+    return {
+        # ``scalar`` is the campaign schema; ``score`` is accepted for already-generated prototype banks.
+        "difficulty": (difficulty.get("scalar") if difficulty.get("scalar") is not None
+                       else difficulty.get("score")),
+        "difficulty_tags": ", ".join(str(tag) for tag in tags),
+        "difficulty_components": component_text,
+        "score_diff": (ep.get("score_differential") if ep.get("score_differential") is not None
+                       else manifest.get("score_differential")),
+    }
+
+
 def _link_pages(paths: list[Path], rows: list[dict]) -> None:
     """Give every written page its prev/next links and the picker of its siblings.
 
@@ -108,7 +142,8 @@ def export_run(run: str | Path, out_dir: str | Path, *, limit: int | None = None
                      "primary": out.get("primary"), "dist_nbs": distance_to_nbs(payload),
                      "usw": out.get("usw"), "esw": out.get("esw"),
                      "fabricated_pct": round(100 * (gen.get("fraction") or 0), 2),
-                     "regret": (payload.get("annotation_summary") or {}).get("total_regret")})
+                     "regret": (payload.get("annotation_summary") or {}).get("total_regret"),
+                     **_parameter_fields(payload)})
     _link_pages(paths, rows)
     note = (f"{len(rows)} episode(s) from <code>{run_dir.root}</code>. "
             + (f"{len(failures)} episode(s) failed to render." if failures else ""))
@@ -153,6 +188,11 @@ def export_comparison(left_run: str | Path, right_run: str | Path, out_dir: str 
         focal = cmp_payload.get("focal_seats") or []
         scores = {r["metric"]: r for r in cmp_payload["scores"]}
         fab = max((cmp_payload[side].get("generation") or {}).get("fraction") or 0 for side in ("left", "right"))
+        parameter_fields = _parameter_fields(cmp_payload["left"])
+        # ``score_table`` defines the comparison's normalized headline effect under this exact metric key.
+        # Keep a defensive ``score`` alias for externally constructed comparison payloads.
+        primary_score = scores.get("primary score") or scores.get("score") or {}
+        parameter_fields["score_diff"] = primary_score.get("delta")
         rows.append({"href": name,
                      "label": f"{le['instance_id']} seed {le['seed']} · {le['arm']}"
                               + (f" · swapped {', '.join(f['name'] for f in focal)}" if focal else
@@ -166,7 +206,8 @@ def export_comparison(left_run: str | Path, right_run: str | Path, out_dir: str 
                      "usw": scores.get("joint welfare USW", {}).get("delta"),
                      "esw": scores.get("egalitarian ESW", {}).get("delta"),
                      "fabricated_pct": round(100 * fab, 2),
-                     "regret": None})
+                     "regret": None,
+                     **parameter_fields})
     _link_pages(paths, rows)
     note = (f"{len(rows)} of {report['n_candidate_pairs']} matched pair(s), paired on "
             f"<code>{', '.join(pair_fields)}</code> and selected by <code>{select}</code>. "

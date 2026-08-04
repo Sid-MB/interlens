@@ -31,9 +31,18 @@ from typing import Any
 
 @dataclass
 class TurnAnnotation:
-	"""One turn's oracle annotation. ``oracle`` maps an oracle name to its verdict dict
-	(``{best, best_value, chosen_value, regret, beliefs?, flags?}``); ``regret`` is the headline per-turn
-	surplus-loss from the primary value oracle; ``flags`` are the taxonomy row ids that fired this turn."""
+	"""One turn's oracle annotation.
+
+	``oracle`` maps an oracle name to its scored verdict dict. ``counterfactuals`` stores named decision
+	references such as ``rational_private`` and ``oracle_omniscient``; each value may carry ``action``, ``deal`` or
+	``deal_index``, ``value``, and ``information``. Keeping decision references separate from scored oracle
+	verdicts lets a visualizer compare the action actually taken with both an information-feasible policy and a
+	privileged hindsight optimum without pretending that they share an information set. Older annotation files
+	omit the field and deserialize to an empty mapping.
+
+	``regret`` is the headline per-turn surplus loss from the primary value oracle, while ``flags`` are the
+	taxonomy row identifiers that fired for this turn.
+	"""
 
 	turn_idx: int
 	round: int
@@ -45,6 +54,7 @@ class TurnAnnotation:
 	cot_first_divergent_step: int | None = None
 	oracle_belief: Any = None                 # oracle posterior at this turn (belief-calibration reference)
 	stated_belief: Any = None                 # the model's stated belief (calibration comparison)
+	counterfactuals: dict[str, dict] = field(default_factory=dict)
 
 	def to_json(self) -> dict:
 		return asdict(self)

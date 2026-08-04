@@ -88,10 +88,16 @@ function pointIdentity(game, mk) {
   if (role === "party_best")
     return { head: "Party-best &mdash; " + E(seat), sub: "the deal this party would dictate",
              note: ROLE_NOTES.party_best };
-  if (role === "oracle")
-    return { head: "Oracle's move" + (mk.turn !== undefined ? " at turn " + E(mk.turn) : ""),
-             sub: seat ? "the rational counterfactual for " + E(seat) : "the rational counterfactual",
+  if (role === "oracle") {
+    const privateRational = mk.counterfactualRole === "rational_private";
+    return { head: (privateRational ? "Private-information rational move" : "Oracle's move")
+                   + (mk.turn !== undefined ? " at turn " + E(mk.turn) : ""),
+             sub: privateRational
+               ? (seat ? "implementable rational counterfactual for " + E(seat)
+                       : "implementable rational counterfactual")
+               : (seat ? "omniscient counterfactual for " + E(seat) : "omniscient counterfactual"),
              note: ROLE_NOTES.oracle };
+  }
   if (role === "proposal")
     return { head: "Move " + E(mk.ordinal !== undefined ? mk.ordinal : mk.label || "?")
                    + (seat ? " &mdash; " + E(seat) : ""),
@@ -136,7 +142,7 @@ function rankTable(game, index) {
   const rows = order.map((i, rank) => {
     const ok = s[i] >= 0, w = Math.max(0, Math.min(1, z[i]));
     return `<tr><td class="hrk">${rank + 1}</td><td class="hnm">${E(seatName(game, i))}</td>
-      <td class="hnum">${N(u[i], 1)}</td><td class="hnum muted">${N(game.thresholds[i], 1)}</td>
+      <td class="hnum">${N(u[i], 1)}</td><td class="hnum muted">${THRESHOLD(game.thresholds[i])}</td>
       <td class="hnum ${ok ? "pos" : "neg"}">${SIGN(s[i], 1)}</td>
       <td class="hbar"><span class="meter"><i class="${ok ? "ok" : "bad"}" style="width:${(w * 100).toFixed(1)}%"></i></span></td>
       <td class="hnum">${N(z[i] * 100, 0)}%</td></tr>`;

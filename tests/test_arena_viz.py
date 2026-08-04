@@ -175,6 +175,22 @@ def test_geometry_returns_none_for_a_non_game_payload():
     assert viz.GameGeometry.from_instance({}) is None
 
 
+def test_geometry_and_index_fields_preserve_campaign_difficulty_shape(episode):
+    """The campaign schema calls its composite difficulty number ``scalar``; prototype ``score`` remains valid."""
+    from interlens.arena.viz.export import _parameter_fields
+    ep, inst = episode
+    marked = json.loads(json.dumps(inst))
+    difficulty = {"scalar": 0.73, "components": {"pivotality": 0.8, "conflict": 0.66},
+                  "tags": ["pivotal", "near_zero_sum"]}
+    marked.setdefault("solution", {})["difficulty"] = difficulty
+    rendered = viz.episode_payload(ep, marked)
+    assert rendered["game"]["difficulty"] == difficulty
+    fields = _parameter_fields(rendered)
+    assert fields["difficulty"] == pytest.approx(0.73)
+    assert fields["difficulty_tags"] == "pivotal, near_zero_sum"
+    assert "conflict=0.66" in fields["difficulty_components"]
+
+
 # -------------------------------------------------------------------------------------- payload --
 def test_payload_quantifies_every_turn(payload):
     assert payload["turns"], "the fixture episode must have turns"
@@ -200,6 +216,56 @@ def test_payload_carries_the_rational_agent_counterfactual(payload):
         if o["chosen_value"] is not None and o["best_value"] is not None:
             assert o["divergence"] == pytest.approx(o["best_value"] - o["chosen_value"], abs=1e-6)
             assert o["divergence"] >= -1e-9, "regret is never negative"
+
+
+def test_payload_carries_private_rational_and_omniscient_decision_references(episode):
+    """Current annotations put both information sets beside the same turn; neither may overwrite the other."""
+    ep, inst = episode
+    turn_idx = ep["turns"][0]["idx"]
+    annotation = {
+        "episode_id": ep["episode_id"],
+        "turns": [{
+            "turn_idx": turn_idx,
+            "counterfactuals": {
+                "rational_private": {"action": "propose", "deal_index": 0, "value": 1.25,
+                                     "information": "acting_seat_private"},
+                "oracle_omniscient": {"action": "propose", "deal_index": 1, "value": 2.5,
+                                      "information": "all_private_information"},
+            },
+        }],
+    }
+    rendered = viz.episode_payload(ep, inst, annotation)
+    turn = next(row for row in rendered["turns"] if row["idx"] == turn_idx)
+    assert rendered["counterfactual_oracles"][:2] == ["rational_private", "oracle_omniscient"]
+    assert turn["oracles"]["rational_private"]["counterfactual_role"] == "rational_private"
+    assert turn["oracles"]["rational_private"]["best_deal_index"] == 0
+    assert turn["oracles"]["oracle_omniscient"]["counterfactual_role"] == "oracle_omniscient"
+    assert turn["oracles"]["oracle_omniscient"]["best_deal_index"] == 1
+    html = viz.render_episode_html(rendered)
+    assert _missing(html, "private-information rational agent", "omniscient oracle",
+                    "function threeWayCounterfactualOverlay", "ACTUAL", "PRIVATE RATIONAL", "OMNISCIENT") == []
+
+
+def test_dual_reference_package_preview_draws_all_three_decisions(episode, tmp_path):
+    """The mini graph is the requested three-way comparison, not a selector that hides one reference at a time."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    ep, inst = episode
+    turn_idx = viz.episode_payload(ep, inst)["trajectory"][0]["turn_idx"]
+    annotation = {"turns": [{"turn_idx": turn_idx, "counterfactuals": {
+        "rational_private": {"action": "propose", "deal_index": 0, "value": 1.0,
+                             "information": "acting_seat_private"},
+        "oracle_omniscient": {"action": "propose", "deal_index": 1, "value": 2.0,
+                              "information": "all_private_information"},
+    }}]}
+    rendered = viz.episode_payload(ep, inst, annotation)
+    report = _run_harness(viz.render_episode_html(rendered), [{"package": {"event": "focus"}}], tmp_path)
+    assert report["ok"] and not report["errors"]
+    focused = report["steps"][1]
+    assert focused["cf_overlay"] == "actual-rational-oracle"
+    assert len(focused["cf_marks"]) == 3
+    assert {mark["fill"] for mark in focused["cf_marks"]} == {"var(--s1)", "var(--s2)", "var(--s3)"}
+    assert "private-information rational reference" in focused["cf_note"]
 
 
 def test_payload_records_welfare_of_the_agreed_deal(payload):
@@ -292,7 +358,24 @@ def test_episode_page_has_every_panel(payload):
         "System prompts", "<details>", "worst-off", "Gini",
         # every solution concept must be named in the table view
         *(f"<b>{label}</b>" for label in ("NBS", "KS", "UTIL", "EGAL", "MNW")),
-    ) == []
+        ) == []
+
+
+def test_episode_chart_party_count_is_data_driven_and_integral_thresholds_have_no_decimal_noise(payload):
+    import copy
+    five = copy.deepcopy(payload)
+    five["game"]["n_parties"] = 5
+    html = viz.render_episode_html(five)
+    assert "5 parties means a deal's utility vector has 5 dimensions" in html
+    assert "Six parties means" not in html
+    server_html = html.partition('<script type="application/json" id="viz-payload">')[0]
+    for threshold in payload["game"]["thresholds"]:
+        if float(threshold).is_integer():
+            integer = int(threshold)
+            assert f"(threshold {integer})" in server_html
+            assert f"(threshold {integer}.0)" not in server_html
+            assert f"threshold τ {integer}.0" not in server_html
+    assert "THRESHOLD(game.thresholds[i])" in html, "browser-rendered threshold tables use the same rule"
 
 
 def test_public_preferences_are_called_out_at_the_top_but_private_stays_the_default(payload):
@@ -915,6 +998,20 @@ def test_index_is_a_sortable_filterable_table_with_the_columns_that_decide_what_
     assert "inst1" in h and "moves_only" in h
     assert "40.0%" in h and "class='flag'" in h, "a fabricated share is flagged, not just printed"
     assert "http://" not in h and " src=" not in h                       # still self-contained
+
+
+def test_index_exposes_parameter_difficulty_tags_score_delta_and_supported_correlation():
+    rows = []
+    for i, (difficulty, delta) in enumerate(((0.2, -0.1), (0.5, 0.2), (0.9, 0.8))):
+        rows.append({"href": f"{i}.html", "label": f"pair-{i}", "model": "m", "arm": "moves_chat",
+                     "visibility": "PRIVATE", "instance": f"inst-{i}", "seed": i, "deal": True,
+                     "primary": delta, "dist_nbs": None, "usw": None, "esw": None,
+                     "fabricated_pct": 0.0, "regret": None, "difficulty": difficulty,
+                     "difficulty_tags": "pivotal, near_zero_sum", "difficulty_components": "frontier=0.4",
+                     "score_diff": delta})
+    html = viz.render_index_html(rows, "Campaign")
+    assert _missing(html, "difficulty", "parameter tags", "score Δ", "pivotal", "near_zero_sum",
+                    "Difficulty × score differential", "Pearson <var>r</var>", "paired parameter sets") == []
 
 
 def test_summary_strip_carries_the_whole_episode_in_one_row(payload):

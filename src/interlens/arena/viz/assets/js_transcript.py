@@ -77,8 +77,13 @@ function bindLazy(container, turns) {
 function oracleColumn(t, game, oracle, showInfoLinks) {
   const o = (t.oracles || {})[oracle];
   const privateInfo = String((((game || {}).protocol || {}).info || "")).toLowerCase().startsWith("priv");
-  const heading = privateInfo ? `omniscient hindsight oracle (${E(oracle)})` : `full-information oracle (${E(oracle)})`;
-  const gapLabel = privateInfo ? "hindsight value gap" : "value improvement available";
+  const role = (o || {}).counterfactual_role || "";
+  const heading = role === "rational_private" ? `private-information rational agent (${E(oracle)})`
+    : role === "oracle_omniscient" && oracle !== "bestresponse" ? `omniscient oracle (${E(oracle)})`
+    : privateInfo ? `omniscient hindsight oracle (${E(oracle)})` : `full-information oracle (${E(oracle)})`;
+  const gapLabel = role === "rational_private" ? "private-policy value improvement"
+    : (privateInfo || (role === "oracle_omniscient" && oracle !== "bestresponse"))
+      ? "hindsight value gap" : "value improvement available";
   if (!o) return `<div class="col oracle"><div class="hd">${heading}</div>
     <div class="gap">This run carries no <code>${E(oracle)}</code> verdict for this turn, so there is no counterfactual to compare against.</div></div>`;
   const reg = o.divergence;
@@ -90,7 +95,7 @@ function oracleColumn(t, game, oracle, showInfoLinks) {
     ${previewIndex !== null && previewIndex !== undefined
       ? `<div class="deal"><a href="#" class="cflink" data-counterfactual data-turnidx="${t.idx}"
           data-deal="${previewIndex}" aria-haspopup="dialog" aria-expanded="false"
-          aria-label="Preview the rational agent's package on the frontier">${E(dealSummary(game, previewIndex))}</a></div>` : ""}
+          aria-label="Preview the decision reference package on the frontier">${E(dealSummary(game, previewIndex))}</a></div>` : ""}
     <table><tbody>
       <tr><td>oracle's value of its best move ${infoLink("How the oracle scores moves", showInfoLinks)}</td><td>${N(o.best_value)}</td></tr>
       <tr class="${typeof reg === "number" && reg > 0 ? "hi" : ""}"><td><b>${gapLabel}</b>
@@ -178,6 +183,46 @@ function counterfactualOverlay(t, oracle) {
   return { state, marks, paths, note };
 }
 
+/* The current campaign records TWO mathematically computed references at every turn. Keep their information sets
+   as data, not name heuristics: the private rational policy is implementable by the acting seat; the omniscient
+   oracle is a privileged hindsight ceiling. ``bestresponse`` remains the fallback ceiling for old campaigns. */
+function decisionReferences(t) {
+  const entries = Object.entries(t.oracles || {}).map(([name, value]) => ({ name, value }));
+  const byRole = (role) => entries.find(e => (e.value || {}).counterfactual_role === role);
+  return {
+    rational: byRole("rational_private") || entries.find(e => e.name === "rational_private") || null,
+    omniscient: byRole("oracle_omniscient") || entries.find(e => e.name === "oracle_omniscient")
+      || entries.find(e => e.name === "bestresponse") || null,
+  };
+}
+
+/* A three-way decision overlay: the package actually proposed or considered, the policy recommendation available
+   from the seat's private information, and the omniscient optimum. Shapes and direct labels duplicate colour so
+   the comparison survives colour-vision deficiencies. Coincident decisions deliberately remain three marks: an
+   overlap is evidence of agreement, not a reason to drop either reference from the hover graph. */
+function threeWayCounterfactualOverlay(t) {
+  const refs = decisionReferences(t);
+  if (!refs.rational || !refs.omniscient) return null;
+  const actual = (t.action || {}).deal_index !== null && (t.action || {}).deal_index !== undefined
+    ? (t.action || {}).deal_index : t.standing_deal_index;
+  const rational = counterfactualDealIndex(t, refs.rational.value);
+  const omniscient = counterfactualDealIndex(t, refs.omniscient.value);
+  const valid = i => i !== null && i !== undefined;
+  const marks = [], paths = [];
+  if (valid(actual)) marks.push({ index: actual, kind: "circle", color: "s1", r: 9,
+    label: "ACTUAL", title: "package proposed or considered by the LLM" });
+  if (valid(rational)) marks.push({ index: rational, kind: "diamond", color: "s2", r: 8,
+    label: "PRIVATE RATIONAL", title: "rational action using only the acting seat's private information" });
+  if (valid(omniscient)) marks.push({ index: omniscient, kind: "square", color: "s3", r: 8,
+    label: "OMNISCIENT", title: "oracle action using every party's hidden information" });
+  if (valid(actual) && valid(rational) && Number(actual) !== Number(rational))
+    paths.push({ cls: "cfpath proposal", indices: [actual, rational], arrowEnd: true, arrowColor: "s2" });
+  if (valid(actual) && valid(omniscient) && Number(actual) !== Number(omniscient))
+    paths.push({ cls: "cfpath", indices: [actual, omniscient], arrowEnd: true, arrowColor: "s3" });
+  return { state: "actual-rational-oracle", marks, paths,
+    note: "Actual package (circle), private-information rational reference (diamond), and omniscient oracle reference (square)." };
+}
+
 function modelPackageOverlay(t, index) {
   return {
     state: "model-package",
@@ -226,10 +271,14 @@ function counterfactualCard() {
       { compact: true, interactive: false });
   }
   function show(link, game, t, oracle, doPin) {
-    open(link, game, t, oracle.best_label, counterfactualOverlay(t, oracle), doPin);
+    const three = threeWayCounterfactualOverlay(t);
+    open(link, game, t, three ? "Actual · private rational · omniscient oracle" : oracle.best_label,
+      three || counterfactualOverlay(t, oracle), doPin);
   }
   function showPackage(link, game, t, index, doPin) {
-    open(link, game, t, (t.action || {}).label || "MODEL PROPOSAL", modelPackageOverlay(t, index), doPin);
+    const three = threeWayCounterfactualOverlay(t);
+    open(link, game, t, three ? "Actual · private rational · omniscient oracle"
+      : (t.action || {}).label || "MODEL PROPOSAL", three || modelPackageOverlay(t, index), doPin);
   }
   node.addEventListener("mouseenter", cancelClose);
   node.addEventListener("mouseleave", scheduleHide);

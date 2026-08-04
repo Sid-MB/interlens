@@ -18,7 +18,7 @@ Every page wears the same shell, so the controls are learned once.
 - **Turn scrubber** — one chip per turn under the transcript heading, coloured by what the seat did and ringed in red where the engine fabricated the turn. It is how you get from "something went wrong near the end" to the turn in one click.
 - **Sidebar** — five tabs on the right, three of which follow the transcript as you scroll (see below).
 - **Keyboard** — `j`/`k` walk the turns, `n`/`p` the episodes, `u` goes up to the index, `f` jumps to the frontier, `t` toggles the chart's numeric table, `s` cycles the sidebar tabs, `e`/`c` expand and collapse every panel, `0` resets the chart zoom, `d` (comparison) jumps to the divergence, `x` (comparison) toggles the counterfactual column, `/` (index) focuses the filter, and `?` opens the help overlay. The overlay is generated from the same binding list the handler reads, so a shortcut cannot exist without being documented. Shortcuts never fire while you are typing, and never shadow a modified keystroke.
-- **Index** — a sortable, filterable table rather than a bare list: outcome, preference visibility (`PRIVATE` or `FULL`), primary (with an inline magnitude bar), distance to NBS, USW, worst-off, fabricated share, arm, seed, instance and total regret, with a text filter and deal / no-deal / has-fabricated-turns chips. Sorting reads a `data-sort` value off each cell, so it sorts on the number and sinks missing values; there is no second JSON copy of the rows, and every number is present with scripting off.
+- **Index** — a sortable, filterable table rather than a bare list: outcome, preference visibility (`PRIVATE` or `FULL`), parameter difficulty and tags, primary (with an inline magnitude bar), distance to NBS, USW, worst-off, score differential, fabricated share, arm, seed, instance and total regret, with a text filter and deal / no-deal / has-fabricated-turns chips. A comparison index with at least three non-constant difficulty/effect pairs reports Pearson's difficulty × score-differential correlation and its sample count. Sorting reads a `data-sort` value off each cell, so it sorts on the number and sinks missing values; there is no second JSON copy of the rows, and every number is present with scripting off.
 
 ## The sidebar
 
@@ -27,7 +27,7 @@ The episode page's right-hand column is five tabs over one sticky pane. The firs
 - **Game info** — who is at the table, thresholds, protocol, problem size, every private score sheet, prompt provenance.
 - **Preference visibility** — a public/full-information episode is called out at the top of the page and in the sticky quick read because every party saw every score sheet and threshold. Private information is the default and adds no banner.
 - **Conversation** — the public chat from the acting seat's point of view: that seat's bubbles on the right, everyone else's on the left with the speaker named, and the list scrolls itself so the turn you are reading stays in the middle. Each bubble carries **only what was actually published** — the free-text message and the formal move as a compact chip (`PROPOSE P3: Cooling=air cooling, …`, `ACCEPT P2`, `WALK`; a talk-only turn has no chip). Scratchpads, prompts, and oracle verdicts are private or post-hoc and are deliberately absent, as are the first attempts at a retried turn, which the engine never published to anyone. Turns after the one in view are dimmed rather than hidden.
-- **Frontier** — the same chart, drawn by the same `frontierChart`, restricted in time: proposals up to the turn in view are numbered, the deal standing on the table is squared, later ones are ghosted. Clicking a move selects that turn in the transcript. Every transcript package link opens a large hover/focus preview built with `frontierChart`: a model package plots its proposal; agreement highlights the considered package by accept/reject status; an accept-versus-reject disagreement draws the accepted package and a dashed arrow toward the oracle alternative; and differing PROPOSE/PROPOSE moves draw both proposals with the arrow ending at the oracle proposal. Activate any package link to pin the preview on keyboard or touch; Escape dismisses it.
+- **Frontier** — the same chart, drawn by the same `frontierChart`, restricted in time: proposals up to the turn in view are numbered, the deal standing on the table is squared, later ones are ghosted. Clicking a move selects that turn in the transcript. Every transcript package link opens a large hover/focus preview built with `frontierChart`. Current dual-reference annotations plot all three decisions at once: the package actually proposed or considered (circle), the rational policy using only the acting seat's private information (diamond), and the omniscient oracle using every hidden sheet (square). Older `bestresponse` annotations retain the two-way proposal/accept/reject preview. Activate any package link to pin the preview on keyboard or touch; Escape dismisses it.
 - **Issues** — the acting seat's own valuation, one vertical bar per issue on that agent's score scale. Each option is a tick (named on hover only — a label per option per issue is unreadable at sidebar width), the deal on the table marks the option it picks on every bar, and one horizontal line crosses the whole chart at **threshold / n_issues**: the average per-issue score that agent needs to clear. Under it: the deal's total for this agent, the threshold, the surplus, and a z against every deal in the space. The picker pins a seat; the next time scrolling changes the turn in view, the pin is released and the tab goes back to following the acting seat.
 - **Info** — how the oracle scores legal candidate actions and computes its nonnegative improvement gap, plus a compact guide to utilities, thresholds, normalized surplus, the frontier, public-vs-private views, annotation provenance, and generation-failure placeholders. On a PRIVATE episode it states prominently that the standard saved `bestresponse` annotation is omniscient: it uses every hidden sheet and threshold, so its recommendation is a hindsight diagnostic rather than an implementable policy. Circular information buttons beside oracle measurements open this tab directly at the oracle explanation.
 
@@ -142,6 +142,29 @@ Auditing what a model saw only means something if the page is honest about where
 ## Annotation vintage
 
 The per-turn post-hoc oracle counterfactual (and its improvement gap, traditionally called regret) is read from a run's annotation store. For a model action `a_t` and the oracle's best scored legal action `a*_t`, the gap is `V_t(a*_t) - V_t(a_t) >= 0`. The standard `bestresponse` annotation uses the full game table. In PRIVATE games it therefore sees every party's hidden sheet and threshold: the gap is omniscient hindsight regret, not regret against a policy available to the acting seat. The model's oracle-scored value is shown with **The model acted**; the best value and positive **value improvement available** stay with the oracle's counterfactual. `--annotations-dir NAME` selects WHICH annotation set is used: the default `annotations` is the original scoring pass, and a re-annotated set such as `annotations_v1` (written by the oracle seat-binding fix) carries the corrected best-response values. The Python API takes the same knob as `annotations_dirname=` on `RunDir`, `export_run`, `export_comparison`, `render_episode`, and `render_compare`. The chosen vintage is stated in a provenance line above the transcript, so a reader always knows which counterfactual they are auditing; a name that does not exist simply yields no counterfactual (reported as missing) rather than an error.
+
+Current campaign annotations may additionally store two direct decision references on each `TurnAnnotation`:
+
+```json
+{
+  "turn_idx": 4,
+  "counterfactuals": {
+    "rational_private": {
+      "action": "propose", "deal_index": 17, "value": 0.61,
+      "information": "acting_seat_private"
+    },
+    "oracle_omniscient": {
+      "action": "propose", "deal_index": 23, "value": 0.84,
+      "information": "all_private_information"
+    }
+  }
+}
+```
+
+`deal` may replace `deal_index`; the visualizer resolves a named deal through the instance's exact deal space.
+Aliases from early campaign prototypes (`private_rational`, `omniscient_oracle`, and related short forms) are
+normalized at load time. Old annotations without `counterfactuals` deserialize with an empty mapping and retain
+their existing `bestresponse` display.
 
 ## Seat-swap comparison
 

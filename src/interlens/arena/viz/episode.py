@@ -51,9 +51,17 @@ from ..actions import action_from_json
 from ..engine import gen_failures
 from .geometry import GameGeometry
 
-# Oracles whose verdict names a full counterfactual DEAL rather than only a value, i.e. the ones that can drive
-# the per-step "what would a rational agent have done here" column. ``bestresponse`` is the one the campaigns run.
-COUNTERFACTUAL_ORACLES = ("bestresponse",)
+# Decision references whose records name a counterfactual action or deal rather than only a scalar value. The
+# first two are the paired references in current campaigns: an implementable policy with the acting seat's
+# information and a privileged optimum with every hidden score sheet. ``bestresponse`` is the legacy, omniscient
+# annotation and remains supported without relabelling old data.
+COUNTERFACTUAL_ORACLES = ("rational_private", "oracle_omniscient", "bestresponse")
+COUNTERFACTUAL_ALIASES = {
+    "rational": "rational_private", "private_rational": "rational_private",
+    "private_information_rational": "rational_private",
+    "oracle": "oracle_omniscient", "omniscient": "oracle_omniscient",
+    "omniscient_oracle": "oracle_omniscient",
+}
 
 # The provenance marker for a reconstructed view on a RETRY turn — a second turn in the same (round, phase, seat)
 # slot, which the engine issued after a malformed first attempt. Replay re-issues the original request, so the
@@ -132,18 +140,34 @@ def _oracle_records(episode: dict, annotation: dict | None) -> dict[int, dict[st
 
     def put(idx, name, rec):
         if idx is not None and name:
-            out.setdefault(int(idx), {})[str(name)] = rec
+            canonical = COUNTERFACTUAL_ALIASES.get(str(name), str(name))
+            out.setdefault(int(idx), {})[canonical] = rec
+
+    def put_counterfactuals(idx, row):
+        """Add direct decision references from one turn-like record.
+
+        ``row`` may be a current :class:`TurnAnnotation` JSON object or a legacy oracle record. Direct references
+        win over an oracle of the same name because they were computed specifically for the three-way decision
+        comparison rather than inferred from a generic scored verdict.
+        """
+        for name, rec in ((row or {}).get("counterfactuals") or {}).items():
+            if isinstance(rec, dict):
+                put(idx, name, dict(rec, _direct_counterfactual=True))
 
     for rec in episode.get("round_checkpoints") or []:
-        if rec.get("oracle") is None:            # a forked provisional probe, not an inline oracle verdict
-            continue
         idx = rec.get("turn_idx")
         if idx is None or idx < 0:
             idx = by_round_seat.get((rec.get("round"), rec.get("seat")))
+        put_counterfactuals(idx, rec)
+        if rec.get("oracle") is None:            # a forked provisional probe, not an inline oracle verdict
+            continue
         put(idx, rec.get("oracle"), rec)
+    for turn in turns:
+        put_counterfactuals(turn.get("idx"), turn)
     for row in (annotation or {}).get("turns") or []:
         for name, rec in (row.get("oracle") or {}).items():
             put(row.get("turn_idx"), name, rec)
+        put_counterfactuals(row.get("turn_idx"), row)
     return out
 
 
@@ -201,6 +225,30 @@ def _oracle_payload(name: str, rec: dict, geo: GameGeometry | None) -> dict:
     ``extra.best_response_deal`` — a best-response oracle's *unconstrained* optimum, which is the honest answer to
     "what would a rational agent have done" even when its own best scored action was to accept a standing offer —
     and falls back to the deal carried by the best scored action."""
+    if rec.get("_direct_counterfactual"):
+        action = rec.get("action")
+        label = _action_label(action) if isinstance(action, dict) else str(action or "—").upper()
+        deal = rec.get("deal")
+        direct_index = rec.get("deal_index")
+        if not isinstance(direct_index, int):
+            direct_index = geo.deal_index(deal) if (geo is not None and deal is not None) else None
+        value = rec.get("value")
+        role = "rational_private" if name == "rational_private" else "oracle_omniscient"
+        default_information = "private" if role == "rational_private" else "omniscient"
+        return {
+            "oracle": name,
+            "chosen_value": rec.get("chosen_value"),
+            "best_value": value,
+            "divergence": rec.get("divergence"),
+            "flags": list(rec.get("flags") or []),
+            "best_label": label,
+            "best_deal_index": direct_index,
+            "action_values": list(rec.get("action_values") or []),
+            "extra": dict(rec.get("extra") or {}),
+            "counterfactual": True,
+            "counterfactual_role": role,
+            "information": rec.get("information") or default_information,
+        }
     verdict = rec.get("verdict") or {}
     extra = verdict.get("extra") or {}
     best = _best_action(verdict)
@@ -218,6 +266,8 @@ def _oracle_payload(name: str, rec: dict, geo: GameGeometry | None) -> dict:
         "action_values": _verdict_actions(verdict),
         "extra": {k: v for k, v in extra.items() if k != "surplus_loss"},
         "counterfactual": name in COUNTERFACTUAL_ORACLES,
+        "counterfactual_role": "oracle_omniscient" if name == "bestresponse" else name,
+        "information": "omniscient" if name == "bestresponse" else rec.get("information"),
     }
 
 
@@ -450,12 +500,13 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         outcome["closing_turn_idx"] = closing_turn_index(rows, agreed)
 
     oracle_names = sorted({name for per_turn in oracles.values() for name in per_turn})
+    counterfactual_names = [name for name in COUNTERFACTUAL_ORACLES if name in oracle_names]
     payload = {
         "kind": "episode",
         "episode": {k: episode.get(k) for k in
                     ("episode_id", "scenario", "arm", "model", "level", "instance_id", "seed", "cell", "cell_cfg",
                      "status", "rounds_used", "tokens_in", "tokens_out", "cost_usd", "gen_config", "error",
-                     "schema_version")},
+                     "schema_version", "difficulty", "tags", "score_differential")},
         "seats": [{"name": s.get("name"), "role": s.get("role"), "variant": s.get("variant"),
                    "party": i, "kind": kinds["kinds"].get(s.get("name"), "llm")}
                   for i, s in enumerate(episode.get("seats") or [])],
@@ -466,7 +517,9 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         "offers": ledger["offers"],
         "outcome": outcome,
         "oracle_names": oracle_names,
-        "counterfactual_oracles": [n for n in oracle_names if n in COUNTERFACTUAL_ORACLES],
+        # Information-feasible rational and omniscient references lead; the legacy best-response comparator
+        # follows. This ordering drives the detailed-selector default but never drops generic scored oracles.
+        "counterfactual_oracles": counterfactual_names,
         "annotation_summary": (annotation or {}).get("summary"),
         "annotations_source": annotations_source,
         "views": {"stored": stored_views, "reconstructed": len(rebuilt), "n_turns": len(turns),
@@ -478,7 +531,7 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         "game": geo.to_json() if geo is not None else None,
         "manifest": {k: (manifest or {}).get(k) for k in
                      ("run_name", "invocation", "table", "arms", "policies", "models", "oracles", "scaffold",
-                      "info", "provenance")} if manifest else None,
+                      "info", "provenance", "difficulty", "tags", "score_differential")} if manifest else None,
         "paths": paths or {},
     }
     return payload

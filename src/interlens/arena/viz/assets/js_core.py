@@ -38,6 +38,7 @@ JS_UTIL = r"""
 const E = (s) => String(s ?? "").replace(/[&<>"']/g, c => (
   {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const N = (v, d = 2) => (typeof v === "number" && isFinite(v)) ? v.toFixed(d) : "—";
+const THRESHOLD = (v) => (typeof v === "number" && isFinite(v) && Number.isInteger(v)) ? String(v) : N(v, 1);
 const SIGN = (v, d = 2) => (typeof v === "number" && isFinite(v)) ? (v >= 0 ? "+" : "") + v.toFixed(d) : "—";
 const CLS = (v, better = 1) => (typeof v !== "number" || v === 0) ? "zero" : ((v > 0) === (better >= 0) ? "pos" : "neg");
 const el = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; };
@@ -130,7 +131,7 @@ function dealDetail(game, index, title, extra, pinned) {
   const rows = game.parties.map((p, i) => {
     const ok = s[i] >= 0, w = Math.max(0, Math.min(1, xn[i]));
     return `<tr><td>${E(seatName(game, i))} <span class="muted">${E(p)}</span></td>
-      <td>${N(u[i], 1)}</td><td class="muted">${N(game.thresholds[i], 1)}</td>
+      <td>${N(u[i], 1)}</td><td class="muted">${THRESHOLD(game.thresholds[i])}</td>
       <td class="${ok ? "pos" : "neg"}">${SIGN(s[i], 1)}</td>
       <td style="width:82px"><span class="meter"><i class="${ok ? "ok" : "bad"}" style="width:${(w * 100).toFixed(1)}%"></i></span></td>
       <td>${N(xn[i] * 100, 0)}%</td></tr>`;

@@ -271,6 +271,10 @@ class GameGeometry:
                        ("deal_space_size", "pareto_count", "ir_count", "ir_pareto_count", "ir_pareto_fraction",
                         "dominated_acceptable_fraction", "empty_ir", "sparsity", "pairwise_iou",
                         "max_feasible_joint_surplus")},
+            # Campaign generators attach their reproducible parameter-set characterization here. It remains a
+            # single opaque record on the game payload so new components can be added without changing the
+            # visualizer schema; the index reads only ``score`` and ``tags`` and retains all components for audit.
+            "difficulty": self.analysis.get("difficulty"),
             "ideal_surplus": [float(v) for v in self.X[self.ir].max(axis=0)] if self.ir.any()
                              else [float(v) for v in self.X.max(axis=0)],
             "deals": {

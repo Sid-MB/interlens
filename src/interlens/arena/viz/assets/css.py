@@ -388,6 +388,8 @@ tr[hidden]{display:none}
 .inlinebar i{position:absolute;inset:0 auto 0 0;background:var(--s1);border-radius:3px}
 .inlinebar.warnfill i{background:var(--critical)}
 td .flag{color:var(--critical);font-weight:600}
+.parameter-tag{white-space:nowrap;margin:1px 2px 1px 0}
+.correlation{margin-bottom:var(--sp-2);font-size:var(--t-sm)}
 
 /* --- help overlay ---------------------------------------------------------------------------------------- */
 #help[hidden]{display:none}

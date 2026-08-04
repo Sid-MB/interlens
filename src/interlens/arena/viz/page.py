@@ -33,6 +33,7 @@ executable code, and closing-tag sequences are escaped).
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from markdown_it import MarkdownIt
@@ -45,6 +46,13 @@ __all__ = ["nav_group", "render_compare_html", "render_episode_html", "render_in
 
 
 _MARKDOWN = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
+
+
+def _threshold(v) -> str:
+    """Format a threshold without decimal noise when its numeric value is integral."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and float(v).is_integer():
+        return str(int(v))
+    return _num(v, 1)
 
 
 def _render_readme(markdown: str) -> str:
@@ -211,7 +219,7 @@ def _game_cards(payload: dict) -> str:
     seat_rows = "".join(
         f"<tr><td>{_e(s.get('name'))} <span class='badge {_e(s.get('kind'))}'>{_e(s.get('kind'))}</span></td>"
         f"<td class='muted'>{_e((game.get('parties') or [])[i] if i < len(game.get('parties') or []) else '')}</td>"
-        f"<td>{_num((game.get('thresholds') or [None] * (i + 1))[i], 1)}</td>"
+        f"<td>{_threshold((game.get('thresholds') or [None] * (i + 1))[i])}</td>"
         f"<td>{_num(ideal[i] if i < len(ideal) else None, 1)}</td>"
         f"<td>{_num(((payload.get('outcome') or {}).get('per_party_surplus') or [None] * (i + 1))[i], 1)}</td></tr>"
         for i, s in enumerate(seats))
@@ -221,7 +229,7 @@ def _game_cards(payload: dict) -> str:
                      for v in protocol.get("veto_seats") or []) or "none"
     sheets = "".join(
         f"<details><summary>{'Score sheet' if public_preferences else 'Private score sheet'} — "
-        f"{_e(sh['agent'])} (threshold {_num(sh['threshold'], 1)})</summary><div class='body'><table>"
+        f"{_e(sh['agent'])} (threshold {_threshold(sh['threshold'])})</summary><div class='body'><table>"
         "<thead><tr><th>issue</th>"
         + "".join(f"<th>{_e(o)}</th>" for o in (game['issues'][0]['options'] if game.get('issues') else []))
         + "</tr></thead><tbody>"
@@ -431,7 +439,7 @@ def _issue_pane(payload: dict) -> str:
         blocks.append(
             f"<div class='issueseat' data-party='{i}' data-seat='{_e(s.get('name'))}'{'' if i == 0 else ' hidden'}>"
             f"<div class='hd'>{_e(s.get('name'))} <span class='badge {_e(s.get('kind'))}'>{_e(s.get('kind'))}</span>"
-            f"<span class='muted'>party {i} · {_e(sheet.get('agent'))} · threshold τ {_num(tau, 1)}</span></div>"
+            f"<span class='muted'>party {i} · {_e(sheet.get('agent'))} · threshold τ {_threshold(tau)}</span></div>"
             f"{_issue_bars_svg(game, i)}"
             "<div class='legend'>"
             "<span><i class='swatch tick'></i>an option's score for this agent (hover for its name)</span>"
@@ -600,18 +608,20 @@ def render_episode_html(payload: dict) -> str:
     counterfactual = payload.get("counterfactual_oracles") or []
     # the best-response oracle first, so the page opens on the one that carries a full counterfactual deal
     ordered = counterfactual + [o for o in oracles if o not in counterfactual]
-    options = "".join(f'<option value="{_e(o)}">{_e(o)}</option>' for o in ordered)
-    selector = (f"<label class='sub'>counterfactual oracle <select id='oracle-select'>{options}</select></label>"
+    labels = {"rational_private": "private-information rational agent",
+              "oracle_omniscient": "omniscient oracle"}
+    options = "".join(f'<option value="{_e(o)}">{_e(labels.get(o, o))}</option>' for o in ordered)
+    selector = (f"<label class='sub'>detailed counterfactual <select id='oracle-select'>{options}</select></label>"
                 if oracles else "")
     oracle_scope = ("full-information oracle" if _preferences_are_public(payload)
                     else "omniscient hindsight oracle")
     no_cf = ("" if counterfactual else
-             "<div class='warn'><b>No best-response oracle on this run.</b> Its episodes were scored with "
+             "<div class='warn'><b>No best-response oracle on this run; no decision counterfactuals are available.</b> Its episodes were scored with "
              f"{_e(', '.join(oracles) or 'no oracles')}, so the per-turn post-hoc oracle "
-             "column shows only the oracles that are present. Re-annotate the run with the "
-             "<code>bestresponse</code> oracle to fill it in.</div>")
+             "column shows only the oracles that are present. Re-annotate the run with "
+             "<code>rational_private</code> and <code>oracle_omniscient</code> references to fill it in.</div>")
     chart = (f"""<section class='card' id='frontier'><h2>Where every deal sits, and where this episode went</h2>
- <div class='sub'>Six parties means a deal's utility vector has six dimensions, so the chart plots the two summaries
+ <div class='sub'>{_e(game.get('n_parties'))} parties means a deal's utility vector has {_e(game.get('n_parties'))} dimensions, so the chart plots the two summaries
  that carry the normative content, both scale-invariant: joint welfare (mean normalized surplus) across, and the
  worst-off party's normalized surplus up. Up and to the right is better for everyone. Hover any deal for its
  headline numbers and click to pin the full per-party breakdown; click a numbered move to jump to that turn. Drag
@@ -777,10 +787,12 @@ def render_compare_html(payload: dict) -> str:
 #: goes red above zero, ``text`` for everything else.
 INDEX_COLUMNS = [("page", "label", "link"), ("model", "model", "text"), ("arm", "arm", "text"),
                  ("visibility", "visibility", "visibility"),
-                 ("instance", "instance", "text"), ("seed", "seed", "num"), ("outcome", "deal", "deal"),
+                 ("instance", "instance", "text"), ("difficulty", "difficulty", "num"),
+                 ("parameter tags", "difficulty_tags", "tags"), ("seed", "seed", "num"),
+                 ("outcome", "deal", "deal"),
                  ("primary", "primary", "bar"), ("dist NBS", "dist_nbs", "num"), ("USW", "usw", "num"),
                  ("worst-off", "esw", "num"), ("fabricated", "fabricated_pct", "pct"),
-                 ("total regret", "regret", "num")]
+                 ("score Δ", "score_diff", "bar"), ("total regret", "regret", "num")]
 
 
 def _index_cell(row: dict, key: str, kind: str, scale: float) -> str:
@@ -795,6 +807,11 @@ def _index_cell(row: dict, key: str, kind: str, scale: float) -> str:
     if kind == "visibility":
         label = str(v or "PRIVATE").upper()
         return f"<td data-sort='{_e(label)}'><span class='visibility'>{_e(label)}</span></td>"
+    if kind == "tags":
+        values = [tag.strip() for tag in str(v or "").split(",") if tag.strip()]
+        rendered = " ".join(f"<span class='badge parameter-tag'>{_e(tag)}</span>" for tag in values)
+        detail = row.get("difficulty_components") or ""
+        return f"<td data-sort='{_e(v)}' title='{_e(detail)}'>{rendered or '—'}</td>"
     if kind == "pct":
         if not v:
             return "<td data-sort='0' class='muted'>0%</td>"
@@ -810,6 +827,37 @@ def _index_cell(row: dict, key: str, kind: str, scale: float) -> str:
         return f"<td data-sort='{v if isinstance(v, (int, float)) else ''}'>" + (
             _num(v, 1) if isinstance(v, float) and abs(v) >= 10 else _num(v)) + "</td>"
     return f"<td data-sort='{_e(v)}'>{_e(v)}</td>"
+
+
+def _difficulty_correlation(rows: list[dict]) -> str:
+    """Render Pearson's ``r`` when at least three difficulty/effect pairs support it.
+
+    Missing values are excluded. Constant difficulty or score differential has zero variance, so the correlation
+    is undefined and omitted rather than reported as zero. The sample count is shown beside every coefficient.
+    """
+    # Seeds/rollouts of the same instance are repeated measurements, not extra parameter sets. Average them first
+    # so a parameter set with more completed rollouts does not silently receive more weight in the correlation.
+    grouped: dict[str, list[tuple[float, float]]] = {}
+    for index, row in enumerate(rows):
+        if not (isinstance(row.get("difficulty"), (int, float))
+                and isinstance(row.get("score_diff"), (int, float))):
+            continue
+        key = str(row.get("instance") or f"__row_{index}")
+        grouped.setdefault(key, []).append((float(row["difficulty"]), float(row["score_diff"])))
+    pairs = [(sum(x for x, _ in values) / len(values), sum(y for _, y in values) / len(values))
+             for values in grouped.values()]
+    if len(pairs) < 3:
+        return ""
+    xs, ys = zip(*pairs)
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    vx = sum((x - mx) ** 2 for x in xs)
+    vy = sum((y - my) ** 2 for y in ys)
+    if vx <= 0 or vy <= 0:
+        return ""
+    r = sum((x - mx) * (y - my) for x, y in pairs) / math.sqrt(vx * vy)
+    return ("<div class='correlation'><b>Difficulty × score differential:</b> "
+            f"Pearson <var>r</var> = {_num(r, 3)} across {len(pairs)} paired parameter sets. "
+            "Positive means the compared condition gains more on harder sets.</div>")
 
 
 def render_index_html(rows: list[dict], title: str, note: str = "", readme_markdown: str = "") -> str:
@@ -828,7 +876,7 @@ def render_index_html(rows: list[dict], title: str, note: str = "", readme_markd
         body.append(f"<tr data-hay=\"{_e(hay)}\" data-deal='{1 if r.get('deal') else 0}' "
                     f"data-fabricated='{r.get('fabricated_pct') or 0}'>"
                     + "".join(_index_cell(r, k, kind, scale) for _, k, kind in INDEX_COLUMNS) + "</tr>")
-    table = (f"<section class='card'><div class='filterbar'>"
+    table = (f"<section class='card'>{_difficulty_correlation(rows)}<div class='filterbar'>"
              "<input type='search' id='idx-search' placeholder='Filter by episode, model, arm, instance…' "
              "aria-label='filter the table'>"
              "<button data-filter='outcome:1' aria-pressed='false'>deal only</button>"

@@ -47,7 +47,10 @@ function buildMarks() {
     const o = (t.oracles || {})[ORACLE];
     if (o && o.best_deal_index !== null && o.best_deal_index !== undefined)
       marks.push({ index: o.best_deal_index, kind: "circle", color: "s2", r: 4.5, role: "oracle",
-        title: `${ORACLE} oracle's deal at turn ${t.idx} (${t.seat})`, turn: t.idx, seat: t.seat });
+        title: o.counterfactual_role === "rational_private"
+          ? `${ORACLE} rational counterfactual deal at turn ${t.idx} (${t.seat})`
+          : `${ORACLE} oracle's deal at turn ${t.idx} (${t.seat})`, turn: t.idx, seat: t.seat,
+        counterfactualRole: o.counterfactual_role, information: o.information });
   });
   P.trajectory.forEach(p => marks.push({
     index: p.index, kind: "circle", color: "s1", r: 6.5, label: String(p.ordinal), dx: 8, dy: -7,
