@@ -72,6 +72,10 @@ class PolicyParticipant(Participant):
         Total seat count (used to default ``opponents`` when not given).
     tables : object | None
         Optional full-information ``GameTables`` to attach to the state (enables exact full-info policies).
+    min_accept : int | None
+        Fixed acceptance quorum out of the original seats; ``None`` means unanimity.
+    veto_seats : tuple[int, ...]
+        Seats whose support is mandatory.
     state_provider : callable | None
         Optional ``callable(view) -> NegotiationState`` overriding the default view reconstruction.
     registry_prefix : str
@@ -86,7 +90,8 @@ class PolicyParticipant(Participant):
     def __init__(self, name: str, policy, *, seat: int, sheet, space, deadline: int, discount: float = 1.0,
                  opponents: tuple = (), n_seats: int | None = None, tables=None,
                  state_provider=None, registry_prefix: str = "O",
-                 system_prompt: str | None = None, private_context: tuple = ()):
+                 system_prompt: str | None = None, private_context: tuple = (),
+                 min_accept: int | None = None, veto_seats: tuple = ()):
         self.name = name
         self.policy = policy
         self.seat = int(seat)
@@ -101,6 +106,8 @@ class PolicyParticipant(Participant):
         else:
             self.opponents = ()
         self.tables = tables
+        self.min_accept = None if min_accept is None else int(min_accept)
+        self.veto_seats = tuple(int(v) for v in veto_seats)
         self.state_provider = state_provider
         self.registry_prefix = registry_prefix
         self.system_prompt = system_prompt
@@ -182,6 +189,8 @@ class PolicyParticipant(Participant):
             if block is not None:
                 block.setdefault("seat", self.seat)
                 block.setdefault("deadline", self.deadline)
+                block.setdefault("min_accept", self.min_accept)
+                block.setdefault("veto_seats", list(self.veto_seats))
                 return NegotiationState.from_block(block, sheet=self.sheet, space=self.space,
                                                    tables=self.tables, discount=self.discount,
                                                    opponents=self.opponents, seat=self.seat)
@@ -211,4 +220,4 @@ class PolicyParticipant(Participant):
             seat=self.seat, sheet=self.sheet, space=self.space,
             round=my_turns + 1, deadline=self.deadline, offers=offers, standing=standing,
             received=received, my_offers=my_offers, discount=self.discount, tables=self.tables,
-            opponents=self.opponents)
+            opponents=self.opponents, min_accept=self.min_accept, veto_seats=self.veto_seats)

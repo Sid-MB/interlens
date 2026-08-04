@@ -29,7 +29,8 @@ avoids strategy-fusion / non-locality bias — Frank & Basin, "Search in games w
 AIJ 100(1-2):87-123, 1998; ISMCTS: Cowling, Powley & Whitehouse, IEEE TCIAIG 4(2):120-143, 2012.
 
 Protocol modeled: each round a (rotating) proposer offers a deal; all other seats accept/reject;
-the deal closes iff *all* accept (unanimity); otherwise play continues to the next round with the discount
+the deal closes iff the game's fixed acceptance quorum (and every veto seat) accepts; otherwise play
+continues to the next round with the discount
 ``delta``; after the deadline, no-deal pays surplus 0. Two regimes share one backward induction:
 
 - **Full information** (``value_to_go_full_info``): all sheets known; opponents accept iff the offer beats
@@ -55,12 +56,141 @@ from .oracle_context import (Accept, GameTables, Oracle, Propose, Reject, Walk, 
 _NEG = -1e18
 
 
+def _quorum(n: int, min_accept: int | None) -> int:
+    """Normalize ``None`` (legacy unanimity) and validate a fixed-seat acceptance quorum."""
+    need = n if min_accept is None else int(min_accept)
+    if not 1 <= need <= n:
+        raise ValueError(f"min_accept must be in 1..{n} or None, got {min_accept!r}")
+    return need
+
+
+def passage_probability(accept_prob: np.ndarray, proposer: int, *, min_accept: int | None = None,
+                        veto_seats=()) -> np.ndarray:
+    """Probability each deal passes under independent responder votes.
+
+    ``accept_prob`` has shape ``(D, n)``.  The proposer implicitly supports its own offer, ``min_accept`` is
+    a fixed count out of the original ``n`` seats, and every veto seat must support.  ``None`` preserves the
+    historical unanimity rule.  A small Poisson-binomial DP computes ``P(# yes >= quorum)`` exactly, rather
+    than multiplying every opponent probability (which silently turns every quorum into unanimity).
+    """
+    ap = np.asarray(accept_prob, dtype=float)
+    if ap.ndim != 2:
+        raise ValueError(f"accept_prob must have shape (deals, seats), got {ap.shape}")
+    D, n = ap.shape
+    p = int(proposer)
+    if not 0 <= p < n:
+        raise ValueError(f"proposer {p} out of range for {n} seats")
+    need = _quorum(n, min_accept)
+    veto = {int(v) for v in veto_seats}
+    if any(v < 0 or v >= n for v in veto):
+        raise ValueError(f"veto seat out of range for {n} seats: {sorted(veto)}")
+
+    required = sorted(veto - {p})
+    base = np.prod(ap[:, required], axis=1) if required else np.ones(D, dtype=float)
+    yes_required = 1 + len(required)  # proposer + required veto responders
+    remaining = [i for i in range(n) if i != p and i not in veto]
+    extra = max(need - yes_required, 0)
+    if extra <= 0:
+        return base
+    if extra > len(remaining):
+        return np.zeros(D, dtype=float)
+
+    # dist[:, j] = probability of exactly j yes votes among the optional responders processed so far.
+    dist = np.zeros((D, len(remaining) + 1), dtype=float)
+    dist[:, 0] = 1.0
+    seen = 0
+    for seat in remaining:
+        q = np.clip(ap[:, seat], 0.0, 1.0)
+        nxt = np.zeros_like(dist)
+        nxt[:, :seen + 1] += dist[:, :seen + 1] * (1.0 - q[:, None])
+        nxt[:, 1:seen + 2] += dist[:, :seen + 1] * q[:, None]
+        dist = nxt
+        seen += 1
+    return base * dist[:, extra:seen + 1].sum(axis=1)
+
+
+def _full_info_pass_mask(S: np.ndarray, proposer: int, cont: np.ndarray, *,
+                         min_accept: int | None = None, veto_seats=()) -> np.ndarray:
+    """Deals that pass deterministic continuation-value votes under the fixed quorum/veto rule."""
+    n = S.shape[1]
+    ap = (S >= np.asarray(cont, dtype=float)[None, :]).astype(float)
+    ap[:, int(proposer)] = 1.0  # proposing is an implicit yes; own continuation is checked separately.
+    return passage_probability(ap, int(proposer), min_accept=min_accept,
+                               veto_seats=veto_seats) >= 1.0 - 1e-12
+
+
+def conditional_vote_values(accept_prob: np.ndarray, proposer: int, agent: int, deal_index: int,
+                            deal_surplus: float, continuation: float, *, min_accept: int | None = None,
+                            veto_seats=(), forced_yes=(), forced_no=()) -> tuple[float, float, float, float]:
+    """Value this seat's yes/no vote after conditioning on votes already cast.
+
+    Returns ``(yes_value, no_value, p_pass_if_yes, p_pass_if_no)``. This is load-bearing for quorum games:
+    a yes vote may be insufficient to pass, while a no vote may be non-pivotal. Existing supporters/rejecters
+    and walkers are forced through ``forced_yes``/``forced_no``; all uncast votes retain their deterministic
+    full-information or posterior probability. Agreement pays ``deal_surplus`` and failure pays
+    ``continuation``.
+    """
+    row = np.array(np.asarray(accept_prob, dtype=float)[int(deal_index):int(deal_index) + 1], copy=True)
+    for seat in forced_yes:
+        row[0, int(seat)] = 1.0
+    for seat in forced_no:
+        row[0, int(seat)] = 0.0
+    yes, no = np.array(row, copy=True), np.array(row, copy=True)
+    yes[0, int(agent)], no[0, int(agent)] = 1.0, 0.0
+    q_yes = float(passage_probability(
+        yes, int(proposer), min_accept=min_accept, veto_seats=veto_seats)[0])
+    q_no = float(passage_probability(
+        no, int(proposer), min_accept=min_accept, veto_seats=veto_seats)[0])
+    s, c = float(deal_surplus), float(continuation)
+    return q_yes * s + (1.0 - q_yes) * c, q_no * s + (1.0 - q_no) * c, q_yes, q_no
+
+
+def _offer_vote_records(game, history) -> dict[str, dict]:
+    """Best-effort rich live-offer records for current-vote valuation; empty metadata remains compatible."""
+    raw = getattr(history, "offers", None)
+    if raw is None and isinstance(history, dict):
+        raw = history.get("offers")
+    if isinstance(raw, dict):
+        items = raw.items()
+    elif isinstance(raw, list):
+        items = [((o.get("offer_id") if isinstance(o, dict) else getattr(o, "offer_id", None)), o)
+                 for o in raw]
+    else:
+        items = []
+
+    names = (history.get("seat_names", ()) if isinstance(history, dict)
+             else getattr(history, "seat_names", ())) or ()
+
+    def resolve(value):
+        if value is None:
+            return None
+        if value in names:
+            return list(names).index(value)
+        try:
+            return seat_index(game, value)
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    out: dict[str, dict] = {}
+    for oid, offer in items:
+        if oid is None:
+            continue
+        get = offer.get if isinstance(offer, dict) else lambda key, default=None: getattr(offer, key, default)
+        proposer = resolve(get("proposer"))
+        accepts = {s for value in (get("accepts", ()) or ()) if (s := resolve(value)) is not None}
+        rejects = {s for value in (get("rejects", ()) or ()) if (s := resolve(value)) is not None}
+        out[str(oid)] = {"proposer": proposer, "accepts": accepts, "rejects": rejects}
+    return out
+
+
 # --------------------------------------------------------------------------------------------------------- #
 # Backward induction — full information (exact).
 # --------------------------------------------------------------------------------------------------------- #
-def value_to_go_full_info(tables: GameTables, proposer_seq, T: int, discount: float = 0.95) -> np.ndarray:
+def value_to_go_full_info(tables: GameTables, proposer_seq, T: int, discount: float = 0.95, *,
+                          min_accept: int | None = None, veto_seats=()) -> np.ndarray:
     """Joint continuation values ``V[t]`` (shape ``(T+2, n)``) for *every* seat under subgame-perfect
-    alternating-offers play with unanimity acceptance and no-deal surplus 0.
+    alternating-offers play with the fixed ``min_accept`` quorum, required ``veto_seats``, and no-deal
+    surplus 0. ``min_accept=None`` preserves unanimity.
 
     ``V[t, i]`` = seat ``i``'s expected surplus-to-go at the start of round ``t`` (t = 1..T; ``V[T+1] = 0``).
     At round ``t`` the proposer ``p = proposer_seq[(t-1) % len]`` offers the all-accepted deal maximizing its
@@ -72,11 +202,7 @@ def value_to_go_full_info(tables: GameTables, proposer_seq, T: int, discount: fl
     for t in range(T, 0, -1):
         p = int(proposer_seq[(t - 1) % len(proposer_seq)])
         cont = discount * V[t + 1]          # (n,)
-        others = [r for r in range(n) if r != p]
-        if others:
-            accept_mask = np.all(S[:, others] >= cont[others][None, :], axis=1)   # (D,)
-        else:
-            accept_mask = np.ones(S.shape[0], dtype=bool)
+        accept_mask = _full_info_pass_mask(S, p, cont, min_accept=min_accept, veto_seats=veto_seats)
         prop_surplus = np.where(accept_mask, S[:, p], _NEG)
         if accept_mask.any():
             d_star = int(np.argmax(prop_surplus))
@@ -89,14 +215,12 @@ def value_to_go_full_info(tables: GameTables, proposer_seq, T: int, discount: fl
     return V
 
 
-def _proposal_full_info(tables: GameTables, proposer: int, cont: np.ndarray) -> tuple:
+def _proposal_full_info(tables: GameTables, proposer: int, cont: np.ndarray, *,
+                        min_accept: int | None = None, veto_seats=()) -> tuple:
     """The proposer's subgame-perfect offer given the discounted continuation vector ``cont``: returns
     ``(deal_index or None, all_accept_mask)``. None means 'delay is weakly better than any accepted deal'."""
     S = tables.surplus
-    n = tables.n_agents
-    others = [r for r in range(n) if r != proposer]
-    accept_mask = (np.all(S[:, others] >= cont[others][None, :], axis=1) if others
-                   else np.ones(S.shape[0], dtype=bool))
+    accept_mask = _full_info_pass_mask(S, proposer, cont, min_accept=min_accept, veto_seats=veto_seats)
     if not accept_mask.any():
         return None, accept_mask
     prop_surplus = np.where(accept_mask, S[:, proposer], _NEG)
@@ -110,7 +234,7 @@ def _proposal_full_info(tables: GameTables, proposer: int, cont: np.ndarray) -> 
 # Backward induction — belief-averaged (agent-only continuation; opponents via posterior).
 # --------------------------------------------------------------------------------------------------------- #
 def value_to_go_beliefs(tables: GameTables, agent: int, proposer_seq, T: int, discount: float,
-                        accept_prob, opp_proposal) -> np.ndarray:
+                        accept_prob, opp_proposal, *, min_accept: int | None = None, veto_seats=()) -> np.ndarray:
     """Agent-``agent`` continuation ``Vi[t]`` (shape ``(T+2,)``) under the posterior.
 
     Parameters
@@ -128,19 +252,24 @@ def value_to_go_beliefs(tables: GameTables, agent: int, proposer_seq, T: int, di
         p = int(proposer_seq[(t - 1) % len(proposer_seq)])
         cont_i = discount * Vi[t + 1]
         if p == agent:
-            others = [r for r in range(n) if r != agent]
-            p_all = np.prod(accept_prob[:, others], axis=1) if others else np.ones(S.shape[0])
-            ev = p_all * S + (1.0 - p_all) * cont_i
+            p_pass = passage_probability(accept_prob, agent, min_accept=min_accept, veto_seats=veto_seats)
+            ev = p_pass * S + (1.0 - p_pass) * cont_i
             Vi[t] = max(float(ev.max()), cont_i)
         else:
             d = opp_proposal.get(p)
             if d is None:
                 Vi[t] = cont_i
                 continue
-            others = [r for r in range(n) if r not in (agent, p)]
-            q = float(np.prod(accept_prob[d, others])) if others else 1.0
-            accept_val = q * float(S[d]) + (1.0 - q) * cont_i    # realized iff others also accept
-            Vi[t] = max(accept_val, cont_i)                       # agent accepts iff S[d] >= cont_i
+            # Under a non-unanimous rule, rejecting need not block passage. Value both votes by forcing the
+            # deciding seat's probability to 1/0 while leaving all other posterior votes unchanged.
+            yes = np.array(accept_prob[d:d + 1], copy=True)
+            no = np.array(yes, copy=True)
+            yes[0, agent], no[0, agent] = 1.0, 0.0
+            q_yes = float(passage_probability(yes, p, min_accept=min_accept, veto_seats=veto_seats)[0])
+            q_no = float(passage_probability(no, p, min_accept=min_accept, veto_seats=veto_seats)[0])
+            accept_val = q_yes * float(S[d]) + (1.0 - q_yes) * cont_i
+            reject_val = q_no * float(S[d]) + (1.0 - q_no) * cont_i
+            Vi[t] = max(accept_val, reject_val)
     return Vi
 
 
@@ -167,14 +296,18 @@ class BestResponseOracle(Oracle):
 
     name = "bestresponse"
 
-    def __init__(self, agent: int, *, discount: float | None = None, accept_prob=None, opp_proposal=None):
+    def __init__(self, agent: int, *, discount: float | None = None, accept_prob=None, opp_proposal=None,
+                 min_accept: int | None = None, veto_seats=()):
         self.agent = int(agent)
         self.discount = None if discount is None else float(discount)
         self.accept_prob = accept_prob
         self.opp_proposal = opp_proposal
+        self.min_accept = min_accept
+        self.veto_seats = tuple(int(v) for v in veto_seats)
 
     # -- proposal values for the current round (agent as proposer) ----------------------------------------
-    def propose_values(self, tables: GameTables, cont: np.ndarray, agent: int | None = None) -> np.ndarray:
+    def propose_values(self, tables: GameTables, cont: np.ndarray, agent: int | None = None, *,
+                       min_accept: int | None = None, veto_seats=None) -> np.ndarray:
         """Expected value to ``agent`` of proposing each deal now, given the continuation vector ``cont``
         (full-info: ``cont`` is the length-n discounted continuation; belief: pass agent scalar via a length-n
         vector with opponents' acceptance folded into ``accept_prob``).
@@ -188,13 +321,13 @@ class BestResponseOracle(Oracle):
         S = tables.surplus
         n = tables.n_agents
         i = self.agent if agent is None else int(agent)
-        others = [r for r in range(n) if r != i]
+        need = self.min_accept if min_accept is None else min_accept
+        veto = self.veto_seats if veto_seats is None else tuple(veto_seats)
         if self.accept_prob is None:
-            accept_mask = (np.all(S[:, others] >= cont[others][None, :], axis=1) if others
-                           else np.ones(S.shape[0], dtype=bool))
+            accept_mask = _full_info_pass_mask(S, i, cont, min_accept=need, veto_seats=veto)
             return np.where(accept_mask, S[:, i], cont[i])
-        p_all = np.prod(self.accept_prob[:, others], axis=1) if others else np.ones(S.shape[0])
-        return p_all * S[:, i] + (1.0 - p_all) * cont[i]
+        p_pass = passage_probability(self.accept_prob, i, min_accept=need, veto_seats=veto)
+        return p_pass * S[:, i] + (1.0 - p_pass) * cont[i]
 
     def evaluate(self, game, history, agent, legal):
         """Value each legal action; ``best`` is the surplus-maximizing one. ``extra`` carries the per-turn
@@ -205,34 +338,72 @@ class BestResponseOracle(Oracle):
         n = n_agents(game)
         T = int(getattr(game, "rounds", 0) or 1)
         seq = proposer_sequence(game)
+        min_accept = getattr(game, "min_accept", self.min_accept)
+        veto_seats = tuple(getattr(game, "veto_seats", self.veto_seats) or ())
         t = current_round(game, history)
         r_left = rounds_left(game, history)
         offers = offer_registry(game, history)
+        offer_votes = _offer_vote_records(game, history)
 
         if self.accept_prob is None:
-            V = value_to_go_full_info(tables, seq, T, disc)
+            V = value_to_go_full_info(tables, seq, T, disc, min_accept=min_accept, veto_seats=veto_seats)
             cont_vec = disc * V[min(t + 1, T + 1)]
         else:
-            opp_prop = self.opp_proposal or self._model_opp_proposals(tables, V_next=None, agent=agent)
-            Vi = value_to_go_beliefs(tables, agent, seq, T, disc, self.accept_prob, opp_prop)
+            opp_prop = self.opp_proposal or self._model_opp_proposals(
+                tables, V_next=None, agent=agent, min_accept=min_accept, veto_seats=veto_seats)
+            Vi = value_to_go_beliefs(tables, agent, seq, T, disc, self.accept_prob, opp_prop,
+                                     min_accept=min_accept, veto_seats=veto_seats)
             cont_i = disc * Vi[min(t + 1, T + 1)]
             cont_vec = np.full(n, cont_i)      # only agent-column used downstream in belief mode
 
-        prop_vals = self.propose_values(tables, cont_vec, agent)
+        prop_vals = self.propose_values(tables, cont_vec, agent, min_accept=min_accept,
+                                        veto_seats=veto_seats)
         best_deal = int(np.argmax(prop_vals))
         cont_i = float(cont_vec[agent])
+        vote_ap = ((tables.surplus >= cont_vec[None, :]).astype(float)
+                   if self.accept_prob is None else np.asarray(self.accept_prob, dtype=float))
+        walked_raw = (history.get("walked", ()) if isinstance(history, dict)
+                      else getattr(history, "walked", ())) or ()
+        seat_names = (history.get("seat_names", ()) if isinstance(history, dict)
+                      else getattr(history, "seat_names", ())) or ()
+        walked: set[int] = set()
+        for value in walked_raw:
+            if value in seat_names:
+                walked.add(list(seat_names).index(value))
+            else:
+                try:
+                    walked.add(seat_index(game, value))
+                except (KeyError, ValueError, TypeError):
+                    pass
 
         values: dict = {}
+        vote_diagnostics: list[dict] = []
         for a in legal:
             if isinstance(a, Propose):
                 idx = tables.index.get(tuple(int(x) for x in a.deal))
                 values[a] = float(prop_vals[idx]) if idx is not None else _NEG
-            elif isinstance(a, Accept) and a.offer_id in offers:
-                values[a] = float(tables.surplus[tables.index[offers[a.offer_id]], agent])
+            elif isinstance(a, (Accept, Reject)) and a.offer_id in offers:
+                idx = tables.index[offers[a.offer_id]]
+                record = offer_votes.get(a.offer_id, {})
+                proposer = record.get("proposer")
+                if proposer is None:
+                    supporters = sorted(record.get("accepts", ()))
+                    proposer = supporters[0] if supporters else int(seq[(max(t, 1) - 1) % len(seq)])
+                yes_v, no_v, q_yes, q_no = conditional_vote_values(
+                    vote_ap, proposer, agent, idx, tables.surplus[idx, agent], cont_i,
+                    min_accept=min_accept, veto_seats=veto_seats,
+                    forced_yes=record.get("accepts", ()),
+                    forced_no=set(record.get("rejects", ())) | walked)
+                values[a] = yes_v if isinstance(a, Accept) else no_v
+                vote_diagnostics.append({"offer_id": a.offer_id, "p_pass_if_accept": q_yes,
+                                         "p_pass_if_reject": q_no, "accept_value": yes_v,
+                                         "reject_value": no_v, "proposer": proposer})
             elif isinstance(a, Reject):
                 values[a] = cont_i
             elif isinstance(a, Walk):
-                values[a] = max(0.0, cont_i)
+                # WALK is irreversible and pays this seat its no-deal surplus (zero), even when a remaining
+                # coalition can still pass a deal. It is not another spelling of Reject/continue.
+                values[a] = 0.0
             else:
                 values[a] = cont_i
 
@@ -260,22 +431,25 @@ class BestResponseOracle(Oracle):
         surplus_loss = [{"action": a.to_json(), "loss": vbest - v} for a, v in values.items()]
         extra = {"surplus_loss": surplus_loss, "best_response_deal": list(tables.deals[best_deal]),
                  "best_response_value": float(prop_vals[best_deal]), "continuation": cont_i,
-                 "rounds_left": r_left}
+                 "rounds_left": r_left, "conditional_votes": vote_diagnostics,
+                 "walk_value": 0.0}
         return make_verdict(values, best=best, flags=[], extra=extra)
 
-    def _model_opp_proposals(self, tables: GameTables, V_next, agent: int | None = None) -> dict:
+    def _model_opp_proposals(self, tables: GameTables, V_next, agent: int | None = None, *,
+                             min_accept: int | None = None, veto_seats=None) -> dict:
         """Fallback opponent-proposal model (belief regime, no explicit ``opp_proposal`` given): each opponent
         proposes the deal maximizing its own surplus among deals the *others* are most likely to accept.
         ``agent`` (the deciding seat, whose own proposal is not modeled) defaults to ``self.agent``."""
         out: dict = {}
         n = tables.n_agents
         me = self.agent if agent is None else int(agent)
+        need = self.min_accept if min_accept is None else min_accept
+        veto = self.veto_seats if veto_seats is None else tuple(veto_seats)
         for p in range(n):
             if p == me:
                 continue
-            others = [r for r in range(n) if r != p]
-            if self.accept_prob is not None and others:
-                feas = np.prod(self.accept_prob[:, others], axis=1)
+            if self.accept_prob is not None:
+                feas = passage_probability(self.accept_prob, p, min_accept=need, veto_seats=veto)
             else:
                 feas = np.ones(tables.n_deals)
             score = np.where(feas > 0, tables.surplus[:, p], _NEG)

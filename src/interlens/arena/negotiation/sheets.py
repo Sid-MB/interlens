@@ -179,6 +179,8 @@ class GameSpec:
                         f"{self.space.shape[j]} options")
         if not 0 <= self.proposer < self.n_parties:
             raise ValueError(f"proposer seat {self.proposer} out of range")
+        if self.min_accept is not None and not 1 <= int(self.min_accept) <= self.n_parties:
+            raise ValueError(f"min_accept must be in 1..{self.n_parties} or None, got {self.min_accept!r}")
         for v in self.veto_seats:
             if not 0 <= v < self.n_parties:
                 raise ValueError(f"veto seat {v} out of range")

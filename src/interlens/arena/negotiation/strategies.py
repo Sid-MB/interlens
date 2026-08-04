@@ -50,7 +50,8 @@ from ...parsing import last_json_with_key
 from .oracle_context import Accept, Deal, GameTables, Pass, Propose, Reject, Walk, deal_list
 from .acceptance import AcceptanceOracle
 from .beliefs import BeliefOracle
-from .bestresponse import BestResponseOracle, value_to_go_beliefs
+from .bestresponse import (BestResponseOracle, conditional_vote_values, passage_probability,
+                           value_to_go_beliefs)
 
 if TYPE_CHECKING:  # concrete game classes, used only in NegotiationState's type hints
     from .sheets import ScoreSheet
@@ -100,6 +101,13 @@ class NegotiationState:
         standing offer, not propose. Policies read this and cast a terminal individually-rational vote
         (accept any offer that clears their threshold, since the only alternative is no-deal = 0). Proposing
         here is an economic-legality violation, so a proposing policy would otherwise blow the deal.
+    min_accept : int | None
+        Fixed number of original seats whose yes votes pass a deal. ``None`` preserves unanimity.
+    veto_seats : tuple[int, ...]
+        Seats whose yes votes are required in addition to the numeric quorum.
+    offer_proposers / offer_accepts / offer_rejects : dict
+        Public offer-ledger metadata keyed by offer id, with seat indices as values. This lets quorum-aware
+        policies distinguish pivotal from non-pivotal votes.
     """
 
     seat: int
@@ -116,6 +124,12 @@ class NegotiationState:
     tables: GameTables | None = None
     opponents: tuple = ()
     must_vote: bool = False
+    min_accept: int | None = None
+    veto_seats: tuple = ()
+    offer_proposers: dict = field(default_factory=dict)
+    offer_accepts: dict = field(default_factory=dict)
+    offer_rejects: dict = field(default_factory=dict)
+    walked_seats: tuple = ()
 
     @property
     def standing_deal(self) -> Deal | None:
@@ -160,7 +174,15 @@ class NegotiationState:
                    received_by_opponent=received_by_opponent,
                    my_offers=[tuple(int(x) for x in d) for d in block.get("my_offers", [])],
                    discount=discount, tables=tables, opponents=tuple(opponents),
-                   must_vote=bool(block.get("must_vote", False)))
+                   must_vote=bool(block.get("must_vote", False)),
+                   min_accept=(None if block.get("min_accept") is None else int(block["min_accept"])),
+                   veto_seats=tuple(int(v) for v in block.get("veto_seats", ())),
+                   offer_proposers={str(k): int(v) for k, v in block.get("offer_proposers", {}).items()},
+                   offer_accepts={str(k): tuple(int(v) for v in values)
+                                  for k, values in block.get("offer_accepts", {}).items()},
+                   offer_rejects={str(k): tuple(int(v) for v in values)
+                                  for k, values in block.get("offer_rejects", {}).items()},
+                   walked_seats=tuple(int(v) for v in block.get("walked_seats", ())))
 
 
 def parse_negotiation_state(text: str) -> dict | None:
@@ -823,36 +845,83 @@ class BayesianRationalPolicy(Policy):
         index = {d: i for i, d in enumerate(deals)}
         return GameTables(list(deals), index, deals_arr, util, surplus, thr)
 
+    @staticmethod
+    def _standing_vote_values(state, tables, ap, continuation: float):
+        """Conditional yes/no EV for the live offer, including already-cast votes and fixed quorum/veto.
+
+        Returns ``None`` when there is no resolvable standing offer, otherwise the public
+        :func:`conditional_vote_values` tuple ``(yes_value, no_value, p_yes, p_no)``.
+        """
+        deal = state.standing_deal
+        oid = state.standing
+        if deal is None or oid is None:
+            return None
+        idx = tables.index[tuple(int(x) for x in deal)]
+        proposer = state.offer_proposers.get(oid)
+        if proposer is None:
+            # Legacy state blocks did not carry offer provenance. Proposer identity does not affect unanimity;
+            # for an old numeric-quorum block, fall back deterministically rather than silently crashing.
+            proposer = next(iter(state.opponents), state.seat)
+        return conditional_vote_values(
+            ap, proposer, state.seat, idx, tables.surplus[idx, state.seat], continuation,
+            min_accept=state.min_accept, veto_seats=state.veto_seats,
+            forced_yes=state.offer_accepts.get(oid, ()),
+            forced_no=set(state.offer_rejects.get(oid, ())) | set(state.walked_seats))
+
     def act(self, state: NegotiationState):
         disc = self.discount if self.discount is not None else float(state.discount)
         tables = self._tables(state)
         ap = self._accept_prob_table(state, tables)
-        opp = tuple(state.opponents)
         seq = [(state.seat + k) % tables.n_agents for k in range(tables.n_agents)]
-        br = BestResponseOracle(state.seat, discount=disc, accept_prob=ap)
+        br = BestResponseOracle(state.seat, discount=disc, accept_prob=ap,
+                                min_accept=state.min_accept, veto_seats=state.veto_seats)
 
-        acc_fn = (lambda d: float(np.prod([ap[tables.index[tuple(int(x) for x in d)], o] for o in opp]))
-                  if opp else 1.0)
+        def acc_fn(deal):
+            row = tables.index[tuple(int(x) for x in deal)]
+            return float(passage_probability(
+                ap[row:row + 1], state.seat, min_accept=state.min_accept,
+                veto_seats=state.veto_seats)[0])
         acceptor = AcceptanceOracle(state.seat, discount=disc, accept_prob_fn=acc_fn)
         r_left = max(state.deadline - state.round + 1, 1)
         v = acceptor.reservation(tables, r_left)
 
         # accept the standing offer if its surplus clears the optimal-stopping reservation
         deal = state.standing_deal
-        if deal is not None and state.standing is not None:
+        vote_values = self._standing_vote_values(state, tables, ap, v)
+        if deal is not None and state.standing is not None and vote_values is not None:
+            yes_value, no_value, p_yes, _ = vote_values
             s = float(tables.surplus[tables.index[tuple(int(x) for x in deal)], state.seat])
-            if s >= v and s >= 0:
+            if p_yes > 0.0 and yes_value >= no_value and s >= 0:
                 return Accept(state.standing)
 
         # else best-respond with a proposal, using the DP continuation value
-        Vi = value_to_go_beliefs(tables, state.seat, seq, state.deadline, disc, ap,
-                                 br._model_opp_proposals(tables, None))
+        Vi = value_to_go_beliefs(
+            tables, state.seat, seq, state.deadline, disc, ap,
+            br._model_opp_proposals(tables, None, min_accept=state.min_accept,
+                                    veto_seats=state.veto_seats),
+            min_accept=state.min_accept, veto_seats=state.veto_seats)
         cont = np.full(tables.n_agents, disc * float(Vi[min(2, state.deadline + 1)]))
-        prop_vals = br.propose_values(tables, cont)
+        prop_vals = br.propose_values(tables, cont, min_accept=state.min_accept,
+                                      veto_seats=state.veto_seats)
         best_idx = int(np.argmax(prop_vals))
         if self.walk_if_hopeless and prop_vals[best_idx] <= 0 and r_left <= 1:
             return Walk()
         return Propose(tuple(int(x) for x in tables.deals[best_idx]))
+
+    def vote(self, state: NegotiationState):
+        """Terminal quorum-aware vote; Reject when yes cannot pass or has lower EV than no."""
+        if state.standing_deal is None or state.standing is None:
+            return Walk()
+        tables = self._tables(state)
+        ap = self._accept_prob_table(state, tables)
+        values = self._standing_vote_values(state, tables, ap, 0.0)
+        if values is None:
+            return Walk()
+        yes_value, no_value, p_yes, _ = values
+        idx = tables.index[tuple(int(x) for x in state.standing_deal)]
+        surplus = float(tables.surplus[idx, state.seat])
+        return (Accept(state.standing) if p_yes > 0.0 and yes_value >= no_value and surplus >= 0.0
+                else Reject(state.standing))
 
 
 # Convenience registry of the scripted zoo (excludes the composed Bayesian agent, which needs a discount).

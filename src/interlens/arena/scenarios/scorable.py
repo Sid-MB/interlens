@@ -42,7 +42,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..actions import Accept, Action, LEGALITY, OfferRegistry, Propose, Reject, SYNTAX, Walk, parse_action
+from ..actions import (Accept, Action, LEGALITY, OfferRegistry, ParseResult, Propose, Reject, SYNTAX, Walk,
+                       parse_action)
 from ..negotiation.sheets import GameSpec
 from ..negotiation.solutions import egalitarian_welfare, gini, welfare
 from ..oracles import Oracle, annotate as annotate_oracles
@@ -224,9 +225,10 @@ class ScorableNegotiation(Scenario):
 	def _pass_rule(self, st) -> str:
 		spec = st["spec"]
 		need = ("every party still at the table" if spec.min_accept is None
-		        else f"at least {spec.min_accept} parties (including any veto party)")
+		        else f"at least {spec.min_accept} of the original {spec.n_parties} parties (including any veto party)")
 		return (f"A deal closes only when {need} has formally ACCEPTed the SAME standing offer. A party may "
-		        "WALK to leave for good and take its no-deal outcome.")
+		        "WALK to leave for good and take its no-deal outcome. "
+		        + ("" if spec.min_accept is None else "Walking never lowers the fixed acceptance quorum."))
 
 	def _veto_line(self, st) -> str:
 		vs = st["spec"].veto_seats
@@ -304,7 +306,12 @@ class ScorableNegotiation(Scenario):
 			standing = st["final_offer"]  # the specific offer under the up/down vote
 		block = {"negotiation_state": {
 			"seat": si, "round": st["round"], "deadline": st["rounds"],
+			"min_accept": st["spec"].min_accept, "veto_seats": st["spec"].veto_seats,
 			"offers": {o.offer_id: list(o.deal) for o in standing_offers},
+			"offer_proposers": {o.offer_id: seat_index[o.proposer] for o in standing_offers},
+			"offer_accepts": {o.offer_id: [seat_index[n] for n in o.accepts] for o in standing_offers},
+			"offer_rejects": {o.offer_id: [seat_index[n] for n in o.rejects] for o in standing_offers},
+			"walked_seats": [seat_index[n] for n in st["walked"]],
 			"standing": standing,
 			"received": [list(o.deal) for o in opponents],
 			"received_by_opponent": received_by_opponent,
@@ -412,6 +419,10 @@ class ScorableNegotiation(Scenario):
 		st["_deal_error"] = None
 		result = parse_action(text, deal_decoder=lambda d: self._resolve_deal(st["spec"], d, st),
 		                      standing=reg.standing_ids(), allowed=_PHASE_ALLOWED.get(req.phase))
+		if (result.ok and req.phase == "final_vote" and isinstance(result.action, (Accept, Reject))
+				and result.action.offer_id != st.get("final_offer")):
+			result = ParseResult.bad(
+				LEGALITY, f"The final vote is only on {st.get('final_offer')}; reference that offer id.")
 		if not result.ok:
 			if result.error_kind == LEGALITY:
 				st["legality_errors"] += 1
@@ -510,6 +521,11 @@ class ScorableNegotiation(Scenario):
 				st["moved"].append(seat)
 			if self._try_close(st):
 				return
+			if not self._agreement_possible(st):
+				st["final_deal"] = None
+				st["finalized_by"] = "no_deal"
+				st["done"] = True
+				return
 			if self._next_mover(st) is None:  # every active seat has moved this round
 				st["moved"] = []
 				st["round"] += 1
@@ -538,20 +554,33 @@ class ScorableNegotiation(Scenario):
 			parts.append("```json\n" + _json(self._action_json(st["spec"], action)) + "\n```")
 		st["events"].append({"seat": seat, "content": "\n".join(parts) if parts else "(no public statement)"})
 
-	def _try_close(self, st) -> bool:
-		"""Close the deal iff some live offer has been ACCEPTed by every active party (or >= min_accept of them),
-		the veto party (if any) is active and among the accepters, and at least two parties remain. Real votes
-		only — never threshold arithmetic. Sets ``final_deal``/``finalized_by``/``closing_offer`` and ``done``."""
-		spec, reg = st["spec"], st["registry"]
+	def _agreement_possible(self, st) -> bool:
+		"""Whether the remaining seats can still satisfy the agreement rule after irreversible walks."""
+		spec = st["spec"]
 		active = self._active_idxs(st)
 		if len(active) < 2:
+			return False
+		if any(st["seat_names"][v] in st["walked"] for v in spec.veto_seats):
+			return False
+		return spec.min_accept is None or len(active) >= spec.min_accept
+
+	def _try_close(self, st, offer_id: str | None = None) -> bool:
+		"""Close the deal iff a live offer has been ACCEPTed by every active party (or the fixed min_accept),
+		the veto party (if any) is active and among the accepters, and at least two parties remain. Real votes
+		only — never threshold arithmetic. ``offer_id`` restricts a forced-final up/down vote to its selected
+		offer. Sets ``final_deal``/``finalized_by``/``closing_offer`` and ``done``."""
+		spec, reg = st["spec"], st["registry"]
+		active = self._active_idxs(st)
+		if not self._agreement_possible(st):
 			return False
 		veto_names = [st["seat_names"][i] for i in spec.veto_seats]
 		if any(v in st["walked"] for v in veto_names):
 			return False  # an essential (veto) party has left: no deal can pass
 		active_names = [st["seat_names"][i] for i in active]
-		need = len(active_names) if spec.min_accept is None else min(spec.min_accept, len(active_names))
+		need = len(active_names) if spec.min_accept is None else spec.min_accept
 		for offer in reg.standing():
+			if offer_id is not None and offer.offer_id != offer_id:
+				continue
 			backers = [nm for nm in active_names if nm in offer.accepts]
 			veto_ok = all(v in offer.accepts for v in veto_names)
 			if len(backers) >= need and veto_ok:
@@ -564,13 +593,19 @@ class ScorableNegotiation(Scenario):
 
 	def _resolve_if_final_done(self, st) -> None:
 		"""After the last final-round vote, resolve the up/down on the final offer (same closure rule)."""
+		if self._try_close(st, offer_id=st.get("final_offer")):
+			return
+		if not self._agreement_possible(st):
+			st["final_deal"] = None
+			st["finalized_by"] = "no_deal"
+			st["done"] = True
+			return
 		order = self._active_order(st, st["rounds"] + 1)
 		voters = [st["seat_names"][i] for i in order[1:]]
 		if all(nm in st["final_votes"] or nm in st["walked"] for nm in voters):
-			if not self._try_close(st):
-				st["final_deal"] = None
-				st["finalized_by"] = "no_deal"
-				st["done"] = True
+			st["final_deal"] = None
+			st["finalized_by"] = "no_deal"
+			st["done"] = True
 
 	# -------------------------------------------------------- provisional --
 	def _provisional_marks(self, st) -> set[int]:
@@ -610,6 +645,7 @@ class ScorableNegotiation(Scenario):
 		"""A serializable snapshot of the negotiation state at a decision point, for the oracles' ``history``
 		argument: the standing offers with their vote state, who has walked, the round, and the public log."""
 		return {"round": st["round"], "walked": list(st["walked"]),
+		        "seat_names": list(st["seat_names"]),
 		        "offers": [o.to_json() for o in st["registry"].standing()],
 		        "events": list(st["events"])}
 
