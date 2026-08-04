@@ -104,7 +104,9 @@ function frontierChart(host, game, marks, paths, onPick) {
   marks.forEach((mk, k) => {
     const x = px(d.wx[mk.index]), y = py(d.wy[mk.index]), r = mk.r || 6.5;
     const tip = E(mk.title || mk.label || "");
-    s.push(shapeAt(mk.kind, x, y, r, "mark",
+    /* `mk.cls` is a STATE of a mark (e.g. a proposal the reader has not scrolled to yet), never an identity:
+       it changes weight, not hue, so the chart never spends a categorical slot on "later". */
+    s.push(shapeAt(mk.kind, x, y, r, "mark" + (mk.cls ? " " + mk.cls : ""),
       `fill="var(--${mk.color})" data-mark="${k}"${mk.turn !== undefined ? ` data-markturn="${mk.turn}"` : ""}
        tabindex="0" role="button" aria-label="${tip}"`, `<title>${tip}</title>`));
     if (mk.label) s.push(`<text class="lab" x="${(x + (mk.dx ?? 9)).toFixed(1)}" y="${(y + (mk.dy ?? -8)).toFixed(1)}">${E(mk.label)}</text>`);

@@ -33,6 +33,7 @@ module               what it holds
 ``js_core``          ``JS_UTIL`` (formatting + DOM helpers) and ``JS_CORE`` (payload, view rehydration, deals)
 ``js_chart``         the frontier chart (hover, pin, zoom/pan) and the regret strip
 ``js_transcript``    turn cards, the scrubber, lazily-built prompt bodies, turn selection
+``js_sidebar``       the tabbed sidebar and the IntersectionObserver scroll sync that drives it
 ``js_shell``         theme toggle, episode navigation, keyboard bindings, the help overlay
 ``js_episode``       the episode page's wiring
 ``js_compare``       the comparison page's wiring
@@ -73,13 +74,15 @@ from .js_core import JS_CORE, JS_UTIL
 from .js_episode import JS_EPISODE
 from .js_index import JS_INDEX
 from .js_shell import JS_SHELL
+from .js_sidebar import JS_SIDEBAR
 from .js_transcript import JS_TRANSCRIPT
 
-#: Everything a data page (episode or comparison) needs before its own wiring runs.
-JS = "\n".join((JS_UTIL, JS_CORE, JS_CHART, JS_TRANSCRIPT, JS_SHELL))
+#: Everything a data page (episode or comparison) needs before its own wiring runs. The sidebar layer is a no-op
+#: on a page that carries no ``#sidebar`` element, which is what makes it safe in the shared bundle.
+JS = "\n".join((JS_UTIL, JS_CORE, JS_CHART, JS_TRANSCRIPT, JS_SIDEBAR, JS_SHELL))
 
 #: The run index's bundle: the same shell and helpers, none of the episode data layer.
 JS_INDEX_PAGE = "\n".join((JS_UTIL, JS_SHELL, JS_INDEX))
 
 __all__ = ["CSS", "JS", "JS_CHART", "JS_COMPARE", "JS_CORE", "JS_EPISODE", "JS_INDEX", "JS_INDEX_PAGE",
-           "JS_SHELL", "JS_TRANSCRIPT", "JS_UTIL"]
+           "JS_SHELL", "JS_SIDEBAR", "JS_TRANSCRIPT", "JS_UTIL"]

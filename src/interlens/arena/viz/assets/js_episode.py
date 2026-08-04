@@ -82,9 +82,18 @@ function drawChart() {
   });
 }
 
+/* The tabbed sidebar (conversation / frontier / issues), which follows the transcript as it scrolls. Mounted
+   before the turn cards exist; `observeTurns()` below attaches the observer once they are drawn. */
+const SIDEBAR = mountSidebar({ game: G, turns: P.turns, trajectory: P.trajectory, seats: P.seats,
+                               onSelect: (idx) => SELECT(idx) });
+
 /* One selection function for every entry point (chart mark, scrubber chip, regret bar, j/k, header click), and
    it is also what rings the chart mark — the transcript-to-chart half of the sync. */
-const SELECT = makeSelectTurn((idx) => { CURRENT_TURN = idx; if (CHART) CHART.focusTurn(idx); });
+const SELECT = makeSelectTurn((idx) => {
+  CURRENT_TURN = idx;
+  if (CHART) CHART.focusTurn(idx);
+  if (SIDEBAR) SIDEBAR.setCurrent(idx, "select");
+});
 
 function drawTurns() {
   const host = $("turns");
@@ -107,6 +116,7 @@ function drawTurns() {
     $("frontier").scrollIntoView({ behavior: "smooth", block: "start" });
   }));
   if (CURRENT_TURN !== null) SELECT(CURRENT_TURN, { scroll: false });
+  if (SIDEBAR) SIDEBAR.observeTurns();     // the cards are new on every re-render, so the observer is too
 }
 
 function drawRegret() {
@@ -155,5 +165,7 @@ registerKeys(shellKeys().concat([
   { keys: ["e"], what: "expand every panel in the transcript", run: () => setAllOpen($("turns"), true) },
   { keys: ["c"], what: "collapse every panel in the transcript", run: () => setAllOpen($("turns"), false) },
   { keys: ["0"], what: "reset the chart's zoom", run: () => { if (CHART) CHART.reset(); } },
+  { keys: ["s"], what: "next sidebar tab (game info / conversation / frontier / issues)",
+    run: () => { if (SIDEBAR) SIDEBAR.cycleTab(1); } },
 ]));
 """

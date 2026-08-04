@@ -136,7 +136,7 @@ button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible,su
 .strip .stat.bad .v{color:var(--critical)}
 
 /* --- layout ---------------------------------------------------------------------------------------------- */
-.layout{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:var(--sp-3);align-items:start}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:var(--sp-3);align-items:start}
 aside{position:sticky;top:calc(var(--topbar) + var(--sp-2));max-height:calc(100vh - var(--topbar) - var(--sp-4));
  overflow-y:auto}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-3);align-items:start}
@@ -186,6 +186,7 @@ svg .envline{fill:none;stroke:var(--ink-2);stroke-width:2;opacity:.35}
 svg .mark{stroke:var(--surface-1);stroke-width:2;cursor:pointer}
 svg .path1{fill:none;stroke:var(--s1);stroke-width:2;opacity:.85}
 svg .path2{fill:none;stroke:var(--s2);stroke-width:2;opacity:.85}
+svg .mark.ghost{opacity:.3;stroke-width:1}
 svg .sel{stroke:var(--ink);stroke-width:2.5}
 svg .pinned{stroke:var(--ink);stroke-width:3}
 svg.panning{cursor:grabbing}
@@ -308,9 +309,69 @@ td .flag{color:var(--critical);font-weight:600}
 .skip:focus{left:var(--sp-2);top:var(--sp-2);z-index:200;position:fixed;background:var(--surface-1);
  padding:var(--sp-2);border:1px solid var(--s1);border-radius:var(--r-1)}
 
+/* --- the tabbed sidebar ------------------------------------------------------------------------------------
+   One sticky column carrying four views of the same episode. The tab strip is fixed inside it and the active
+   pane is the only thing that scrolls, so the tabs never scroll away from a reader halfway down a long game
+   panel. Panes are plain hidden sections, so the sidebar still reads with scripting off. */
+aside.sidebar{display:flex;flex-direction:column;gap:0;padding:0;overflow:hidden;
+ background:var(--surface-1);border:1px solid var(--ring);border-radius:var(--r-3)}
+.sidebar .tabs{display:flex;flex:none;gap:2px;padding:var(--sp-2) var(--sp-2) 0;border-bottom:1px solid var(--grid);
+ background:var(--surface-1);overflow-x:auto;scrollbar-width:thin}
+.sidebar .tab{flex:none;border:1px solid transparent;border-bottom:0;border-radius:var(--r-1) var(--r-1) 0 0;
+ background:transparent;color:var(--ink-2);padding:5px 10px;margin-bottom:-1px;white-space:nowrap}
+.sidebar .tab[aria-selected="true"]{color:var(--ink);font-weight:600;background:var(--plane);
+ border-color:var(--ring);border-bottom:1px solid var(--plane)}
+.sidebar .syncline{flex:none;padding:4px var(--sp-3);border-bottom:1px solid var(--grid);font-size:var(--t-xs);
+ font-variant-numeric:tabular-nums}
+.sidebar .pane{flex:1 1 auto;overflow-y:auto;padding:var(--sp-3);min-height:0}
+.sidebar .pane[hidden]{display:none}
+.sidebar .card{border:0;border-bottom:1px solid var(--grid);border-radius:0;padding:var(--sp-2) 0;
+ margin-bottom:var(--sp-2);background:transparent}
+.sidebar .card:last-child{border-bottom:0}
+
+/* the conversation view: the seat in view speaks on the right, everyone else on the left */
+.chatlog{display:flex;flex-direction:column;gap:var(--sp-2);margin-top:var(--sp-2)}
+.bubble{max-width:88%;border:1px solid var(--ring);border-radius:var(--r-2) var(--r-2) var(--r-2) 2px;
+ background:var(--surface-2);padding:6px 9px;font-size:var(--t-sm);scroll-margin:var(--sp-4) 0}
+.bubble .who{display:flex;align-items:baseline;gap:5px;font-weight:600;font-size:var(--t-xs);color:var(--ink-2)}
+.bubble .who .pidx{color:var(--muted);font-variant-numeric:tabular-nums}
+.bubble .who .at{margin-left:auto;font-weight:400;color:var(--muted);white-space:nowrap}
+.bubble .body{margin-top:3px;white-space:pre-wrap;overflow-wrap:anywhere}
+.bubble .chipline{margin-top:5px}
+.bubble.self{margin-left:auto;border-radius:var(--r-2) var(--r-2) 2px var(--r-2);
+ background:color-mix(in oklab,var(--s1) 10%,var(--surface-1));border-color:color-mix(in oklab,var(--s1) 35%,var(--ring))}
+.bubble.self .who::before{content:"\\2190 in view  ";color:var(--s1);font-weight:600}
+.bubble.future{opacity:.42}
+.bubble.cur{box-shadow:0 0 0 2px var(--s1)}
+.bubble.fab{border-color:var(--critical)}
+.bubble .fabtag{margin-top:4px;font-size:var(--t-xs);font-weight:700;color:var(--critical)}
+.actchip{display:inline-block;font-size:var(--t-xs);border:1px solid currentColor;border-radius:999px;
+ padding:1px 8px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.actchip b{font-weight:700}
+.actchip.a-propose{color:var(--s1)} .actchip.a-accept{color:var(--good)} .actchip.a-reject{color:var(--serious)}
+.actchip.a-walk{color:var(--critical)} .actchip.a-vote{color:var(--s3)}
+
+/* the per-agent issue view */
+.issueseat .hd{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-weight:600;margin-bottom:var(--sp-1)}
+.issueseat .hd .muted{font-weight:400;font-size:var(--t-xs)}
+svg.issuesvg .track{fill:color-mix(in oklab,var(--ink) 4%,transparent);stroke:var(--grid)}
+svg.issuesvg .opt{stroke:var(--ink-2);stroke-width:2;opacity:.8}
+svg.issuesvg .opt:hover{stroke:var(--ink);stroke-width:3}
+svg.issuesvg .taul{stroke:var(--ink-2);stroke-width:1.5;stroke-dasharray:5 4;opacity:.85}
+svg.issuesvg .taulab{fill:var(--muted);font-size:10px}
+svg.issuesvg .issuelab{fill:var(--ink-2);font-size:10px}
+svg.issuesvg .dealmark{stroke:var(--s1);stroke-width:4;stroke-linecap:round}
+svg.issuesvg .dealdot{fill:var(--s1);stroke:var(--surface-1);stroke-width:1.5}
+.legend .swatch.tick{width:12px;height:2px;border-radius:0;border:0;background:var(--ink-2)}
+.legend .swatch.line{width:12px;height:4px;border-radius:2px;border:0;background:var(--s1)}
+.legend .swatch.dash{width:12px;height:0;border:0;border-top:2px dashed var(--ink-2);border-radius:0}
+.issuenums{display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-top:var(--sp-2);font-variant-numeric:tabular-nums}
+
 /* --- responsive / print ---------------------------------------------------------------------------------- */
 @media (max-width:1180px){.layout{grid-template-columns:1fr}
- aside{position:static;max-height:none}}
+ aside{position:static;max-height:none}
+ aside.sidebar{overflow:visible}
+ .sidebar .pane{max-height:none;overflow:visible}}
 @media (max-width:760px){.cols,.two{grid-template-columns:1fr}
  .topbar{position:static} .turnhd,.scrub,.colhd{position:static} main{padding:var(--sp-3)}
  .strip .stat{border-right:0}}

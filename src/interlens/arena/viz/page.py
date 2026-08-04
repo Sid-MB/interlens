@@ -15,6 +15,7 @@
 #
 # [rational_agents: viz] 2026-07-29
 # [rational_agents: viz-ux] 2026-08-03
+# [rational_agents: viz-sidebar] 2026-08-03
 
 """HTML assembly: a payload in, one self-contained interactive page out.
 
@@ -145,15 +146,17 @@ def _legend(mode: str) -> str:
             "<span><i class='swatch' style='background:var(--muted)'></i>dominated deal</span></div>")
 
 
-def _side_panel(payload: dict) -> str:
-    """The game side panel: who is at the table, the thresholds, the protocol, the size of the bargaining problem,
-    the solution concepts, and every party's private score sheet — the whole normative context of the episode."""
+def _game_cards(payload: dict) -> str:
+    """The game panel's cards: who is at the table, the thresholds, the protocol, the size of the bargaining
+    problem, the solution concepts, and every party's private score sheet — the whole normative context of the
+    episode. Rendered without its container so both the comparison page's plain ``<aside>`` and the episode
+    page's tabbed sidebar can carry the same content."""
     game = payload.get("game")
     seats = payload.get("seats") or []
     if not game:
-        return ("<aside><section class='card'><h2>Game</h2><div class='gap'>No instance record was supplied, so "
+        return ("<section class='card'><h2>Game</h2><div class='gap'>No instance record was supplied, so "
                 "the game setup, thresholds, and frontier are unavailable; the transcript above is complete.</div>"
-                "</section></aside>")
+                "</section>")
     counts, protocol = game.get("counts") or {}, game.get("protocol") or {}
     ideal = game.get("ideal_surplus") or []
     seat_rows = "".join(
@@ -180,8 +183,7 @@ def _side_panel(payload: dict) -> str:
         for sh in game.get("sheets") or [])
     views = payload.get("views") or {}
     kind_src = payload.get("seat_kind_source") or {}
-    return f"""<aside>
-<section class='card'><h2>Who is at the table</h2>
+    return f"""<section class='card'><h2>Who is at the table</h2>
  <table><thead><tr><th>seat</th><th>party</th><th>threshold τ</th><th>ideal surplus</th><th>realized</th></tr></thead>
  <tbody>{seat_rows}</tbody></table>
  <div class='sub muted'>Seat occupant kinds: {_e(kind_src.get('detail'))}</div></section>
@@ -213,8 +215,220 @@ def _side_panel(payload: dict) -> str:
  labelled as reconstructed wherever they appear.
  {(f"Of those, {views.get('reconstructed_pre_retry')} were retry turns, whose reconstruction is the FIRST "
    "attempt's prompt — the repair instruction the model saw on the retry is not recoverable from the record."
-   ) if views.get('reconstructed_pre_retry') else ''}</div></section>
-</aside>"""
+   ) if views.get('reconstructed_pre_retry') else ''}</div></section>"""
+
+
+def _side_panel(payload: dict) -> str:
+    """The plain (untabbed) game side panel, as the comparison page carries it."""
+    return f"<aside>{_game_cards(payload)}</aside>"
+
+
+# ------------------------------------------------------------------------------- the tabbed sidebar --
+#: The sidebar's tabs, in order. The first is the default. ``game`` is the panel the page always had; the other
+#: three are scroll-synced views of the turn currently in the reader's viewport.
+SIDEBAR_TABS = [("game", "Game info"), ("chat", "Conversation"), ("frontier", "Frontier"), ("issues", "Issues")]
+
+
+def _deal_summary(named: dict | None) -> str:
+    """A named deal as the compact ``Issue=Option, Issue=Option`` line the page uses everywhere."""
+    if not isinstance(named, dict) or not named:
+        return ""
+    return ", ".join(f"{k}={v}" for k, v in named.items())
+
+
+def _action_chip(turn: dict) -> str:
+    """The formal action of one turn as a compact chip — exactly what the other seats saw published beside the
+    free text, and nothing else. A talk-only turn published no formal action, so it gets no chip.
+
+    The engine republishes each validated move as canonical JSON in the public log (``ScorableNegotiation._publish``),
+    so this is a rendering of public record, not an inference: ``PROPOSE P3`` names the id the proposal was
+    registered under and the package it put on the table, ``ACCEPT P2`` / ``REJECT P2`` name the offer voted on."""
+    action = turn.get("action") or {}
+    atype = (action.get("atype") or "").lower()
+    ref = turn.get("offer_id") or action.get("offer")
+    if atype == "propose":
+        deal = _deal_summary(action.get("deal_named"))
+        head = f"PROPOSE {ref}" if ref else "PROPOSE"
+        return (f"<span class='actchip a-propose'><b>{_e(head)}</b>"
+                f"{(': ' + _e(deal)) if deal else ''}</span>")
+    if atype in ("accept", "reject", "vote"):
+        return (f"<span class='actchip a-{_e(atype)}'><b>{_e(atype.upper())}"
+                f"{(' ' + _e(ref)) if ref else ''}</b></span>")
+    if atype == "walk":
+        return "<span class='actchip a-walk'><b>WALK</b></span>"
+    return ""
+
+
+def _chat_bubbles(payload: dict) -> str:
+    """The public conversation as chat bubbles, one per PUBLISHED turn, in order.
+
+    This is the transcript as a *seat* experienced it, so it carries only what the engine published to the other
+    parties: the free-text message and the formal action. The scratchpad, the reasoning trace, the prompt, and the
+    oracle verdicts are all private or post-hoc and are deliberately absent — a conversation view that leaked any
+    of them would misrepresent what the other seats could possibly have been reacting to. Turns that were first
+    attempts at a slot the seat later retried are absent too, because the engine never published them.
+
+    Every bubble carries its speaker's seat, so the browser can re-anchor the whole list to whichever seat is in
+    view (that seat's own bubbles move to the right) without re-rendering anything."""
+    seats = {s.get("name"): s for s in payload.get("seats") or []}
+    rows = [t for t in payload.get("turns") or [] if t.get("published", True)]
+    if not rows:
+        return "<div class='gap'>This episode published no turns.</div>"
+    bubbles = []
+    for t in rows:
+        seat = t.get("seat")
+        party = (seats.get(seat) or {}).get("party")
+        message = (t.get("action") or {}).get("message")
+        chip = _action_chip(t)
+        body = [f"<div class='who'><span class='pidx'>{_e(party)}</span> {_e(seat)}"
+                f"<span class='at'>turn {_e(t.get('idx'))} · round {_e(t.get('round'))}</span></div>"]
+        if message:
+            body.append(f"<div class='body'>{_e(message)}</div>")
+        if chip:
+            body.append(f"<div class='chipline'>{chip}</div>")
+        if t.get("gen_failed"):
+            body.append("<div class='fabtag'>NOT GENERATED — engine placeholder</div>")
+        bubbles.append(
+            f"<div class='bubble{' fab' if t.get('gen_failed') else ''}' id='bub-{_e(t.get('idx'))}' "
+            f"data-turnidx='{_e(t.get('idx'))}' data-seat='{_e(seat)}' data-party='{_e(party)}'>"
+            f"{''.join(body)}</div>")
+    return f"<div class='chatlog' id='chatlog'>{''.join(bubbles)}</div>"
+
+
+def _issue_bars_svg(game: dict, party: int) -> str:
+    """One agent's private valuation of the issues being decided, as one vertical bar per issue.
+
+    The y axis is that agent's own score scale; each option's score is a tick on its issue's bar (labelled on
+    hover only — a tick per option per issue, labelled, is unreadable at sidebar width). The horizontal line is
+    ``threshold / n_issues``: the average per-issue score this agent needs to clear its threshold, which is the
+    reference that makes a bar's ticks mean something. The marker line showing which option the deal on the table
+    picks is added by the browser, because it changes with the turn in view; every tick carries its y coordinate
+    so the marker is placed from this scale rather than from a second copy of it."""
+    issues = game.get("issues") or []
+    sheets = game.get("sheets") or []
+    if not issues or party >= len(sheets):
+        return "<div class='gap'>This instance carries no per-agent score sheet, so there is nothing to plot.</div>"
+    sheet = sheets[party]
+    values = sheet.get("values") or []
+    n = len(issues)
+    tau = float(sheet.get("threshold") or 0.0)
+    per_issue = tau / n if n else 0.0
+    flat = [float(v) for row in values for v in row] or [0.0]
+    lo, hi = min(flat + [per_issue, 0.0]), max(flat + [per_issue])
+    pad = max(1e-6, (hi - lo) * 0.08)
+    lo, hi = lo - pad, hi + pad
+    W, H = 340, 224
+    m = {"l": 38, "r": 14, "t": 14, "b": 42}
+    span = (W - m["l"] - m["r"]) / n
+
+    def y(v: float) -> float:
+        return H - m["b"] - ((v - lo) / (hi - lo)) * (H - m["t"] - m["b"])
+
+    parts = []
+    for i in range(5):                                  # a recessive value grid, labelled on the left
+        gv = lo + (hi - lo) * i / 4
+        parts.append(f"<line class='gridline' x1='{m['l']}' x2='{W - m['r']}' y1='{y(gv):.1f}' y2='{y(gv):.1f}'/>")
+        parts.append(f"<text x='{m['l'] - 6}' y='{y(gv) + 4:.1f}' text-anchor='end'>{gv:.0f}</text>")
+    parts.append(f"<line class='axisline' x1='{m['l']}' x2='{W - m['r']}' "
+                 f"y1='{H - m['b']}' y2='{H - m['b']}'/>")
+    for j, issue in enumerate(issues):
+        cx = m["l"] + (j + 0.5) * span
+        bw = min(26.0, span * 0.42)
+        x0, x1 = cx - bw / 2, cx + bw / 2
+        row = [float(v) for v in (values[j] if j < len(values) else [])]
+        ticks = "".join(
+            f"<line class='opt' data-opt='{o}' data-y='{y(v):.2f}' x1='{x0 - 4:.1f}' x2='{x1 + 4:.1f}' "
+            f"y1='{y(v):.1f}' y2='{y(v):.1f}'><title>{_e(issue['options'][o] if o < len(issue['options']) else o)}"
+            f" — {v:g} for {_e(sheet.get('agent'))}</title></line>"
+            for o, v in enumerate(row))
+        label = issue["name"] if len(issue["name"]) <= 9 else issue["name"][:8] + "…"
+        parts.append(
+            f"<g class='issuebar' data-issue='{j}' data-name='{_e(issue['name'])}' "
+            f"data-x0='{x0:.1f}' data-x1='{x1:.1f}'>"
+            f"<rect class='track' x='{x0:.1f}' y='{m['t']}' width='{bw:.1f}' "
+            f"height='{H - m['b'] - m['t']:.1f}' rx='4'/>{ticks}"
+            f"<text class='issuelab' x='{cx:.1f}' y='{H - m['b'] + 15}' text-anchor='middle'>{_e(label)}"
+            f"<title>{_e(issue['name'])}: {_e(', '.join(issue['options']))}</title></text></g>")
+    parts.append(f"<line class='taul' data-threshold='{per_issue:.4f}' x1='{m['l']}' x2='{W - m['r']}' "
+                 f"y1='{y(per_issue):.1f}' y2='{y(per_issue):.1f}'/>")
+    parts.append(f"<text class='taulab' x='{W - m['r']}' y='{y(per_issue) - 4:.1f}' text-anchor='end'>"
+                 f"τ/{n} = {per_issue:.1f}</text>")
+    return (f"<div class='chartwrap'><svg viewBox='0 0 {W} {H}' role='img' class='issuesvg' "
+            f"aria-label='Per-issue option scores for {_e(sheet.get('agent'))}, on that agent's own score scale. "
+            f"Each tick is one option; the dashed line is the average per-issue score needed to clear the "
+            f"threshold ({per_issue:.1f}).'>{''.join(parts)}</svg></div>")
+
+
+def _issue_pane(payload: dict) -> str:
+    """The per-agent issue view: one block per seat (the one for the seat in view is shown), each with its bars,
+    a value table, and the running numbers the browser fills for the deal on the table."""
+    game = payload.get("game")
+    if not game:
+        return ("<div class='gap'>No instance record was supplied, so the per-agent score sheets and thresholds "
+                "are unavailable.</div>")
+    seats = payload.get("seats") or []
+    sheets = game.get("sheets") or []
+    private = str((game.get("protocol") or {}).get("info") or "").lower().startswith("priv")
+    note = ("<div class='warn'><b>You are reading this post hoc and omniscient.</b> This episode was played under "
+            "private information: no seat could see another seat's sheet or threshold while playing. The bars "
+            "below are the analyst's view, never a player's.</div>") if private else ""
+    picker = "".join(f"<option value='{i}'>{_e(s.get('name'))}</option>" for i, s in enumerate(seats))
+    blocks = []
+    for i, s in enumerate(seats):
+        sheet = sheets[i] if i < len(sheets) else {}
+        tau = sheet.get("threshold")
+        blocks.append(
+            f"<div class='issueseat' data-party='{i}' data-seat='{_e(s.get('name'))}'{'' if i == 0 else ' hidden'}>"
+            f"<div class='hd'>{_e(s.get('name'))} <span class='badge {_e(s.get('kind'))}'>{_e(s.get('kind'))}</span>"
+            f"<span class='muted'>party {i} · {_e(sheet.get('agent'))} · threshold τ {_num(tau, 1)}</span></div>"
+            f"{_issue_bars_svg(game, i)}"
+            "<div class='legend'>"
+            "<span><i class='swatch tick'></i>an option's score for this agent (hover for its name)</span>"
+            "<span><i class='swatch line'></i>the option the deal on the table picks</span>"
+            "<span><i class='swatch dash'></i>average per-issue score needed (τ/issues)</span></div>"
+            f"<div class='issuenums' id='issuenums-{i}' data-party='{i}'>"
+            "<span class='sub muted'>Scroll the transcript, or pick a turn, to place a deal on these bars.</span>"
+            "</div></div>")
+    return (f"{note}<div class='bar'><label class='sub'>seat "
+            f"<select id='issue-seat-pick'><option value='auto'>follow the transcript</option>{picker}"
+            "</select></label><span class='sub muted' id='issue-seat-note'></span></div>"
+            f"<div id='issue-seats'>{''.join(blocks)}</div>")
+
+
+def _sidebar(payload: dict) -> str:
+    """The episode page's right-hand sidebar: four tabs over one sticky column, three of them scroll-synced.
+
+    ``Game info`` is the panel the page always carried. ``Conversation`` is the public chat as the seat in view
+    experienced it. ``Frontier`` is the deal-space chart restricted to what had been proposed by the turn in view.
+    ``Issues`` is that seat's private valuation of each issue with the deal on the table marked on it. Everything
+    but the two charts and the moving markers renders here, server-side, so the sidebar still reads with scripting
+    off — it simply stops following the scroll."""
+    tabs = "".join(
+        f"<button class='tab' role='tab' id='tab-{k}' data-tab='{k}' aria-controls='pane-{k}' "
+        f"aria-selected='{'true' if i == 0 else 'false'}'>{_e(label)}</button>"
+        for i, (k, label) in enumerate(SIDEBAR_TABS))
+    game = payload.get("game")
+    frontier = ("<div class='sub'>Every deal proposed up to the turn in view, numbered in order, against the same "
+                "frontier as the main chart. The deal standing on the table is squared; proposals still to come "
+                "are ghosted, so the sidebar never shows a reader the future of the transcript they are reading."
+                "</div><div id='mini-chart'></div><div class='sub muted' id='mini-note'></div>"
+                if game else "<div class='gap'>No instance record was supplied, so there is no deal space to "
+                             "draw.</div>")
+    panes = {
+        "game": _game_cards(payload),
+        "chat": ("<div class='sub'>The public record only: each seat's free text and the formal move it published. "
+                 "Scratchpads, prompts, and oracle verdicts are private or post-hoc and are not here. The seat in "
+                 "view speaks on the right.</div>" + _chat_bubbles(payload)),
+        "frontier": frontier,
+        "issues": _issue_pane(payload),
+    }
+    bodies = "".join(
+        f"<section class='pane' id='pane-{k}' role='tabpanel' aria-labelledby='tab-{k}'"
+        f"{'' if i == 0 else ' hidden'}>{panes[k]}</section>"
+        for i, (k, _label) in enumerate(SIDEBAR_TABS))
+    return (f"<aside class='sidebar' id='sidebar'><div class='tabs' role='tablist' "
+            f"aria-label='episode sidebar'>{tabs}</div>"
+            f"<div class='sub muted syncline' id='sync-note'>following the transcript</div>{bodies}</aside>")
 
 
 def _system_prompt_audit(payload: dict) -> str:
@@ -256,7 +470,8 @@ def render_episode_html(payload: dict) -> str:
     Sections, in order: the summary strip; the frontier chart with the play trajectory, the oracle's
     recommendations, and every normative reference point (plus its numeric table view); the per-turn regret strip;
     the system-prompt audit; and the transcript, where each turn shows what the model did NEXT TO what the rational
-    agent would have done there, with the regret between them. The game side panel is sticky alongside.
+    agent would have done there, with the regret between them. The tabbed sidebar (see :func:`_sidebar`) is sticky
+    alongside and follows the transcript as it scrolls.
 
     The top bar carries the run name, the episode picker, and the quick read; where the picker's contents go is a
     marker the exporter fills once every page of the run is known (see :func:`~.chrome.nav_group`), so a page
@@ -305,7 +520,7 @@ def render_episode_html(payload: dict) -> str:
   <button id='collapse-all'>Collapse all</button>
   <span class='sub muted'>or press <kbd>e</kbd> / <kbd>c</kbd>; <kbd>j</kbd> <kbd>k</kbd> walk the turns</span></div>
  <div id='turns'></div></section>
-</div>{_side_panel(payload)}</div>"""
+</div>{_sidebar(payload)}</div>"""
     return _document(f"{ep.get('episode_id')} — episode",
                      topbar(_e(ep.get("cell") or ep.get("scenario") or "run"), "index.html",
                             quick_stats(payload), brand_title="back to the run index"),

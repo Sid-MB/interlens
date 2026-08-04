@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # [rational_agents: viz] 2026-07-29
+# [rational_agents: viz-sidebar] 2026-08-03
 
 """One stored episode, turned into the single JSON payload the interactive page renders.
 
@@ -35,6 +36,10 @@ What the merge adds beyond the raw records:
 - **prompt provenance** — the exact rendered view per turn, marked ``stored`` when the episode recorded it,
   ``reconstructed`` when it was re-derived by deterministic replay through the scenario state machine (current
   prompt code, so it can differ from what the model actually saw), or ``absent``.
+- **the public ledger** — which turns were actually PUBLISHED to the other seats, the offer id each proposal was
+  registered under, and the deal standing on the table as of each turn (see :func:`public_ledger`). This is what
+  the page's conversation view and per-agent issue view read, and it is deliberately reconstructed here rather
+  than in the browser so the page can render it server-side.
 """
 from __future__ import annotations
 
@@ -216,6 +221,63 @@ def _oracle_payload(name: str, rec: dict, geo: GameGeometry | None) -> dict:
     }
 
 
+# --------------------------------------------------------------------------------- public ledger --
+#: Offer ids are minted ``{prefix}{n}`` in registration order (``arena.actions.OfferRegistry``). The scorable
+#: negotiation registers with ``P``; a run whose seats referenced some other prefix overrides this from the ids
+#: the turns actually carry, so nothing here depends on guessing right.
+OFFER_PREFIX = "P"
+
+
+def public_ledger(rows: list[dict]) -> dict:
+    """Reconstruct what the seats publicly saw, from the per-turn records alone.
+
+    Three things the page needs and no stored record carries directly:
+
+    - **published** — a turn that was a first attempt at a slot the seat later retried never reached the other
+      seats: the engine's retry path returns the repair directive *before* publishing, so only the LAST turn in a
+      ``(round, phase, seat)`` slot is public. A conversation view that showed the malformed attempt would be
+      showing text no other party ever read.
+    - **offer_id** — the id a proposal was registered under. ``OfferRegistry`` mints ids sequentially over
+      published proposals that resolved to a legal deal, so replaying that counter over the turns reproduces the
+      exact ids the seats quoted back (``ACCEPT P2``), which the stored record keeps only on the accepting side.
+    - **standing_deal_index** — the deal on the table as of each turn: the offer this turn's action referenced if
+      it referenced one, else the most recently registered offer, else ``None``. This is the deal the per-agent
+      issue view puts its marker on.
+
+    Returns ``{"offers": {offer_id: {...}}, "prefix": str}`` and annotates ``rows`` in place."""
+    prefix = OFFER_PREFIX
+    for row in rows:
+        ref = (row.get("action") or {}).get("offer")
+        if isinstance(ref, str) and ref[:1].isalpha() and ref[1:].isdigit():
+            prefix = ref[0]
+            break
+
+    last_in_slot: dict[tuple, int] = {}
+    for row in rows:
+        last_in_slot[(row.get("round"), row.get("phase"), row.get("seat"))] = row["idx"]
+
+    offers: dict[str, dict] = {}
+    counter, standing = 0, None
+    for row in rows:
+        action = row.get("action") or {}
+        published = last_in_slot.get((row.get("round"), row.get("phase"), row.get("seat"))) == row["idx"]
+        offer_id = None
+        if published and action.get("atype") == "propose" and action.get("deal_index") is not None:
+            counter += 1
+            offer_id = f"{prefix}{counter}"
+            offers[offer_id] = {"offer_id": offer_id, "deal_index": action["deal_index"], "seat": row.get("seat"),
+                                "party": row.get("party"), "turn_idx": row["idx"], "round": row.get("round")}
+            standing = action["deal_index"]
+        elif isinstance(action.get("offer"), str):
+            offer_id = action["offer"]
+            if offer_id in offers:
+                standing = offers[offer_id]["deal_index"]
+        row["published"] = published
+        row["offer_id"] = offer_id
+        row["standing_deal_index"] = standing
+    return {"offers": offers, "prefix": prefix}
+
+
 # ------------------------------------------------------------------------------ view provenance --
 def reconstruct_views(episode: dict, instance: dict) -> dict[int, list[dict]]:
     """Re-derive each turn's rendered view by deterministic replay, for episodes recorded before the per-turn
@@ -346,6 +408,7 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
                                "kind": row["kind"], "index": deal_index, "atype": row["action"]["atype"]})
         rows.append(row)
 
+    ledger = public_ledger(rows)
     outcome = dict(episode.get("outcome") or {})
     agreed = geo.deal_index(outcome.get("deal_named") or outcome.get("deal")) if geo is not None else None
     if agreed is None and "nsw" in outcome:
@@ -374,6 +437,8 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         "seat_kind_source": {"source": kinds["source"], "detail": kinds["detail"]},
         "turns": rows,
         "trajectory": trajectory,
+        # the public offer ledger the conversation and issue views read (see public_ledger)
+        "offers": ledger["offers"],
         "outcome": outcome,
         "oracle_names": oracle_names,
         "counterfactual_oracles": [n for n in oracle_names if n in COUNTERFACTUAL_ORACLES],

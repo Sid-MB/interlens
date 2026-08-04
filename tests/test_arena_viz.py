@@ -581,7 +581,10 @@ def test_hostile_model_text_cannot_become_markup_or_script(episode):
     assert len(re.findall(r"<script>", tail)) == 1, "the hostile script tag must not become a second script"
     # the system-prompt audit renders server-side, so its escaping is visible in the document itself
     assert "&lt;script&gt;alert(3)" in head and "<script>alert(3)" not in head
-    assert "<img src=x" not in head and "onerror=alert(1)" not in head
+    # The sidebar's conversation tab renders the public message server-side, so the hostile text IS in the
+    # document — as inert text. The requirement is therefore that it is escaped, never that it is absent: the
+    # angle brackets and quotes that would make it markup are gone, so it can only ever be read as characters.
+    assert "<img src=x" not in head and "&lt;img src=x onerror=alert(1)&gt;" in head
 
 
 # ------------------------------- annotation vintage / full-cloud hover / compare counterfactual toggle --
@@ -945,6 +948,229 @@ def test_verdict_names_the_side_that_won_and_counts_the_ties():
     flipped = {**payload, "scores": [{"metric": "primary score", "delta": -0.4, "higher_is_better": 1},
                                      {"metric": "Gini of surplus", "delta": -0.2, "higher_is_better": -1}]}
     assert "split" in _verdict_strip(flipped)
+
+
+# ------------------------------------------- [rational_agents: viz-sidebar] 2026-08-03 — the tabbed sidebar --
+# Four tabs over one sticky column, three of them following the transcript as it scrolls. The panes render
+# server-side (so they read with scripting off and are assertable here); the scroll sync itself only exists once
+# the script runs, so it is exercised in the stubbed-DOM harness at the end of this section.
+
+def _pane(html: str, key: str) -> str:
+    """The markup of one sidebar pane: from its opening tag to the next pane, or to the end of the sidebar for
+    the last one (without the second bound, the last pane's slice runs on into the payload and the script)."""
+    after = html.partition(f"id='pane-{key}'")[2]
+    return min((after.partition(end)[0] for end in ("<section class='pane'", "</aside>")), key=len)
+
+
+def test_public_ledger_reconstructs_the_offer_ids_and_the_standing_deal(payload):
+    """The conversation and issue views need three things no stored record carries: which turns were actually
+    published, the id each proposal was registered under, and the deal standing on the table at each turn.
+    Reconstructing them here rather than in the browser is what lets the page render them server-side."""
+    turns = payload["turns"]
+    # a first attempt at a slot the seat later retried never reached the other seats
+    slots = [(t["round"], t["phase"], t["seat"]) for t in turns]
+    assert [s for s in set(slots) if slots.count(s) > 1], "the fixture must contain a retry for this to have teeth"
+    assert sum(1 for t in turns if not t["published"]) == len(slots) - len(set(slots))
+    for t in turns:
+        if not t["published"]:
+            assert t["offer_id"] is None, "an unpublished attempt registered no offer"
+    # ids are minted in registration order over the published proposals that resolved to a legal deal
+    proposals = [t for t in turns if t["published"] and t["action"]["atype"] == "propose"
+                 and t["action"]["deal_index"] is not None]
+    assert [t["offer_id"] for t in proposals] == [f"P{i + 1}" for i in range(len(proposals))]
+    assert payload["offers"][proposals[0]["offer_id"]]["deal_index"] == proposals[0]["action"]["deal_index"]
+    # the standing deal is the most recent registration, and a proposal's own turn already carries its deal
+    for t in proposals:
+        assert t["standing_deal_index"] == t["action"]["deal_index"]
+    assert all(t["standing_deal_index"] is not None for t in turns[proposals[0]["idx"]:])
+
+
+def test_sidebar_carries_four_tabs_and_renders_every_pane_server_side(payload):
+    h = viz.render_episode_html(payload)
+    assert _missing(h, "id='sidebar'", "role='tablist'",
+                    *(f"data-tab='{k}'" for k, _ in viz.SIDEBAR_TABS),
+                    *(f"id='pane-{k}'" for k, _ in viz.SIDEBAR_TABS)) == []
+    # the first tab is the game panel the page always had, and it is the one that opens
+    assert "data-tab='game' aria-controls='pane-game' aria-selected='true'" in h
+    assert "data-tab='chat' aria-controls='pane-chat' aria-selected='false'" in h
+    assert _missing(_pane(h, "game"), "Who is at the table", "Private score sheets", "Protocol") == []
+    # the panes that follow the scroll are hidden markup, not empty ones
+    assert "id='pane-chat'" in h and "class='chatlog'" in h
+    assert "id='mini-chart'" in h and "id='issue-seats'" in h
+    assert "id='sync-note'" in h
+
+
+def test_conversation_tab_is_the_public_record_and_nothing_else(episode):
+    """The bubble list is what the OTHER seats saw: free text plus the formal move. A scratchpad or an oracle
+    verdict in there would show a reader something no party could have been reacting to."""
+    ep, inst = episode
+    poisoned = json.loads(json.dumps(ep))
+    poisoned["turns"][0]["parsed_action"]["thinking"] = "SECRET-SCRATCHPAD-abc"
+    poisoned["turns"][0]["parsed_action"]["message"] = "PUBLIC-MESSAGE-xyz"
+    payload = viz.episode_payload(poisoned, inst)
+    h = viz.render_episode_html(payload)
+    chat = _pane(h, "chat").partition("class='chatlog'")[2]        # the bubbles, not the panel's own caption
+
+    published = [t for t in payload["turns"] if t["published"]]
+    assert chat.count("class='bubble") == len(published) > 0, "one bubble per published turn"
+    assert "PUBLIC-MESSAGE-xyz" in chat
+    assert "SECRET-SCRATCHPAD-abc" not in chat, "the scratchpad is private and must not reach the public view"
+    assert "SECRET-SCRATCHPAD-abc" in h, "the sentinel must be on the page at all, or this proves nothing"
+    # every bubble names its speaker, so the browser can re-anchor the list to the seat in view
+    assert chat.count("data-seat=") == len(published)
+    # the formal move rides as a compact chip, carrying the id the proposal was registered under
+    assert "PROPOSE P1" in chat and "actchip a-propose" in chat
+    assert "regret" not in chat and "oracle" not in chat
+
+
+def test_issue_tab_draws_one_bar_per_issue_with_the_threshold_line(payload):
+    """One bar per issue on the agent's own score scale, a tick per option (named on hover only), and the
+    horizontal line at threshold / n_issues — the average per-issue score that agent needs to clear."""
+    h = viz.render_episode_html(payload)
+    issues = payload["game"]["issues"]
+    pane = _pane(h, "issues")
+    for i, sheet in enumerate(payload["game"]["sheets"]):
+        block = pane.partition(f"data-party='{i}'")[2].partition("class='issueseat'")[0]
+        assert block.count("class='issuebar'") == len(issues), "one bar per issue being decided"
+        assert block.count("class='opt'") == sum(len(iss["options"]) for iss in issues), "a tick per option"
+        expected = sheet["threshold"] / len(issues)
+        assert f"data-threshold='{expected:.4f}'" in block, "the line sits at tau / n_issues, exactly"
+        assert f"τ/{len(issues)} = {expected:.1f}" in block, "and says so, subtly, on the chart"
+    # option names are on hover only — a tick per option per issue, labelled, is unreadable at sidebar width
+    for option in issues[0]["options"]:
+        assert f"<title>{option} —" in pane
+    # one seat is shown at a time, and the picker can pin it
+    seats_block = pane.partition("id='issue-seats'")[2]
+    assert seats_block.count("class='issueseat'") == len(payload["seats"])
+    assert seats_block.count(" hidden>") == len(payload["seats"]) - 1
+    assert "id='issue-seat-pick'" in pane and "follow the transcript" in pane
+
+
+def test_issue_tab_states_the_viewer_is_omniscient_on_a_private_game(payload):
+    """A private-information episode's sheets were never visible to the players. Showing them post hoc is the
+    point of the viewer, but the page has to say so, or a reader will attribute the analyst's knowledge to a
+    seat that was negotiating blind."""
+    private = json.loads(json.dumps(payload))
+    private["game"]["protocol"]["info"] = "private"
+    assert "omniscient" in _pane(viz.render_episode_html(private), "issues")
+    public = json.loads(json.dumps(payload))
+    public["game"]["protocol"]["info"] = "public"
+    assert "omniscient" not in _pane(viz.render_episode_html(public), "issues")
+
+
+def test_sidebar_degrades_without_a_game(episode):
+    """Without an instance there is no deal space and no score sheet, so two tabs have nothing to draw. They must
+    say so and the page must still render, exactly as the old side panel did."""
+    ep, _ = episode
+    h = viz.render_episode_html(viz.episode_payload(ep, None))
+    assert "id='sidebar'" in h and "class='chatlog'" in h, "the conversation needs no instance"
+    assert "no deal space to draw" in _pane(h, "frontier")
+    assert "score sheets and thresholds" in _pane(h, "issues")
+
+
+def test_sidebar_scroll_sync_and_its_keyboard_binding_ship(payload):
+    h = viz.render_episode_html(payload)
+    assert "IntersectionObserver" in h, "the sync is an observer over the turn cards, not a scroll handler"
+    assert "function mountSidebar" in h
+    assert 'keys: ["s"]' in h and "next sidebar tab" in h, "a binding that is not in the help does not exist"
+    assert "frontierChart(host, G, miniMarks" in h, "the sidebar chart must reuse the main chart's geometry"
+
+
+def test_comparison_page_keeps_the_plain_side_panel(two_runs):
+    """The sidebar is the episode page's. A comparison has two episodes and no single seat in view, so it keeps
+    the untabbed game panel — and must not grow half a sidebar."""
+    c = viz.pair_runs(*two_runs)[0][0]
+    h = viz.render_compare_html(c)
+    assert "Who is at the table" in h and "id='sidebar'" not in h and "id='pane-chat'" not in h
+
+
+# --- executing the page in a stubbed DOM: the scroll sync only exists once the script runs -------------------
+def _dom_harness():
+    """``(node, NODE_PATH)`` for the stubbed-DOM harness, or ``None`` when this machine cannot run it.
+
+    The harness needs node plus ``linkedom``; ``INTERLENS_VIZ_NODE_MODULES`` names the install, else
+    ``~/.cache/interlens-viz/node_modules`` (``npm install linkedom`` there). Deliberately not vendored into the
+    repo, and deliberately a skip rather than a failure: the always-available floor is the ``node --check``
+    parse gate below, and everything else on the page renders server-side and is asserted without a browser."""
+    import os
+    import shutil
+    node = shutil.which("node") or str(Path.home() / ".nvm/versions/node/v25.9.0/bin/node")
+    modules = os.environ.get("INTERLENS_VIZ_NODE_MODULES") or str(Path.home() / ".cache/interlens-viz/node_modules")
+    if not Path(node).exists() or not (Path(modules) / "linkedom").exists():
+        return None
+    return node, modules
+
+
+def _run_harness(html: str, steps: list[dict], tmp_path: Path) -> dict:
+    """Render ``html`` into the DOM harness, drive the synthetic scroll through ``steps``, return its report."""
+    import os
+    import subprocess
+    node, modules = _dom_harness()
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    page = tmp_path / "page.html"
+    page.write_text(html)
+    harness = Path(__file__).parent / "assets" / "viz_dom_harness.js"
+    done = subprocess.run([node, str(harness), str(page), json.dumps(steps)], capture_output=True, text=True,
+                          env={**os.environ, "NODE_PATH": modules})
+    assert done.returncode == 0, f"the page threw while running in a DOM:\n{done.stdout[-2000:]}\n{done.stderr[-2000:]}"
+    return json.loads(done.stdout)
+
+
+def test_the_page_script_runs_in_a_dom_and_the_sidebar_follows_the_scroll(payload, tmp_path):
+    """The whole feature in one test, in a real DOM: load the page, scroll the transcript (by firing the
+    IntersectionObserver the sidebar registered), and check that all three live tabs moved with it."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    turns = payload["turns"]
+    seats = {t["idx"]: t["seat"] for t in turns}
+    a, b = turns[0]["idx"], next(t["idx"] for t in turns if t["seat"] != turns[0]["seat"])
+    report = _run_harness(viz.render_episode_html(payload),
+                          [{"tab": "chat", "turns": [a]}, {"turns": [b]}, {"tab": "frontier"},
+                           {"tab": "issues", "pin": 0}, {"turns": [b]}], tmp_path)
+    assert report["ok"] and not report["errors"]
+    assert report["observers"] == 1, "exactly one observer over the turn cards"
+    load, first, second, frontier, pinned, released = report["steps"]
+
+    published = [t for t in turns if t["published"]]
+    assert load["tabs"] == [k for k, _ in viz.SIDEBAR_TABS]
+    assert load["bubbles"] == len(published)
+    assert load["issue_bars"] == len(payload["game"]["issues"])
+
+    # the conversation re-anchors to the seat in view, dims what the reader has not reached, and marks the turn
+    assert first["self_bubble_seats"] == [seats[a]] and first["current_bubble"] == str(a)
+    assert second["self_bubble_seats"] == [seats[b]] and second["current_bubble"] == str(b)
+    assert second["future_bubbles"] < first["future_bubbles"], "scrolling on un-dims the turns passed"
+    assert str(b) in second["sync_note"] and seats[b] in second["sync_note"]
+
+    # the issue tab follows the acting seat, with one deal marker per issue
+    assert second["issue_seat_shown"] == [seats[b]]
+    assert second["deal_marks"] == len(payload["game"]["issues"])
+    assert "surplus" in second["issue_numbers"] and "threshold" in second["issue_numbers"]
+
+    # the frontier tab draws the shared chart, restricted to the proposals up to the turn in view. A proposal the
+    # reader has not reached is the same series at a different time, so it is ghosted by WEIGHT — spending a
+    # fourth hue on it would collide with the solution points under deuteranopia (measured ΔE 2.0).
+    assert frontier["mini_marks"] > 0 and "tabled by turn" in frontier["mini_note"]
+    assert frontier["ghosted_marks"] > 0, "proposals after the turn in view must be ghosted, not dropped"
+    assert set(frontier["mini_fills"]) <= {"var(--s1)", "var(--s2)", "var(--s3)"}, "three categorical slots, still"
+
+    # a pinned seat survives a repeated observation and is released the next time the reader actually moves
+    assert pinned["issue_seat_shown"] == [payload["seats"][0]["name"]] and "pinned" in pinned["sync_note"]
+    assert released["issue_seat_shown"] == [payload["seats"][0]["name"]], "the same turn is not a move"
+
+
+def test_the_other_page_kinds_still_run_clean_with_the_sidebar_layer_loaded(two_runs, tmp_path):
+    """The sidebar code ships in the bundle every data page shares, so it has to be inert where there is no
+    sidebar: a comparison page (two episodes, no single seat in view) and the index must still execute with no
+    runtime errors."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    c = viz.pair_runs(*two_runs)[0][0]
+    for kind, html in (("compare", viz.render_compare_html(c)),
+                       ("index", viz.render_index_html([{"href": "a.html", "label": "a", "deal": True,
+                                                         "primary": 0.5}], "Episodes"))):
+        report = _run_harness(html, [{"tab": "chat", "turns": [0]}], tmp_path / kind)
+        assert report["ok"] and report["steps"][0]["bubbles"] == 0, f"{kind} must carry no sidebar"
 
 
 def test_every_page_kind_emits_syntactically_valid_javascript(payload, two_runs, tmp_path):
