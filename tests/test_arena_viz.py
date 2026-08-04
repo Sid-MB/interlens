@@ -985,7 +985,7 @@ def test_public_ledger_reconstructs_the_offer_ids_and_the_standing_deal(payload)
     assert all(t["standing_deal_index"] is not None for t in turns[proposals[0]["idx"]:])
 
 
-def test_sidebar_carries_four_tabs_and_renders_every_pane_server_side(payload):
+def test_sidebar_carries_five_tabs_and_renders_every_pane_server_side(payload):
     h = viz.render_episode_html(payload)
     assert _missing(h, "id='sidebar'", "role='tablist'",
                     *(f"data-tab='{k}'" for k, _ in viz.SIDEBAR_TABS),
@@ -997,7 +997,28 @@ def test_sidebar_carries_four_tabs_and_renders_every_pane_server_side(payload):
     # the panes that follow the scroll are hidden markup, not empty ones
     assert "id='pane-chat'" in h and "class='chatlog'" in h
     assert "id='mini-chart'" in h and "id='issue-seats'" in h
+    assert _missing(_pane(h, "info"), "Oracle values and the improvement gap",
+                    "R<sub>t</sub>", "Utility, threshold, surplus", "Provenance and generated failures") == []
     assert "id='sync-note'" in h
+
+
+def test_oracle_values_are_spatially_grouped_and_the_gap_is_positive(payload, tmp_path):
+    """The chosen action's value belongs with the chosen action. The counterfactual side owns its best value and
+    a positive best-minus-chosen opportunity gap; negating that number while calling it regret is contradictory."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    report = _run_harness(viz.render_episode_html(payload), [{"info": True}], tmp_path)
+    assert report["ok"] and not report["errors"]
+    loaded, linked = report["steps"]
+    assert "oracle's value of the model's move" in loaded["acted_oracle_text"]
+    assert "oracle's value of the model's move" not in loaded["oracle_table_text"]
+    assert "oracle's value of its best move" in loaded["oracle_table_text"]
+    assert "value improvement available" in loaded["oracle_table_text"] and "regret" not in loaded["oracle_table_text"]
+    first = next(t["oracles"][payload["counterfactual_oracles"][0]] for t in payload["turns"]
+                 if payload["counterfactual_oracles"][0] in t["oracles"])
+    assert str(round(first["divergence"], 2)) in loaded["oracle_table_text"], "show best - chosen, without negating it"
+    assert loaded["info_buttons"] >= 3
+    assert linked["activeTab"]["tab"] == "info" and not linked["info_hidden"], "the i button opens Info"
 
 
 def test_conversation_tab_is_the_public_record_and_nothing_else(episode):
@@ -1020,6 +1041,7 @@ def test_conversation_tab_is_the_public_record_and_nothing_else(episode):
     assert chat.count("data-seat=") == len(published)
     # the formal move rides as a compact chip, carrying the id the proposal was registered under
     assert "PROPOSE P1" in chat and "actchip a-propose" in chat
+    assert ".actchip.a-propose{color:var(--s1);border-radius:var(--r-1)}" in h
     assert "regret" not in chat and "oracle" not in chat
 
 
@@ -1103,6 +1125,19 @@ def test_every_solution_concept_ships_its_definition_and_what_separates_it(paylo
     # the non-concept point kinds carry standing explanations too
     assert _missing(h, "frontier deal this party would dictate", "best-response oracle</b>",
                     "<b>on the table</b>", "closed on</b>", "standing on the table</b>") == []
+
+
+def test_the_concept_definitions_have_exactly_one_source(payload):
+    """The definitions live in ``viz.concepts`` and are serialized into the page from there. Two hand-written
+    copies of Nash's axioms — one in the browser layer, one in a server-rendered help panel — is how a chart ends
+    up explaining a concept two different ways, so the constant is the contract and every marked concept is in it."""
+    from interlens.arena.viz import concepts
+    assert set(concepts.CONCEPT_MATH) == set(concepts.CONCEPT_LABELS) == set(viz.geometry.CONCEPT_LABELS)
+    h = viz.render_episode_html(payload)
+    for name, spec in concepts.CONCEPT_MATH.items():
+        assert _missing(h, spec["math"], spec["note"]) == [], f"{name}'s definition did not reach the page verbatim"
+    for role, note in concepts.ROLE_NOTES.items():
+        assert note in h, f"the {role} explanation did not reach the page verbatim"
 
 
 def test_the_card_renders_maths_with_no_maths_library(payload):
@@ -1193,11 +1228,106 @@ def test_hover_cards_open_for_every_point_kind_in_a_dom(payload, tmp_path):
         assert z == sorted(z, reverse=True), f"the ranking must be sorted by z descending, got {z}"
 
     assert "argmax" in marked[0]["card_math"], "the NBS card carries its objective, not only prose"
+    # scale invariance is read off the stored solution record, so it is right for every concept, not just UTIL
+    for (target, _), got in zip(kinds.items(), marked):
+        flag = payload["game"]["solutions"].get({"NBS": "nash", "KS": "kalai_smorodinsky", "UTIL": "utilitarian",
+                                                 "EGAL": "egalitarian", "MNW": "max_nash_welfare"}.get(target, ""))
+        if flag is not None and "scale_invariant" in flag:
+            want = "scale-invariant" if flag["scale_invariant"] else "not scale-invariant"
+            assert want in got["card_sub"], f"{target!r} must state its scale invariance: {got['card_sub']!r}"
     # an ordinary cloud deal needs no explanation, but still gets its identity, deal and numbers
     assert cloud["card_on"] and cloud["card_kind"] in ("Deal in the space", "Efficient deal")
     assert not cloud["card_note"] and len(cloud["card_rank"]) == n
     assert not left["card_on"], "leaving the chart dismisses the card"
     assert pinned["card_on"] and pinned["card_pinned"], "a click pins the card (and is the touch path)"
+
+
+def test_the_closing_turn_is_derived_from_the_public_ledger():
+    """The AGREED square is the one mark that stands for an event without naming its turn, so the turn a reader
+    lands on is derived: the last published closing action taken while the agreed deal was the one standing. The
+    preference order matters — an accept of an EARLIER offer must not capture the jump."""
+    rows = [
+        {"idx": 0, "round": 0, "phase": "p", "seat": "A", "action": {"atype": "propose", "deal_index": 7}},
+        {"idx": 1, "round": 0, "phase": "p", "seat": "B", "action": {"atype": "accept", "offer": "P1"}},
+        {"idx": 2, "round": 1, "phase": "p", "seat": "A", "action": {"atype": "propose", "deal_index": 9}},
+        {"idx": 3, "round": 1, "phase": "p", "seat": "B", "action": {"atype": "accept", "offer": "P2"}},
+        {"idx": 4, "round": 1, "phase": "p", "seat": "C", "action": {"atype": "talk"}},
+    ]
+    viz.episode.public_ledger(rows)
+    assert viz.episode.closing_turn_index(rows, 9) == 3, "the accept of the deal that closed, not the later talk"
+    assert viz.episode.closing_turn_index(rows, 7) == 1, "an earlier offer's accept is the earlier turn"
+    assert viz.episode.closing_turn_index(rows, None) is None and viz.episode.closing_turn_index([], 9) is None
+    # a deal the ledger cannot tie to any closing action still lands somewhere sensible: the last closing action
+    assert viz.episode.closing_turn_index(rows, 42) == 3
+
+
+def test_only_points_that_stand_for_an_event_navigate_to_a_turn(payload, tmp_path):
+    """Clicking a point that happened jumps the transcript to the turn it happened on and flashes the card;
+    clicking a point that is a property of the GAME leaves the page where it is. The distinction is visible in the
+    rendered marks — a turn anchor is present on the numbered moves, the oracle circles and the AGREED square, and
+    absent on the solution stars and the party-best diamonds — so it cannot silently invert."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    first = payload["trajectory"][0]
+    oracle = payload["counterfactual_oracles"][0]
+    # An oracle circle on a LATER turn, so the last step proves the landing moves rather than merely persisting.
+    late = max(t["idx"] for t in payload["turns"] if (t.get("oracles") or {}).get(oracle))
+    report = _run_harness(viz.render_episode_html(payload),
+                          [{"hover": f"move {first['ordinal']}:"}, {"click": f"move {first['ordinal']}:"},
+                           {"click": "NBS"}, {"click": f"{oracle} oracle's deal at turn {late} "}], tmp_path)
+    assert report["ok"] and not report["errors"]
+    hover_move, click_move, click_static, click_oracle = report["steps"][1:5]
+
+    anchored = dict(report["steps"][0]["mark_turns"])
+    assert anchored, "no mark carries a turn anchor at all"
+    for label, turn in anchored.items():
+        assert label.startswith("move ") or "oracle's deal at turn" in label or label == "the deal that closed", \
+            f"{label!r} is not an event, so it must not carry a turn anchor"
+        assert turn.isdigit()
+    statics = [lbl for lbl in ("NBS", "KS", "UTIL", "EGAL", "MNW", "best efficient deal for") for a in anchored
+               if a.startswith(lbl)]
+    assert statics == [], f"static reference points must not navigate: {statics}"
+    # the trajectory and the per-turn oracle marks are all anchored, on their own turn
+    assert {t for t in anchored.values()} >= {str(p["turn_idx"]) for p in payload["trajectory"]}
+
+    # the card offers the jump explicitly too, for touch and for discoverability
+    assert hover_move["card_goto"] == str(first["turn_idx"])
+    assert f"go to turn {first['turn_idx']}" in hover_move["card_note"] + hover_move["card_kind"] \
+        or hover_move["card_goto"], "the jump must be visible in the card, not only on click"
+    # clicking the move selects AND flashes its turn card — exactly one card, so the landing is unambiguous
+    assert click_move["selected_turn"] == f"turn-{first['turn_idx']}"
+    assert click_move["flashed"] == [f"turn-{first['turn_idx']}"], "the landing card must say it was landed on"
+    # a static point navigates nothing: no jump control on its card, and the selection/landing stay where they were
+    assert click_static["card_goto"] == ""
+    assert click_static["selected_turn"] == click_move["selected_turn"], "a static point moves nothing"
+    assert click_static["flashed"] == click_move["flashed"], "a static point starts no new landing"
+    # and an event on a later turn does move it (the flash class is cleared by a timer the harness never reaches,
+    # so 'unchanged' above is only meaningful next to a step that provably changes it)
+    assert click_oracle["selected_turn"] == f"turn-{late}" and click_oracle["flashed"] == [f"turn-{late}"]
+
+
+def test_the_axes_carry_their_own_explanation(payload, tmp_path):
+    """Both axes are definitions, so each title gets a focusable info control that opens the same card the points
+    use — including the caveat that the chart is a 2-D projection of the full z-space, which is the one way the
+    picture can be misread."""
+    h = viz.render_episode_html(payload)
+    from interlens.arena.viz import concepts
+    for axis, spec in concepts.AXIS_NOTES.items():
+        assert _missing(h, spec["title"], spec["html"]) == [], f"the {axis} axis explanation is not on the page"
+    assert concepts.PROJECTION_CAVEAT in h and "2-D projection" in h
+    assert 'data-axisinfo="${axis}"' in h and 'tabindex="0" role="button"' in h
+    assert "scale-invariant" in h and "walk-away point" in h
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    report = _run_harness(h, [{"axis": "x"}, {"axis": "y", "axispin": True}], tmp_path)
+    assert report["ok"] and not report["errors"]
+    assert report["steps"][0]["axis_dots"] == ["x", "y"], "one info control per axis, drawn in the chart"
+    x_note, y_pinned = report["steps"][1], report["steps"][2]
+    assert x_note["card_on"] and "joint welfare" in x_note["card_kind"]
+    assert "mean" in x_note["card_note"] and "projection" in x_note["card_note"]
+    assert not x_note["card_rank"], "an axis explanation is not about one deal, so it carries no party ranking"
+    assert y_pinned["card_on"] and y_pinned["card_pinned"] and "worst-off" in y_pinned["card_kind"]
+    assert "Kalai" in y_pinned["card_note"]
 
 
 def test_the_comparison_chart_gets_cards_too_and_never_invents_an_explanation(two_runs, tmp_path):

@@ -57,7 +57,9 @@ function buildMarks() {
     ordinal: p.ordinal, seat: p.seat, atype: p.atype }));
   if (P.outcome.deal_index !== null && P.outcome.deal_index !== undefined)
     marks.push({ index: P.outcome.deal_index, kind: "square", color: "s1", r: 8, label: "AGREED", dx: 10, dy: 4,
-      title: "the deal that closed", role: "agreed" });
+      /* The turn the accept (or final ballot) landed on, derived server-side — see `episode.closing_turn_index`.
+         Without it the AGREED square is the one mark standing for an event with nowhere to send a reader. */
+      title: "the deal that closed", role: "agreed", turn: P.outcome.closing_turn_idx });
   return marks;
 }
 
@@ -72,7 +74,10 @@ function pick(mk, clicked) {
     : mk.role === "agreed" ? "<b>the deal that closed</b>" : "";
   if (clicked) PINNED = { mk, extra };
   $("detail").innerHTML = dealDetail(G, mk.index, mk.title || "deal", extra, Boolean(clicked));
-  if (clicked && mk.turn !== undefined) SELECT(mk.turn);
+  /* Clicking a point that stands for a real event jumps the transcript to that turn and flashes the card; a point
+     that is a property of the GAME (a solution concept, a party-best, a bare deal) has no event to jump to and
+     leaves the page where it is. `markTurn`/`goToTurn` (js_hover) decide which is which, in one place. */
+  if (clicked) goToTurn(markTurn(mk));
 }
 
 function drawChart() {
@@ -102,7 +107,8 @@ function drawTurns() {
   const host = $("turns");
   host.innerHTML = annProvenance(P.annotations_source, P.counterfactual_oracles)
     + scrubberHtml(P.turns)
-    + `<div id="turnlist">` + P.turns.map(t => turnCard(t, G, ORACLE, { showCounterfactual: Boolean(ORACLE) })).join("") + `</div>`;
+    + `<div id="turnlist">` + P.turns.map(t => turnCard(t, G, ORACLE,
+        { showCounterfactual: Boolean(ORACLE), infoLinks: true })).join("") + `</div>`;
   bindLazy(host, P.turns);
   host.querySelectorAll(".chip[data-goturn]").forEach(b =>
     b.addEventListener("click", () => SELECT(Number(b.dataset.turnidx))));
@@ -168,7 +174,7 @@ registerKeys(shellKeys().concat([
   { keys: ["e"], what: "expand every panel in the transcript", run: () => setAllOpen($("turns"), true) },
   { keys: ["c"], what: "collapse every panel in the transcript", run: () => setAllOpen($("turns"), false) },
   { keys: ["0"], what: "reset the chart's zoom", run: () => { if (CHART) CHART.reset(); } },
-  { keys: ["s"], what: "next sidebar tab (game info / conversation / frontier / issues)",
+  { keys: ["s"], what: "next sidebar tab (game info / conversation / frontier / issues / info)",
     run: () => { if (SIDEBAR) SIDEBAR.cycleTab(1); } },
 ]));
 """

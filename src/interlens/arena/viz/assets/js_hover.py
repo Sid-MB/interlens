@@ -32,9 +32,11 @@ at the pointer:
 
 **The maths is written out, without a maths library.** The five solution concepts are definitions, not labels, so
 each carries its formula and the one property that distinguishes it (Nash's axioms, KS's monotonicity,
-utilitarianism's *lack* of scale invariance, egalitarian maximin, MNW's Caragiannis fallback). Pages are opened
-off ``file://`` with no network, so this is HTML ``<sub>`` plus Unicode operators (``Σ Π τ ≥ −``) rather than
-KaTeX or MathJax — it renders everywhere, adds nothing to the page weight, and copies as readable text.
+utilitarianism's *lack* of scale invariance, egalitarian maximin, MNW's Caragiannis fallback). Those definitions
+live in :mod:`interlens.arena.viz.concepts` and are serialized into the page from there, so a second place that
+explains a concept to a reader cannot disagree with this one. Pages are opened off ``file://`` with no network, so
+the formulae are HTML ``<sub>`` plus Unicode operators (``Σ Π τ − >``) rather than KaTeX or MathJax — they render
+everywhere, add nothing to the page weight, and copy as readable text.
 
 **One card, never under the cursor.** A single element is reused for every point on the page, so two cards can
 never be open at once; it is offset from the pointer and flips side or vertical anchor near a viewport edge. A
@@ -44,40 +46,19 @@ it follows the light/dark theme like the rest of the page.
 """
 from __future__ import annotations
 
-JS_HOVER = r"""
-/* ---- the explanation library ---------------------------------------------------------------------------
-   A solution concept is a DEFINITION, not a label, and a reader who cannot recall which of five axiomatic
-   points they are hovering cannot read the chart. Each entry: the full name, the objective it maximizes, and
-   the one property that separates it from its neighbours. `math` is HTML (<sub> + Unicode), never LaTeX — the
-   pages must render with no network. `u_i` is party i's utility, `tau_i` its walk-away threshold, `b_i` its
-   ideal, and z_i = max(u_i - tau_i, 0) / (b_i - tau_i) the normalized surplus both chart axes are built from. */
-const CONCEPT_NOTES = {
-  nash: { name: "Nash bargaining solution",
-    math: "argmax<sub>d</sub> &Sigma;<sub>i</sub> log(u<sub>i</sub>(d) &minus; &tau;<sub>i</sub>)",
-    note: "maximizes the <b>product</b> of every party's gain over its walk-away point &mdash; the unique split satisfying Nash's four axioms (efficiency, symmetry, invariance to affine rescaling, independence of irrelevant alternatives). Scale-invariant, so it does not care whose score sheet is written in bigger numbers." },
-  kalai_smorodinsky: { name: "Kalai&ndash;Smorodinsky solution",
-    math: "argmax<sub>d</sub> min<sub>i</sub> (u<sub>i</sub>(d) &minus; &tau;<sub>i</sub>) / (b<sub>i</sub> &minus; &tau;<sub>i</sub>)",
-    note: "equalizes each party's <b>fraction of its own ideal gain</b>, and so lifts the worst-treated fraction as high as it will go. Trades Nash's independence axiom for <b>monotonicity</b>: enlarging what is on the table can never leave a party worse off. Also scale-invariant." },
-  utilitarian: { name: "utilitarian point",
-    math: "argmax<sub>d</sub> &Sigma;<sub>i</sub> (u<sub>i</sub>(d) &minus; &tau;<sub>i</sub>)",
-    note: "maximizes <b>total</b> surplus, with no regard for how it is divided. <b class='neg'>NOT scale-invariant</b>: it adds up privately-scaled score sheets, so a party that happens to write larger numbers is handed the deal. Read it as a reference point, never as a fairness target." },
-  egalitarian: { name: "egalitarian point",
-    math: "argmax<sub>d</sub> min<sub>i</sub> (u<sub>i</sub>(d) &minus; &tau;<sub>i</sub>)",
-    note: "maximizes the <b>worst-off</b> party's surplus &mdash; Rawlsian maximin. It is blind to everything above that minimum, so two deals with the same worst-off party tie however differently they treat everyone else." },
-  max_nash_welfare: { name: "maximum Nash welfare",
-    math: "argmax<sub>d</sub> &Pi;<sub>i</sub> (u<sub>i</sub>(d) &minus; &tau;<sub>i</sub>),&nbsp; u<sub>i</sub>(d) &gt; &tau;<sub>i</sub> &forall;i",
-    note: "the Nash product over the <b>strictly</b> individually-rational deals. When no deal clears every threshold it falls back to the <b>Caragiannis</b> rule &mdash; first maximize how many parties are above threshold, then the Nash product among exactly those &mdash; so the point exists even where the strict problem is empty." },
-};
+import json
 
-/* The non-concept point kinds. `what` is answered per-point (it names seats and turns), so these carry only the
-   standing explanation of what that kind of mark means. */
-const ROLE_NOTES = {
-  party_best: "the <b>frontier deal this party would dictate</b> if it could choose alone: argmax<sub>d</sub> u<sub>i</sub>(d) over the deals that are both efficient and able to close. The gap between it and the deal that closed is what this party gave up by having to agree with anyone.",
-  oracle: "what the <b>best-response oracle</b> would have put on the table at this turn, holding the same information the seat had. The chart's regret strip is the value of this deal minus the value of what the seat actually did.",
-  proposal: "a deal the negotiation actually put <b>on the table</b>. The numbered path traces the order of play, so the walk from the first move to the last is the concession pattern.",
-  agreed: "the deal the parties <b>closed on</b>. Everything the episode is scored against &mdash; capture, distance to the Nash solution, whether anyone was left below threshold &mdash; is read off this point.",
-  standing: "the deal <b>standing on the table</b> at the turn in view: the most recent live offer, which is what the next seat is answering.",
-};
+from ..concepts import AXIS_NOTES, CONCEPT_MATH, PROJECTION_CAVEAT, ROLE_NOTES
+
+# The explanations are SERIALIZED from `viz.concepts`, not restated here: anything else that explains a solution
+# concept to a reader (a server-rendered help panel, a writeup) reads the same dict, so the axioms cannot end up
+# in two versions that disagree. They are JSON literals in a data position, never interpolated into markup.
+_DEFS = (f"const CONCEPT_NOTES = {json.dumps(CONCEPT_MATH, ensure_ascii=False)};\n"
+         f"const ROLE_NOTES = {json.dumps(ROLE_NOTES, ensure_ascii=False)};\n"
+         f"const AXIS_NOTES = {json.dumps(AXIS_NOTES, ensure_ascii=False)};\n"
+         f"const PROJECTION_CAVEAT = {json.dumps(PROJECTION_CAVEAT, ensure_ascii=False)};\n")
+
+JS_HOVER = _DEFS + r"""
 
 /* What a mark IS, in role-specific words. Returns {head, sub, note} — `head` is the identity line, `sub` the
    qualifier under it, `note` the standing explanation (empty for an ordinary cloud deal, which needs none). */
@@ -94,7 +75,14 @@ function pointIdentity(game, mk) {
   if (role === "solution") {
     const c = CONCEPT_NOTES[mk.concept] || null;
     if (!c) return { head: E(mk.title || mk.label || "reference point"), sub: placed, note: "" };
-    return { head: E(mk.label || c.name) + " &mdash; " + c.name, sub: "axiomatic solution concept",
+    /* Scale invariance is read from the STORED solution record rather than hardcoded here, so a concept the
+       solver marks as scale-dependent always says so on its own card — this is the one property that decides
+       whether a point is a fairness target or only a reference, and the chart's whole embedding depends on it. */
+    const inv = (game.solutions[mk.concept] || {}).scale_invariant;
+    return { head: E(mk.label || c.name) + " &mdash; " + c.name,
+             sub: "axiomatic solution concept" + (inv === undefined ? ""
+                  : inv ? " &middot; scale-invariant"
+                        : ' &middot; <b class="neg">not scale-invariant</b> across private score sheets'),
              note: `<span class="hmath">${c.math}</span> ${c.note}` };
   }
   if (role === "party_best")
@@ -157,12 +145,44 @@ function rankTable(game, index) {
     <th></th><th>z</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+/* ---- the chart-to-transcript jump ------------------------------------------------------------------------
+   Only marks that stand for a REAL event in the episode navigate: a numbered move, the oracle's move at a turn,
+   and the AGREED square (whose closing turn is derived server-side, `episode.closing_turn_index`). A solution
+   concept, a party-best diamond and an ordinary cloud deal are properties of the GAME, not things that happened,
+   so they have no turn to go to and must not move the page — a click on them only pins the card.
+
+   `turn-<idx>` is the turn cards' id contract, and the same one `makeSelectTurn` and the scrubber chips use. */
+const EVENT_ROLES = ["proposal", "oracle", "agreed", "standing"];
+const markTurn = (mk) => (mk && EVENT_ROLES.indexOf(mk.role) >= 0 && mk.turn !== undefined && mk.turn !== null)
+  ? mk.turn : null;
+
+/* Land on a turn and say so: select it (the page's own selection function, which scrolls it into view and rings
+   its chart mark) and flash the card, because a smooth scroll that ends on one of thirty near-identical cards
+   leaves a reader unsure which one they were sent to. The flash is a class the CSS animates and removes. */
+function flashTurn(idx) {
+  const node = document.getElementById("turn-" + idx);
+  if (!node) return null;
+  // Exactly one landing at a time: a previous flash that has not timed out yet would otherwise leave two cards
+  // claiming to be the place the reader was just sent.
+  document.querySelectorAll(".turn.flash").forEach(n => n.classList.remove("flash"));
+  void node.offsetWidth;                       // restart the animation even on a repeat jump to the same turn
+  node.classList.add("flash");
+  setTimeout(() => node.classList.remove("flash"), 1200);
+  return node;
+}
+function goToTurn(idx) {
+  if (idx === null || idx === undefined) return;
+  if (typeof SELECT === "function") SELECT(idx);          // absent on a page with no transcript (the comparison)
+  else { const n = document.getElementById("turn-" + idx); if (n) n.scrollIntoView({ behavior: "smooth", block: "center" }); }
+  flashTurn(idx);
+}
+
 /* The whole card for one point. Pure function of (game, mark): the same markup is produced whether the card was
    opened by hover, by keyboard focus, or by a pin, so there is only one thing to test. */
 function hoverCardHtml(game, mk) {
   const index = mk.index;
   if (!game || index === null || index === undefined) return "";
-  const id = pointIdentity(game, mk), st = dealStats(game, index);
+  const id = pointIdentity(game, mk), st = dealStats(game, index), turn = markTurn(mk);
   const flags = [
     `<span class="pill">mean z <b>${N(st.mean * 100, 0)}%</b></span>`,
     `<span class="pill">worst-off z <b class="${st.worst > 0 ? "pos" : "neg"}">${N(st.worst * 100, 0)}%</b></span>`,
@@ -180,7 +200,9 @@ function hoverCardHtml(game, mk) {
     <div class="pills">${flags}</div>
     <div class="hcap">who wins most here</div>
     ${rankTable(game, index)}
-    <div class="hfoot">click to pin &middot; Esc to dismiss</div>`;
+    <div class="hfoot">${turn === null ? "click to pin &middot; Esc to dismiss"
+      : `<button type="button" class="goturn" data-goto="${turn}">go to turn ${E(turn)} &rarr;</button>
+         <span class="muted">click the point to pin and jump</span>`}</div>`;
 }
 
 /* ---- the floating card ----------------------------------------------------------------------------------
@@ -213,8 +235,7 @@ function hoverCard() {
     const box = evt && evt.target && evt.target.getBoundingClientRect && evt.target.getBoundingClientRect();
     return box ? [box.left + box.width / 2, box.top + box.height / 2] : [40, 80];
   };
-  function open(game, mk, evt, doPin) {
-    const html = hoverCardHtml(game, mk);
+  function open(html, evt, doPin) {
     if (!html) return;
     pinned = Boolean(doPin);
     node.innerHTML = html;
@@ -225,14 +246,27 @@ function hoverCard() {
   }
   HOVER_CARD = {
     node,
-    show(game, mk, evt) { if (!pinned) open(game, mk, evt, false); },
+    show(game, mk, evt) { if (!pinned) open(hoverCardHtml(game, mk), evt, false); },
     /* Follow the pointer without rebuilding the card — the caller uses this while the nearest deal is unchanged. */
     move(evt) { if (pinned || !node.classList.contains("on")) return; const [x, y] = anchorOf(evt); place(x, y); },
-    pin(game, mk, evt) { open(game, mk, evt, true); },
+    pin(game, mk, evt) { open(hoverCardHtml(game, mk), evt, true); },
+    /* An explanation with no deal behind it — the axis-title info controls. Same element and styling as a point
+       card, so the two read as one mechanism rather than two kinds of tooltip. */
+    note(title, html, evt, doPin) {
+      open(`<div class="hhd"><span class="hkind">${title}</span></div><div class="hnote">${html}</div>
+            <div class="hnote hproj">${PROJECTION_CAVEAT}</div>
+            <div class="hfoot">${doPin ? "pinned &middot; Esc to dismiss" : "click to pin"}</div>`, evt, doPin);
+    },
     hide(force) { if (pinned && !force) return; pinned = false; node.classList.remove("on", "pinned"); },
     isPinned: () => pinned,
   };
   document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") HOVER_CARD.hide(true); });
+  /* The card is only interactive while pinned, so its "go to turn N" button lives here rather than on every
+     caller: one listener, and it works for whichever point is pinned. */
+  node.addEventListener("click", (ev) => {
+    const go = ev.target.closest("[data-goto]");
+    if (go) goToTurn(Number(go.dataset.goto));
+  });
   return HOVER_CARD;
 }
 """

@@ -55,17 +55,9 @@ import numpy as np
 
 from ..negotiation.sheets import GameSpec
 from ..negotiation.solutions import (all_solutions, ir_mask, nash_geomean, normalized_surplus, pareto_mask)
+from .concepts import CONCEPT_LABELS
 
-# The solution concepts marked on the frontier chart, in legend order, with the short label each mark carries.
-# Direct-labelled rather than colour-coded: they are singletons on a scatter, where the colour formula caps
-# categorical identity at three slots (see ``assets.py``).
-CONCEPT_LABELS = {
-    "nash": "NBS",
-    "kalai_smorodinsky": "KS",
-    "utilitarian": "UTIL",
-    "egalitarian": "EGAL",
-    "max_nash_welfare": "MNW",
-}
+__all__ = ["CONCEPT_LABELS", "DealGeometry", "GameGeometry"]
 
 
 @dataclass

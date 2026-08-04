@@ -278,6 +278,29 @@ def public_ledger(rows: list[dict]) -> dict:
     return {"offers": offers, "prefix": prefix}
 
 
+#: The action types that can close a negotiation: an acceptance, or the final ballot of a vote.
+CLOSING_ACTIONS = ("accept", "vote")
+
+
+def closing_turn_index(rows: list[dict], deal_index: int | None) -> int | None:
+    """The index of the turn that CLOSED the deal, or ``None`` when nothing closed.
+
+    The chart's AGREED square is the one mark that stands for an event without naming its turn, so a reader
+    clicking it has nowhere to land unless this is derived. Preference order, most specific first: the last
+    published closing action (accept, or a vote ballot) taken while the agreed deal was the one standing; then the
+    last published closing action at all (protocols where the standing deal is not recoverable from the ledger);
+    then the last turn, since an episode that closed a deal ended by doing so. Requires ``rows`` to have been
+    through :func:`public_ledger`, which is what annotates ``published`` and ``standing_deal_index``."""
+    if deal_index is None or not rows:
+        return None
+    published = [r for r in rows if r.get("published")]
+    closing = [r for r in published if ((r.get("action") or {}).get("atype") in CLOSING_ACTIONS)]
+    for row in reversed(closing):
+        if row.get("standing_deal_index") == deal_index:
+            return int(row["idx"])
+    return int((closing or published or rows)[-1]["idx"])
+
+
 # ------------------------------------------------------------------------------ view provenance --
 def reconstruct_views(episode: dict, instance: dict) -> dict[int, list[dict]]:
     """Re-derive each turn's rendered view by deterministic replay, for episodes recorded before the per-turn
@@ -423,6 +446,8 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         # to 1e11) and is unreadable beside USW/ESW. Carry the geometric mean, which lives on the same scale as
         # the other welfare scalars, so the page can report Nash welfare in a form a reader can compare.
         outcome["nsw_geomean"] = geo.welfare_of(agreed)["nsw_geomean"]
+        # The turn a reader lands on when they click the AGREED square (see closing_turn_index).
+        outcome["closing_turn_idx"] = closing_turn_index(rows, agreed)
 
     oracle_names = sorted({name for per_turn in oracles.values() for name in per_turn})
     payload = {

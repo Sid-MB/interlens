@@ -59,6 +59,15 @@ function shapeAt(kind, x, y, r, cls, attrs, inner) {
   return open("circle", `cx="${x}" cy="${y}" r="${r}"`);
 }
 
+/* A small circled "i" beside an axis title, in SVG so it scales and pans with the chart it annotates. Focusable
+   and labelled, so the explanation is reachable by keyboard and by touch (where there is no hover) rather than
+   being pointer-only chrome. */
+function infoDot(x, y, axis, label) {
+  return `<g class="infodot" data-axisinfo="${axis}" tabindex="0" role="button"
+    aria-label="What does the ${E(label)} axis mean?"><circle cx="${x}" cy="${y}" r="7"/>
+    <text x="${x}" y="${y + 3.4}" text-anchor="middle">i</text></g>`;
+}
+
 /* Draw the deal cloud, the efficient envelope, the reference marks, and one or two play trajectories.
    `marks` entries: {index, kind:'star'|'diamond'|'circle'|'square', color:'s1'|'s2'|'s3', label, title, turn}.
    Returns {focusTurn(idx), reset()} so the transcript can drive the chart. */
@@ -80,8 +89,16 @@ function frontierChart(host, game, marks, paths, onPick) {
   }
   s.push(`<line class="axisline" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/>`);
   s.push(`<line class="axisline" x1="${m.l}" x2="${m.l}" y1="${m.t}" y2="${H - m.b}"/>`);
-  s.push(`<text class="axistitle" x="${(m.l + W - m.r) / 2}" y="${H - 8}" text-anchor="middle">joint welfare — mean normalized surplus →</text>`);
-  s.push(`<text class="axistitle" transform="rotate(-90 14 ${(m.t + H - m.b) / 2})" x="14" y="${(m.t + H - m.b) / 2}" text-anchor="middle">worst-off party — min normalized surplus →</text>`);
+  /* Axis titles, each with a focusable info control that opens the same card the points use. The axes are
+     DEFINITIONS (a normalized surplus averaged or minimized over parties), and a chart whose axes a reader cannot
+     restate is a chart they cannot draw a conclusion from; `AXIS_NOTES` in `viz.concepts` holds the wording. */
+  const xTitle = `joint welfare — mean normalized surplus →`, yTitle = `worst-off party — min normalized surplus →`;
+  const xc = (m.l + W - m.r) / 2, yc = (m.t + H - m.b) / 2;
+  s.push(`<text class="axistitle" x="${xc}" y="${H - 8}" text-anchor="middle">${xTitle}</text>`);
+  s.push(infoDot(xc + 140, H - 12, "x", AXIS_NOTES.x.title));
+  s.push(`<text class="axistitle" transform="rotate(-90 14 ${yc})" x="14" y="${yc}" text-anchor="middle">${yTitle}</text>`);
+  // The y control is drawn UNROTATED beside the top of the rotated title: rotating it would tip the glyph on its side.
+  s.push(infoDot(14, yc - 140, "y", AXIS_NOTES.y.title));   // clear of the rotated title's top end (~yc-125)
   // efficient envelope: shaded achievable region + its boundary
   if (game.envelope && game.envelope.length > 1) {
     const pts = game.envelope.map(([x, y]) => `${px(x).toFixed(1)},${py(y).toFixed(1)}`).join(" ");
@@ -126,6 +143,9 @@ function frontierChart(host, game, marks, paths, onPick) {
     aria-label="Deal space in a scale-invariant two-dimensional embedding: joint welfare against the worst-off party's surplus. Hover anywhere to inspect the nearest deal and click to pin its per-party breakdown; the marked deals also take keyboard focus. Drag to pan, Ctrl or Shift with the wheel to zoom.">${s.join("")}</svg></div>`;
   const svg = host.querySelector("svg");
   const ring = svg.querySelector("circle.hoverpt");
+  /* Elements that handle their own hover, so the nearest-deal handler must keep its hands off them: a mark, and
+     an axis-title info control (which sits close enough to the axes to be inside the snap radius of a deal). */
+  const OWNS_POINTER = "[data-mark],[data-axisinfo]";
   /* The rich hover card (js_hover). One per page, shared by every chart on it, so the main frontier chart and the
      sidebar's mini chart both get cards and two can never be open at once. */
   const CARD = hoverCard();
@@ -167,7 +187,7 @@ function frontierChart(host, game, marks, paths, onPick) {
   svg.addEventListener("dblclick", reset);
   let drag = null;
   svg.addEventListener("pointerdown", (evt) => {
-    if (evt.button !== 0 || evt.target.closest("[data-mark]")) return;
+    if (evt.button !== 0 || evt.target.closest(OWNS_POINTER)) return;
     drag = { x: evt.clientX, y: evt.clientY, vx: VB.x, vy: VB.y, moved: false };
   });
   svg.addEventListener("pointerup", () => { svg.classList.remove("panning"); drag = null; });
@@ -201,7 +221,7 @@ function frontierChart(host, game, marks, paths, onPick) {
       clamp(); applyVB();
       return;
     }
-    if (evt.target.closest("[data-mark]")) { clearRing(); return; }   // a mark owns its own hover AND its card
+    if (evt.target.closest(OWNS_POINTER)) { clearRing(); return; }   // a mark (or an axis control) owns its own card
     const i = nearest(evt);
     if (i < 0) { clearRing(); CARD.hide(); return; }
     ring.setAttribute("cx", px(d.wx[i]).toFixed(1)); ring.setAttribute("cy", py(d.wy[i]).toFixed(1));
@@ -217,12 +237,26 @@ function frontierChart(host, game, marks, paths, onPick) {
   svg.addEventListener("mouseleave", () => { clearRing(); CARD.hide(); });
   svg.addEventListener("click", (evt) => {
     if (drag && drag.moved) return;                     // a pan is not a click
-    if (evt.target.closest("[data-mark]")) return;
+    if (evt.target.closest(OWNS_POINTER)) return;
     const i = nearest(evt);
     if (i >= 0) {
       onPick({ index: i, role: "deal", title: "deal #" + i }, true);
       CARD.pin(game, { index: i, role: "deal" }, evt);   // a click pins, which is also how touch reads the card
     }
+  });
+  /* The axis-title info controls, opening the same card as the points (hover, focus, click-to-pin, Esc). */
+  host.querySelectorAll("[data-axisinfo]").forEach(node => {
+    const spec = AXIS_NOTES[node.dataset.axisinfo];
+    if (!spec) return;
+    const openNote = (evt, doPin) => CARD.note(E(spec.title), spec.html, evt, doPin);
+    node.addEventListener("mouseenter", (evt) => { if (!CARD.isPinned()) openNote(evt, false); });
+    node.addEventListener("focus", (evt) => { if (!CARD.isPinned()) openNote(evt, false); });
+    node.addEventListener("mouseleave", () => CARD.hide());
+    node.addEventListener("blur", () => CARD.hide());
+    node.addEventListener("click", (evt) => { evt.stopPropagation(); openNote(evt, true); });
+    node.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") { evt.preventDefault(); openNote(evt, true); }
+    });
   });
   host.querySelectorAll("[data-mark]").forEach(node => {
     const mk = marks[Number(node.dataset.mark)];

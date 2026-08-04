@@ -236,7 +236,27 @@ svg.pannable{cursor:grab}
 .hcard .hnum{text-align:right}
 .hcard .hbar{width:54px}
 .hcard .hbar .meter{height:6px}
-.hcard .hfoot{margin-top:var(--sp-1);color:var(--muted);font-size:.66rem}
+.hcard .hfoot{margin-top:var(--sp-1);color:var(--muted);font-size:.66rem;display:flex;gap:var(--sp-2);
+ align-items:center;flex-wrap:wrap}
+.hcard .hproj{border-left-color:var(--s2)}
+/* the jump control: only clickable on a PINNED card, which is the only time the card takes pointer events */
+.hcard .goturn{font-size:.68rem;padding:1px 7px;color:var(--s1);border-color:color-mix(in oklab,var(--s1) 45%,transparent)}
+.hcard .goturn:hover{background:color-mix(in oklab,var(--s1) 10%,transparent)}
+
+/* the axis-title info controls: chart chrome until pointed at, and never louder than the axis they annotate */
+svg .infodot{cursor:help}
+svg .infodot circle{fill:none;stroke:var(--axis);stroke-width:1.2}
+svg .infodot text{fill:var(--muted);font-size:9.5px;font-weight:700;font-style:italic}
+svg .infodot:hover circle,svg .infodot:focus-visible circle{stroke:var(--s1)}
+svg .infodot:hover text,svg .infodot:focus-visible text{fill:var(--s1)}
+
+/* Landing flash: a smooth scroll that ends among thirty near-identical turn cards leaves a reader unsure which
+   one they were sent to, so the destination says so for a moment. Motion-free fallback keeps the tint. */
+@keyframes turnflash{0%{background:color-mix(in oklab,var(--s1) 22%,transparent)}
+ 100%{background:transparent}}
+.turn.flash{animation:turnflash 1.2s ease-out 1}
+@media (prefers-reduced-motion:reduce){.turn.flash{animation:none;
+ background:color-mix(in oklab,var(--s1) 12%,transparent)}}
 
 /* --- transcript: the turn-type visual grammar -------------------------------------------------------------
    Action types are STATES, so they wear the reserved status palette, never a categorical series slot — and every
@@ -384,8 +404,21 @@ aside.sidebar{display:flex;flex-direction:column;gap:0;padding:0;overflow:hidden
 .actchip{display:inline-block;font-size:var(--t-xs);border:1px solid currentColor;border-radius:999px;
  padding:1px 8px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .actchip b{font-weight:700}
-.actchip.a-propose{color:var(--s1)} .actchip.a-accept{color:var(--good)} .actchip.a-reject{color:var(--serious)}
+.actchip.a-propose{color:var(--s1);border-radius:var(--r-1)}
+.actchip.a-accept{color:var(--good)} .actchip.a-reject{color:var(--serious)}
 .actchip.a-walk{color:var(--critical)} .actchip.a-vote{color:var(--s3)}
+
+/* contextual help: a compact circular control links measurements to the long-form Info tab */
+.infobtn{display:inline-grid;place-items:center;width:16px;height:16px;min-width:16px;padding:0;margin-left:3px;
+ border:1px solid currentColor;border-radius:50%;background:transparent;color:var(--ink-2);font:700 10px/1 serif;
+ vertical-align:1px}
+.infobtn:hover,.infobtn:focus-visible{color:var(--s1);background:color-mix(in oklab,var(--s1) 8%,transparent)}
+.infosection{padding:0 0 var(--sp-3);margin:0 0 var(--sp-3);border-bottom:1px solid var(--grid)}
+.infosection:last-child{border-bottom:0;margin-bottom:0}.infosection h2{font-size:var(--t-md);margin:0 0 var(--sp-1)}
+.infosection p{font-size:var(--t-sm);color:var(--ink-2);margin:0 0 var(--sp-2)}
+.infointro{font-size:var(--t-sm);margin-bottom:var(--sp-3)}
+.formula{padding:var(--sp-2);margin:var(--sp-2) 0;background:var(--surface-2);border-left:2px solid var(--s2);
+ border-radius:0 var(--r-1) var(--r-1) 0;text-align:center;overflow-x:auto;font-size:var(--t-md);white-space:nowrap}
 
 /* the per-agent issue view */
 .issueseat .hd{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-weight:600;margin-bottom:var(--sp-1)}

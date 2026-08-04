@@ -102,6 +102,12 @@ function mouseAt(node, type, x, y) {
 function driveChart(step) {
   const svg = q("#chart svg");
   if (!svg) return null;
+  if (step.axis) {                                    // an axis-title info control, not a data point
+    const dot = q(`#chart [data-axisinfo="${step.axis}"]`);
+    if (!dot) return null;
+    mouseAt(dot, step.axispin ? "click" : "mouseenter");   // `pin` is taken: it drives the issue-seat picker
+    return "axis:" + step.axis;
+  }
   if (step.hover === "out") { mouseAt(svg, "mouseleave"); return "out"; }
   if (step.hover === "cloud" || step.click === "cloud") {
     const dot = q("#chart svg circle.dot") || q("#chart svg circle.front");
@@ -132,15 +138,27 @@ function snapshot(label, hovered) {
     card_pinned: Boolean(card && card.classList.contains("pinned")),
     card_kind: txt(".hcard .hkind"),
     card_sub: txt(".hcard .hsub"),
-    card_note: txt(".hcard .hnote"),
+    // every explanation block on the card, joined: a point card has one, an axis card has its definition plus the
+    // projection caveat, and a test asking "does the card explain X" should not have to know which block X is in
+    card_note: card ? all(".hcard .hnote").map(n => n.textContent).join(" ") : "",
     card_math: ((card && q(".hcard .hmath")) || {}).innerHTML || "",
     card_deal: txt(".hcard .hdeal"),
     card_pills: all(".hcard .pills .pill").map(n => n.textContent),
     card_rank: all(".hcard table.hrank tbody .hnm").map(n => n.textContent),
     card_rank_z: all(".hcard table.hrank tbody tr").map(r => (r.lastElementChild || {}).textContent),
     card_bars: all(".hcard table.hrank tbody .hbar .meter i").length,
+    card_goto: ((card && q(".hcard [data-goto]")) || { dataset: {} }).dataset.goto || "",
+    // the chart-to-transcript jump: which marks CAN navigate, and where the last click actually landed
+    mark_turns: all("#chart [data-markturn]").map(n => [n.getAttribute("aria-label"), n.dataset.markturn]),
+    axis_dots: all("#chart [data-axisinfo]").map(n => n.dataset.axisinfo),
+    flashed: all(".turn.flash").map(n => n.id),
+    selected_turn: (all(".turn.sel")[0] || {}).id || "",
     tabs: all("#sidebar .tab").map(t => t.dataset.tab),
     activeTab: (q('#sidebar .tab[aria-selected="true"]') || {}).dataset,
+    info_hidden: Boolean(q("#pane-info") && q("#pane-info").hidden),
+    info_buttons: all(".infobtn").length,
+    acted_oracle_text: (q("#turnlist .col.acted table") || {}).textContent,
+    oracle_table_text: (q("#turnlist .col.oracle table") || {}).textContent,
     bubbles: all("#chatlog .bubble").length,
     self_bubble_seats: Array.from(new Set(all("#chatlog .bubble.self").map(b => b.dataset.seat))),
     self_bubbles: all("#chatlog .bubble.self").length,
@@ -172,9 +190,14 @@ try {
       pick.dispatchEvent(new window.Event("change"));
     }
     if (step.turns) observers.forEach(o => o.fire(step.turns));
+    if (step.info) {
+      const info = q("#turnlist .infobtn");
+      if (info) info.dispatchEvent(new window.Event("click", { bubbles: true }));
+    }
     // `{"card": {...mark...}}` renders that mark's card through the page's own controller, no pointer involved
     if (step.card && api.hoverCard && api.game) api.hoverCard().pin(api.game, step.card, null);
-    const hovered = (step.hover !== undefined || step.click !== undefined) ? driveChart(step) : undefined;
+    const hovered = (step.hover !== undefined || step.click !== undefined || step.axis !== undefined)
+      ? driveChart(step) : undefined;
     out.steps.push(snapshot(JSON.stringify(step), hovered));
   }
 } catch (e) {
