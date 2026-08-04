@@ -26,7 +26,7 @@ What the merge adds beyond the raw records:
 
 - **numbers on every turn** — the action's deal placed in the instance's geometry (per-party surplus vs each
   threshold, welfare scalars, distance below the frontier), plus per-oracle chosen/best/regret values.
-- **the rational-agent counterfactual** — for every oracle that scored the turn, the action it would have taken
+- **the post-hoc oracle counterfactual** — for every oracle that scored the turn, the action it ranks highest
   instead, resolved to a deal and its numbers, so the page can show "the model did X (value v) where the oracle
   would have done Y (value v*), regret v* - v" side by side. Runs without a ``bestresponse`` oracle are reported
   as such rather than silently rendering an empty column.

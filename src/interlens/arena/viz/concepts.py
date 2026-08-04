@@ -76,7 +76,7 @@ CONCEPT_MATH = {
 #: and turns); these are the standing explanations of what that KIND of mark means.
 ROLE_NOTES = {
     "party_best": "the <b>frontier deal this party would dictate</b> if it could choose alone: argmax<sub>d</sub> u<sub>i</sub>(d) over the deals that are both efficient and able to close. The gap between it and the deal that closed is what this party gave up by having to agree with anyone.",
-    "oracle": "what the <b>best-response oracle</b> would have put on the table at this turn, holding the same information the seat had. The chart's regret strip is the value of this deal minus the value of what the seat actually did.",
+    "oracle": "what the <b>best-response oracle</b> would have put on the table at this turn. Standard saved annotations use the full game table; in a private-information episode this is an omniscient hindsight result, not a move the seat could have derived from what it knew. The chart's regret strip is the value of this deal minus the oracle's value of what the seat actually did.",
     "proposal": "a deal the negotiation actually put <b>on the table</b>. The numbered path traces the order of play, so the walk from the first move to the last is the concession pattern.",
     "agreed": "the deal the parties <b>closed on</b>. Everything the episode is scored against &mdash; capture, distance to the Nash solution, whether anyone was left below threshold &mdash; is read off this point.",
     "standing": "the deal <b>standing on the table</b> at the turn in view: the most recent live offer, which is what the next seat is answering.",

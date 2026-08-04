@@ -10,10 +10,6 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
-[options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
-exclude-newer-span = "P3D"
-
 [[package]]
 name = "agent-client-protocol"
 version = "0.11.0"
@@ -908,6 +904,7 @@ wheels = [
 name = "interlens"
 source = { editable = "." }
 dependencies = [
+    { name = "markdown-it-py" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "torch" },
@@ -942,6 +939,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'api'", specifier = ">=0.112,<1" },
     { name = "datasets", marker = "extra == 'benchmarks'", specifier = ">=3" },
     { name = "inspect-ai", marker = "extra == 'inspect'", specifier = ">=0.3.248" },
+    { name = "markdown-it-py", specifier = ">=4,<5" },
     { name = "numpy" },
     { name = "openai", marker = "extra == 'api'", specifier = ">=1.40" },
     { name = "torch" },

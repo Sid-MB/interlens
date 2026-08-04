@@ -36,11 +36,11 @@ function buildMarks() {
   if (!G) return [];
   const marks = [];
   Object.entries(G.solutions).forEach(([name, pt]) => marks.push({
-    index: pt.index, kind: "star", color: "s3", label: pt.label, r: 7,
+    index: pt.index, ...solutionMarkStyle(name), label: pt.label, r: 7,
     title: `${pt.label} — ${name}${pt.scale_invariant ? " (scale-invariant)" : " (NOT scale-invariant across private scales)"}`,
     role: "solution", concept: name }));
   G.party_best.forEach(pb => marks.push({
-    index: pb.index, kind: "diamond", color: "s3", r: 5,
+    index: pb.index, kind: "diamond", color: "s3", r: 5, ...partyBestLabel(G, pb),
     title: `best efficient deal for ${seatName(G, pb.party)} (${pb.agent}) — surplus ${pb.surplus}`,
     role: "party_best", party: pb.party }));
   P.turns.forEach(t => {
@@ -110,6 +110,7 @@ function drawTurns() {
     + `<div id="turnlist">` + P.turns.map(t => turnCard(t, G, ORACLE,
         { showCounterfactual: Boolean(ORACLE), infoLinks: true })).join("") + `</div>`;
   bindLazy(host, P.turns);
+  bindCounterfactualCards(host, G, P.turns, ORACLE);
   host.querySelectorAll(".chip[data-goturn]").forEach(b =>
     b.addEventListener("click", () => SELECT(Number(b.dataset.turnidx))));
   host.querySelectorAll(".turnhd").forEach(hd => {
@@ -119,7 +120,7 @@ function drawTurns() {
       if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); SELECT(idx, { scroll: false }); }
     });
   });
-  host.querySelectorAll("[data-deal]").forEach(a => a.addEventListener("click", ev => {
+  host.querySelectorAll("[data-deal]:not([data-counterfactual]):not([data-package-preview])").forEach(a => a.addEventListener("click", ev => {
     ev.preventDefault();
     pick({ index: Number(a.dataset.deal), title: "deal referenced from the transcript" }, true);
     $("frontier").scrollIntoView({ behavior: "smooth", block: "start" });

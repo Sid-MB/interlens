@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="python -m interlens.arena.viz",
         description="Render arena negotiation episodes as self-contained interactive HTML: every deal placed "
                     "against the exact Pareto frontier and the axiomatic solution points, every turn's action "
-                    "beside what a rational agent would have done, and every prompt the models saw. No network "
+                    "beside the post-hoc oracle counterfactual, and every prompt the models saw. No network "
                     "assets, no server — the pages open from a filesystem path.")
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument(
@@ -105,7 +105,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--annotations-dir", default="annotations", metavar="NAME",
         help="Per-run subdirectory to read the post-hoc oracle annotations from — above all the 'bestresponse' "
-             "counterfactual (what a rational agent would have done, and the per-turn regret). Default "
+             "counterfactual (the oracle's best action and its per-turn value gap). In PRIVATE episodes the "
+             "standard best-response oracle is omniscient, so this is a hindsight diagnostic. Default "
              "'annotations' is the original scoring pass. Use 'annotations_v1' (written by the oracle "
              "seat-binding fix's re-annotation) to render the CORRECTED counterfactual instead of the "
              "contaminated one; the chosen name is shown on every page so an auditor sees which vintage they are "

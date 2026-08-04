@@ -71,7 +71,7 @@ window.IntersectionObserver = IntersectionObserverStub;
 
 // --- run the page's own script -----------------------------------------------------------------------------
 const scripts = Array.from(document.querySelectorAll("script")).filter(s => !s.getAttribute("type"));
-if (scripts.length !== 1) { console.log(JSON.stringify({ ok: false, errors: ["expected exactly one executable script, found " + scripts.length] })); process.exit(1); }
+if (scripts.length !== 1) { fs.writeFileSync(1, JSON.stringify({ ok: false, errors: ["expected exactly one executable script, found " + scripts.length] })); process.exit(1); }
 // The script also hands back the few functions a test needs to call DIRECTLY: a mark kind that a given fixture
 // happens not to produce (an episode that closed no deal has no AGREED square) still has to be renderable, and
 // asking the page's own function for that card is honest in a way a re-implementation in the test would not be.
@@ -79,9 +79,10 @@ let api = {};
 try {
   api = new Function(scripts[0].textContent + `
     ;return { game: (typeof G !== "undefined") ? G : null,
-              hoverCard: (typeof hoverCard === "function") ? hoverCard : null };`)() || {};
+              hoverCard: (typeof hoverCard === "function") ? hoverCard : null,
+              counterfactualOverlay: (typeof counterfactualOverlay === "function") ? counterfactualOverlay : null };`)() || {};
 } catch (e) {
-  console.log(JSON.stringify({ ok: false, errors: ["page script threw: " + (e && e.stack || e)] }));
+  fs.writeFileSync(1, JSON.stringify({ ok: false, errors: ["page script threw: " + (e && e.stack || e)] }));
   process.exit(1);
 }
 
@@ -128,6 +129,19 @@ function driveChart(step) {
 function snapshot(label, hovered) {
   const shownSeat = all("#issue-seats .issueseat").filter(n => !n.hasAttribute("hidden"));
   const card = q(".hcard");
+  const reasoning = q("#turnlist .reasoning"), message = q("#turnlist .msg");
+  const cloudDeals = new Set(all("#chart circle.dot,#chart circle.front").map(n => Number(n.dataset.deal)));
+  const marksByDeal = {};
+  const solutionMarks = (selector) => all(selector)
+    .filter(n => /^(NBS|KS|UTIL|EGAL|MNW)\b/.test(n.getAttribute("aria-label") || ""))
+    .map(n => ({ label: n.getAttribute("aria-label"), kind: n.dataset.kind,
+                 fill: n.getAttribute("fill"), tag: n.tagName.toLowerCase() }));
+  all("#chart [data-mark]").forEach(n => {
+    const deal = String(Number(n.dataset.deal));
+    (marksByDeal[deal] ||= []).push({
+      deal: Number(deal), kind: n.dataset.kind, fill: n.getAttribute("fill")
+    });
+  });
   // Always a string, never undefined: JSON.stringify DROPS undefined values, and a key vanishing out of the
   // report reads to the test as a broken harness rather than as "that block is absent from this card".
   const txt = (sel) => ((card && q(sel)) || {}).textContent || "";
@@ -150,6 +164,13 @@ function snapshot(label, hovered) {
     card_goto: ((card && q(".hcard [data-goto]")) || { dataset: {} }).dataset.goto || "",
     // the chart-to-transcript jump: which marks CAN navigate, and where the last click actually landed
     mark_turns: all("#chart [data-markturn]").map(n => [n.getAttribute("aria-label"), n.dataset.markturn]),
+    cloud_mark_overlap: Object.keys(marksByDeal).map(Number).filter(deal => cloudDeals.has(deal)),
+    mark_stacks: Object.values(marksByDeal).filter(group => group.length > 1).map(group => ({
+      deal: group[0].deal, kinds: group.map(m => m.kind), fills: group.map(m => m.fill)
+    })),
+    party_best_labels: all("#chart text.partybest").map(n => ({
+      text: n.textContent, x: n.getAttribute("x"), y: n.getAttribute("y"), anchor: n.getAttribute("text-anchor")
+    })),
     axis_dots: all("#chart [data-axisinfo]").map(n => n.dataset.axisinfo),
     flashed: all(".turn.flash").map(n => n.id),
     selected_turn: (all(".turn.sel")[0] || {}).id || "",
@@ -173,6 +194,23 @@ function snapshot(label, hovered) {
     mini_note: (q("#mini-note") || {}).textContent,
     ghosted_marks: classesOf("#mini-chart [data-mark]").filter(c => /\bghost\b/.test(c)).length,
     mini_fills: Array.from(new Set(all("#mini-chart [data-mark]").map(n => n.getAttribute("fill")))).sort(),
+    solution_marks: solutionMarks("#chart [data-mark]"),
+    mini_solution_marks: solutionMarks("#mini-chart [data-mark]"),
+    cf_card_on: Boolean(q(".cfcard.on")),
+    cf_card_pinned: Boolean(q(".cfcard.pinned")),
+    cf_overlay: (q(".cfcard") || { dataset: {} }).dataset.overlay || "",
+    cf_note: (q(".cfcardnote") || {}).textContent || "",
+    cf_context: (q("#turnlist .cfcontext") || {}).textContent || "",
+    cf_marks: all(".cfchart [data-mark]").map(n => ({ fill: n.getAttribute("fill"), label: n.getAttribute("aria-label") })),
+    cf_arrow: Boolean(q(".cfchart .cfpath[marker-end]")),
+    cf_focusable_marks: all(".cfchart [data-mark][tabindex],.cfchart [data-mark][role=button]").length,
+    cf_svg_label: (q(".cfchart svg") || {}).getAttribute && q(".cfchart svg").getAttribute("aria-label") || "",
+    model_package_links: all("[data-package-preview]").length,
+    rational_package_links: all("[data-counterfactual]").length,
+    reasoning_text: (reasoning || {}).textContent || "",
+    reasoning_html: (reasoning || {}).innerHTML || "",
+    reasoning_before_message: Boolean(reasoning && message &&
+      Array.from(reasoning.parentElement.children).indexOf(reasoning) < Array.from(message.parentElement.children).indexOf(message)),
   };
 }
 
@@ -194,6 +232,20 @@ try {
       const info = q("#turnlist .infobtn");
       if (info) info.dispatchEvent(new window.Event("click", { bubbles: true }));
     }
+    if (step.counterfactual) {
+      const link = all("[data-counterfactual]")[Number(step.counterfactual.index || 0)];
+      if (link) {
+        const kind = step.counterfactual.event || "mouseenter";
+        mouseAt(link, kind);
+      }
+    }
+    if (step.package) {
+      const link = all("[data-package-preview]")[Number(step.package.index || 0)];
+      if (link) {
+        const kind = step.package.event || "mouseenter";
+        mouseAt(link, kind);
+      }
+    }
     // `{"card": {...mark...}}` renders that mark's card through the page's own controller, no pointer involved
     if (step.card && api.hoverCard && api.game) api.hoverCard().pin(api.game, step.card, null);
     const hovered = (step.hover !== undefined || step.click !== undefined || step.axis !== undefined)
@@ -204,5 +256,8 @@ try {
   out.ok = false;
   errors.push("step failed: " + (e && e.stack || e));
 }
-console.log(JSON.stringify(out));
+// stdout is a pipe under pytest. `console.log` writes asynchronously and can be truncated when a rich multi-step
+// report exceeds the pipe's buffer and the process exits immediately; a synchronous fd write makes the harness
+// report atomic from the caller's point of view.
+fs.writeFileSync(1, JSON.stringify(out));
 process.exit(out.ok && !errors.length ? 0 : 1);

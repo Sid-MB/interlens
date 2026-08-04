@@ -48,6 +48,8 @@ function shapeAt(kind, x, y, r, cls, attrs, inner) {
     return open("rect", `x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" transform="rotate(45 ${x} ${y})"`);
   if (kind === "square")
     return open("rect", `x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" rx="2"`);
+  if (kind === "triangle")
+    return open("polygon", `points="${x},${y - r * 1.18} ${x - r},${y + r * 0.78} ${x + r},${y + r * 0.78}"`);
   if (kind === "star") {
     let p = "";
     for (let i = 0; i < 10; i++) {
@@ -57,6 +59,15 @@ function shapeAt(kind, x, y, r, cls, attrs, inner) {
     return open("polygon", `points="${p.trim()}"`);
   }
   return open("circle", `cx="${x}" cy="${y}" r="${r}"`);
+}
+
+/* UTIL and MNW are intentionally separated from the other named reference points. They remain solution marks,
+   but their triangle and violet ink keep them from reading as another green-star family member. Centralising the
+   choice here keeps the main chart, comparison chart, sidebar chart, and package previews in lockstep. */
+function solutionMarkStyle(name) {
+  return name === "utilitarian" || name === "max_nash_welfare"
+    ? { kind: "triangle", color: "reference-alt" }
+    : { kind: "star", color: "s3" };
 }
 
 /* A small circled "i" beside an axis title, in SVG so it scales and pans with the chart it annotates. Focusable
@@ -69,9 +80,10 @@ function infoDot(x, y, axis, label) {
 }
 
 /* Draw the deal cloud, the efficient envelope, the reference marks, and one or two play trajectories.
-   `marks` entries: {index, kind:'star'|'diamond'|'circle'|'square', color:'s1'|'s2'|'s3', label, title, turn}.
+   `marks` entries: {index, kind:'star'|'triangle'|'diamond'|'circle'|'square', color, label, title, turn}.
    Returns {focusTurn(idx), reset()} so the transcript can drive the chart. */
-function frontierChart(host, game, marks, paths, onPick) {
+function frontierChart(host, game, marks, paths, onPick, options) {
+  const opts = options || {};
   const W = 760, H = 470, m = { l: 54, r: 18, t: 14, b: 46 };
   const d = game.deals;
   const xmax = Math.max(0.001, Math.max(...d.wx)), ymax = Math.max(0.001, Math.max(...d.wy));
@@ -79,6 +91,11 @@ function frontierChart(host, game, marks, paths, onPick) {
   const XM = nice(xmax * 1.04), YM = nice(ymax * 1.06);
   const px = (v) => m.l + (v / XM) * (W - m.l - m.r);
   const py = (v) => H - m.b - (v / YM) * (H - m.t - m.b);
+  /* A semantic mark REPLACES the anonymous cloud point for the same exact deal. Keeping both creates two
+     hover identities for one deal (e.g. "deal #17" behind "party-best for Blake") and lets a tiny anonymous
+     dot show through a shaped marker. Distinct semantic marks are deliberately NOT deduplicated: a deal can be
+     both a played proposal and a party-best reference, and both facts must remain visible and interactive. */
+  const markedDeals = new Set((marks || []).map(mk => Number(mk.index)));
   let s = [];
   for (let i = 0; i <= 5; i++) {
     const gx = XM * i / 5, gy = YM * i / 5;
@@ -108,19 +125,32 @@ function frontierChart(host, game, marks, paths, onPick) {
   }
   // the deal cloud: dominated deals muted, frontier deals ringed
   for (let i = 0; i < d.n; i++) {
-    if (d.pareto[i]) continue;
-    s.push(`<circle class="dot" cx="${px(d.wx[i]).toFixed(1)}" cy="${py(d.wy[i]).toFixed(1)}" r="2"/>`);
+    if (d.pareto[i] || markedDeals.has(i)) continue;
+    s.push(`<circle class="dot" data-deal="${i}" cx="${px(d.wx[i]).toFixed(1)}" cy="${py(d.wy[i]).toFixed(1)}" r="2"/>`);
   }
   for (let i = 0; i < d.n; i++) {
-    if (!d.pareto[i]) continue;
-    s.push(`<circle class="front" cx="${px(d.wx[i]).toFixed(1)}" cy="${py(d.wy[i]).toFixed(1)}" r="3.2"/>`);
+    if (!d.pareto[i] || markedDeals.has(i)) continue;
+    s.push(`<circle class="front" data-deal="${i}" cx="${px(d.wx[i]).toFixed(1)}" cy="${py(d.wy[i]).toFixed(1)}" r="3.2"/>`);
   }
-  // trajectories, drawn under the marks
+  // trajectories, drawn under the marks. A counterfactual preview can request a directed dashed transition;
+  // it still comes through this renderer, so its projection and point placement cannot drift from the main plot.
+  const chartId = (frontierChart._nextId = (frontierChart._nextId || 0) + 1);
+  const arrowId = `frontier-arrow-${chartId}`;
+  const arrowPath = (paths || []).find(p => p.arrowEnd);
+  const arrowColor = (arrowPath && arrowPath.arrowColor) || "critical";
+  if ((paths || []).some(p => p.arrowEnd)) s.push(`<defs><marker id="${arrowId}" markerWidth="8" markerHeight="8"
+    refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 z" fill="var(--${arrowColor})"/></marker></defs>`);
   (paths || []).forEach(p => {
     if (p.indices.length < 2) return;
-    s.push(`<polyline class="${p.cls}" points="${p.indices.map(i => `${px(d.wx[i]).toFixed(1)},${py(d.wy[i]).toFixed(1)}`).join(" ")}"/>`);
+    s.push(`<polyline class="${p.cls}"${p.arrowEnd ? ` marker-end="url(#${arrowId})"` : ""}
+      points="${p.indices.map(i => `${px(d.wx[i]).toFixed(1)},${py(d.wy[i]).toFixed(1)}`).join(" ")}"/>`);
   });
-  marks.forEach((mk, k) => {
+  /* Shape layering is semantic rather than input-order-dependent. Circles go below diamonds, so when a played
+     blue proposal is ALSO a green party-best deal the blue rim and the diamond are both visible; each keeps its
+     own hit target. `k` remains the original marks-array index, which the event handlers use as their key. */
+  const markLayer = { circle: 0, square: 1, diamond: 2, triangle: 3, star: 3 };
+  marks.map((mk, k) => ({ mk, k })).sort((a, b) =>
+    (markLayer[a.mk.kind] ?? 0) - (markLayer[b.mk.kind] ?? 0)).forEach(({ mk, k }) => {
     const x = px(d.wx[mk.index]), y = py(d.wy[mk.index]), r = mk.r || 6.5;
     const tip = E(mk.title || mk.label || "");
     /* `mk.cls` is a STATE of a mark (e.g. a proposal the reader has not scrolled to yet), never an identity:
@@ -128,19 +158,25 @@ function frontierChart(host, game, marks, paths, onPick) {
        No `<title>` child: the rich hover card (js_hover) opens instantly on the same pointer, and the browser's
        native SVG tooltip would land on top of it a second later saying less. `aria-label` still carries the
        identity for assistive technology, and the mark still takes keyboard focus (which opens the card). */
+    const semantics = opts.interactive === false ? `aria-label="${tip}"`
+      : `tabindex="0" role="button" aria-label="${tip}"`;
     s.push(shapeAt(mk.kind, x, y, r, "mark" + (mk.cls ? " " + mk.cls : ""),
-      `fill="var(--${mk.color})" data-mark="${k}"${mk.turn !== undefined ? ` data-markturn="${mk.turn}"` : ""}
-       tabindex="0" role="button" aria-label="${tip}"`, ""));
-    if (mk.label) s.push(`<text class="lab" x="${(x + (mk.dx ?? 9)).toFixed(1)}" y="${(y + (mk.dy ?? -8)).toFixed(1)}">${E(mk.label)}</text>`);
+      `fill="var(--${mk.color})" data-mark="${k}" data-deal="${mk.index}" data-kind="${mk.kind}"${mk.turn !== undefined ? ` data-markturn="${mk.turn}"` : ""}
+       ${semantics}`, ""));
+    if (mk.label) s.push(`<text class="lab${mk.labelClass ? " " + mk.labelClass : ""}"
+      text-anchor="${mk.labelAnchor || "start"}" x="${(x + (mk.dx ?? 9)).toFixed(1)}"
+      y="${(y + (mk.dy ?? -8)).toFixed(1)}">${E(mk.label)}</text>`);
   });
   // the full-cloud hover anchor, drawn last so it sits on top; positioned + revealed on hover, never intercepts
   s.push('<circle class="sel hoverpt" r="5" fill="none" style="pointer-events:none;opacity:0"></circle>');
-  host.innerHTML = `<div class="chartwrap"><div class="zoombar">
+  host.innerHTML = `<div class="chartwrap${opts.compact ? " compactchart" : ""}">${opts.compact ? "" : `<div class="zoombar">
       <button class="iconbtn" data-zoom="in" title="Zoom in (or Ctrl/Shift + wheel over the chart)" aria-label="Zoom in">+</button>
       <button class="iconbtn" data-zoom="out" title="Zoom out" aria-label="Zoom out">&minus;</button>
       <button class="iconbtn" data-zoom="reset" title="Reset the view (or double-click the chart)">reset</button>
-    </div><svg viewBox="0 0 ${W} ${H}" class="pannable" role="img"
-    aria-label="Deal space in a scale-invariant two-dimensional embedding: joint welfare against the worst-off party's surplus. Hover anywhere to inspect the nearest deal and click to pin its per-party breakdown; the marked deals also take keyboard focus. Drag to pan, Ctrl or Shift with the wheel to zoom.">${s.join("")}</svg></div>`;
+    </div>`}<svg viewBox="0 0 ${W} ${H}" class="${opts.interactive === false ? "" : "pannable"}" role="img"
+    aria-label="${opts.interactive === false
+      ? "Static decision preview in the deal space: joint welfare against the worst-off party's surplus."
+      : "Deal space in a scale-invariant two-dimensional embedding: joint welfare against the worst-off party's surplus. Hover anywhere to inspect the nearest deal and click to pin its per-party breakdown; the marked deals also take keyboard focus. Drag to pan, Ctrl or Shift with the wheel to zoom."}">${s.join("")}</svg></div>`;
   const svg = host.querySelector("svg");
   const ring = svg.querySelector("circle.hoverpt");
   /* Elements that handle their own hover, so the nearest-deal handler must keep its hands off them: a mark, and
@@ -149,6 +185,21 @@ function frontierChart(host, game, marks, paths, onPick) {
   /* The rich hover card (js_hover). One per page, shared by every chart on it, so the main frontier chart and the
      sidebar's mini chart both get cards and two can never be open at once. */
   const CARD = hoverCard();
+
+  /* A compact preview is intentionally inspectable as one labelled image, rather than as a second nested hover
+     surface. Its link/dialog controller owns keyboard, touch, and pinning; all geometry above remains shared. */
+  if (opts.interactive === false) {
+    function focusTurn(idx) {
+      let found = null;
+      svg.querySelectorAll("[data-markturn]").forEach(n => {
+        const hit = Number(n.dataset.markturn) === Number(idx);
+        n.classList.toggle("pinned", hit);
+        if (hit) found = marks[Number(n.dataset.mark)];
+      });
+      return found;
+    }
+    return { focusTurn, reset() {}, svg };
+  }
 
   /* ---- zoom & pan: the view IS the viewBox, so both are arithmetic on four numbers ---- */
   let VB = { x: 0, y: 0, w: W, h: H };
@@ -193,10 +244,10 @@ function frontierChart(host, game, marks, paths, onPick) {
   svg.addEventListener("pointerup", () => { svg.classList.remove("panning"); drag = null; });
   svg.addEventListener("pointerleave", () => { svg.classList.remove("panning"); drag = null; });
 
-  /* ---- full-cloud inspection: EVERY one of the |D| deals is hoverable, not only the marked ones ----
-     Rather than attach a listener to each of thousands of dots, one handler on the svg finds the nearest deal to
-     the pointer in plot coordinates and opens its headline read; a faint ring anchors it. A mark is the event
-     target when the pointer is on it, so we defer to the mark's own (richer, titled) hover there. */
+  /* ---- full deal-space inspection: unmarked deals through the cloud, marked deals through their markers ----
+     Rather than attach a listener to each of thousands of dots, one handler on the svg finds the nearest UNMARKED
+     deal in plot coordinates and opens its headline read; a faint ring anchors it. Semantic marks own their exact
+     deal, so the same index cannot also surface as an anonymous "deal #N" behind its richer named hover. */
   let lastIdx = -1;
   const nearest = (evt) => {
     const p = toChart(evt);
@@ -204,6 +255,7 @@ function frontierChart(host, game, marks, paths, onPick) {
     const zoom = W / VB.w;
     let bi = -1, bd = 1e18;
     for (let i = 0; i < d.n; i++) {
+      if (markedDeals.has(i)) continue;        // its semantic mark owns both the visual and the interaction
       const ex = px(d.wx[i]) - p.x, ey = py(d.wy[i]) - p.y, q = ex * ex + ey * ey;
       if (q < bd) { bd = q; bi = i; }
     }

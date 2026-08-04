@@ -90,6 +90,20 @@ function dealSummary(game, index) {
 }
 function seatName(game, party) { return (PAYLOAD.seatNames || game.parties)[party] || game.parties[party]; }
 
+/* Tiny direct labels for party-best diamonds. The six anchors deliberately occupy different sides of a point:
+   several parties can share the same best deal, and identical x/y text would make the labels less informative
+   precisely where they are most needed. More than six parties cycles deterministically. */
+function partyBestLabel(game, pb) {
+  const anchors = [
+    { dx: 8, dy: -7, anchor: "start" }, { dx: 8, dy: 11, anchor: "start" },
+    { dx: -8, dy: -7, anchor: "end" }, { dx: -8, dy: 11, anchor: "end" },
+    { dx: 0, dy: -10, anchor: "middle" }, { dx: 0, dy: 15, anchor: "middle" }
+  ];
+  const pos = anchors[Number(pb.party) % anchors.length] || anchors[0];
+  return { label: seatName(game, pb.party), labelClass: "partybest", labelAnchor: pos.anchor,
+           dx: pos.dx, dy: pos.dy };
+}
+
 /* The deal panel, with progressive disclosure: a HOVER opens the headline read (what the deal is, and the three
    facts that decide whether it is any good), and PINNING it with a click adds the full per-party breakdown.
    Hovering the cloud used to repaint a six-row table on every pointer move, which flickered and buried the one
@@ -131,6 +145,6 @@ function dealDetail(game, index, title, extra, pinned) {
    oracle is present or the values came from the episode's own inline records rather than an annotation store. */
 function annProvenance(source, oracles) {
   if (!source || !(oracles && oracles.length)) return "";
-  return `<div class="sub muted annprov">Rational-agent counterfactual (${oracles.map(E).join(", ")}) read from the <code>${E(source)}</code> annotation set.</div>`;
+  return `<div class="sub muted annprov">Post-hoc oracle counterfactual (${oracles.map(E).join(", ")}) read from the <code>${E(source)}</code> annotation set.</div>`;
 }
 """

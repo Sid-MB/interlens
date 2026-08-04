@@ -34,6 +34,7 @@ dependencies = [
     "torch",
     "transformers>=4.57,<5",
     "numpy",   # arena.negotiation solvers/oracles use it directly; only transitively guaranteed via torch otherwise
+    "markdown-it-py>=4,<5",  # safely render optional run README.md files on arena-viz indexes
 ]
 
 [project.optional-dependencies]

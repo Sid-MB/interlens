@@ -35,11 +35,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from markdown_it import MarkdownIt
+
 from .assets import CSS, JS, JS_COMPARE, JS_EPISODE, JS_INDEX_PAGE
 from .chrome import (_e, _num, distance_to_nbs, help_overlay, nav_group, quick_stats, slim_payload,
                      summary_strip, topbar)
 
 __all__ = ["nav_group", "render_compare_html", "render_episode_html", "render_index_html"]
+
+
+_MARKDOWN = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
+
+
+def _render_readme(markdown: str) -> str:
+    """Render an optional run README without allowing embedded HTML to enter the generated page."""
+    return _MARKDOWN.render(markdown) if markdown.strip() else ""
 
 
 def _payload_script(payload: dict) -> str:
@@ -74,6 +84,43 @@ def _meta_pills(payload: dict) -> str:
              f"<span class='pill'>instance <b>{_e(ep.get('instance_id'))}</b></span>",
              f"<span class='pill'>{_e(ep.get('tokens_out'))} tok out</span>"]
     return f"<div class='pills'>{''.join(pills)}</div>"
+
+
+def _preferences_are_public(payload: dict) -> bool:
+    """Whether the protocol revealed every party's preferences to every seat.
+
+    Stored negotiation records call this mode ``full``; ``public`` and ``shared`` are accepted as equivalent
+    spellings so the visual distinction follows the meaning rather than one generator's serialization detail.
+    Unknown or absent values stay quiet, like the default private mode, rather than making an unsupported claim.
+    """
+    info = str((((payload.get("game") or {}).get("protocol") or {}).get("info") or "")).strip().lower()
+    return info in {"full", "public", "shared"}
+
+
+def preference_visibility(payload: dict) -> str:
+    """The compact index label for a negotiation's information condition.
+
+    Private information is the protocol default, including older records that did not serialize ``info``;
+    the exceptional public/shared spellings are normalized to the experiment-facing label ``FULL``.
+    """
+    return "FULL" if _preferences_are_public(payload) else "PRIVATE"
+
+
+def _preference_visibility_quick(payload: dict) -> str:
+    """The sticky quick-read label for the exceptional public-preference condition; private emits nothing."""
+    if not _preferences_are_public(payload):
+        return ""
+    return ("<span class='prefvisquick'><span class='k'>preference visibility</span> "
+            "<b>public</b></span>")
+
+
+def _preference_visibility_banner(payload: dict) -> str:
+    """A prominent top-of-page explanation when full preferences were revealed to the table."""
+    if not _preferences_are_public(payload):
+        return ""
+    return ("<div class='prefvis' role='note'><span class='k'>Preference visibility</span>"
+            "<strong>PUBLIC</strong><span>Every party's full score sheet and threshold were revealed to all "
+            "participants in this episode.</span></div>")
 
 
 def _source_links(payload: dict) -> str:
@@ -140,7 +187,8 @@ def _legend(mode: str) -> str:
             f"<span><i class='swatch' style='background:var(--s1)'></i>{_e(left)} (numbered, in order)</span>"
             f"<span><i class='swatch sq' style='background:var(--s1)'></i>the deal that closed</span>"
             f"<span><i class='swatch' style='background:var(--s2)'></i>{_e(right)}</span>"
-            "<span><i class='swatch' style='background:var(--s3)'></i>solution concept (starred, labelled)</span>"
+            "<span><i class='swatch' style='background:var(--s3)'></i>NBS / KS / EGAL solution (star)</span>"
+            "<span><i class='swatch tri' style='background:var(--reference-alt)'></i>UTIL / MNW solution (triangle)</span>"
             "<span><i class='swatch di' style='background:var(--s3)'></i>a party's individually-best deal</span>"
             "<span><i class='swatch' style='background:var(--ink-2)'></i>Pareto-frontier deal</span>"
             "<span><i class='swatch' style='background:var(--muted)'></i>dominated deal</span></div>")
@@ -158,6 +206,7 @@ def _game_cards(payload: dict) -> str:
                 "the game setup, thresholds, and frontier are unavailable; the transcript above is complete.</div>"
                 "</section>")
     counts, protocol = game.get("counts") or {}, game.get("protocol") or {}
+    public_preferences = _preferences_are_public(payload)
     ideal = game.get("ideal_surplus") or []
     seat_rows = "".join(
         f"<tr><td>{_e(s.get('name'))} <span class='badge {_e(s.get('kind'))}'>{_e(s.get('kind'))}</span></td>"
@@ -171,7 +220,7 @@ def _game_cards(payload: dict) -> str:
     veto = ", ".join(str((game.get("parties") or [])[v] if v < len(game.get("parties") or []) else v)
                      for v in protocol.get("veto_seats") or []) or "none"
     sheets = "".join(
-        "<details><summary>Private score sheet — "
+        f"<details><summary>{'Score sheet' if public_preferences else 'Private score sheet'} — "
         f"{_e(sh['agent'])} (threshold {_num(sh['threshold'], 1)})</summary><div class='body'><table>"
         "<thead><tr><th>issue</th>"
         + "".join(f"<th>{_e(o)}</th>" for o in (game['issues'][0]['options'] if game.get('issues') else []))
@@ -207,8 +256,8 @@ def _game_cards(payload: dict) -> str:
  <tr><td>score-sheet overlap (IoU)</td><td>{_num(counts.get('pairwise_iou'))}</td></tr>
  </tbody></table>
  <div class='sub muted'>Solution concepts were {_e(game.get('solutions_source'))} for this page.</div></section>
-<section class='card'><h2>Private score sheets</h2>
- <div class='sub'>What each party is secretly optimizing. Never shown to the other seats.</div>{sheets}</section>
+<section class='card'><h2>{'Public score sheets' if public_preferences else 'Private score sheets'}</h2>
+ <div class='sub'>{'Full preferences and thresholds were revealed to every seat before play.' if public_preferences else 'What each party is secretly optimizing. Never shown to the other seats.'}</div>{sheets}</section>
 <section class='card'><h2>Prompt provenance</h2>
  <div class='sub'>{_e(views.get('stored'))} of {_e(views.get('n_turns'))} turns carry the exact view recorded at
  generation time; {_e(views.get('reconstructed'))} were re-derived by replay through today's prompt code and are
@@ -224,9 +273,11 @@ def _side_panel(payload: dict) -> str:
 
 
 # ------------------------------------------------------------------------------- the tabbed sidebar --
-#: The sidebar's tabs, in order. The first is the default. ``game`` is the panel the page always had; the other
-#: three are scroll-synced views of the turn currently in the reader's viewport.
-SIDEBAR_TABS = [("game", "Game info"), ("chat", "Conversation"), ("frontier", "Frontier"), ("issues", "Issues")]
+#: The sidebar's tabs, in order. The first is the default. ``game`` is the panel the page always had; ``chat``,
+#: ``frontier``, and ``issues`` are scroll-synced views of the turn currently in the reader's viewport; ``info``
+#: is the standing reading guide linked from terms and measurements throughout the episode.
+SIDEBAR_TABS = [("game", "Game info"), ("chat", "Conversation"), ("frontier", "Frontier"),
+                ("issues", "Issues"), ("info", "Info")]
 
 
 def _deal_summary(named: dict | None) -> str:
@@ -395,8 +446,74 @@ def _issue_pane(payload: dict) -> str:
             f"<div id='issue-seats'>{''.join(blocks)}</div>")
 
 
+def _info_pane(payload: dict) -> str:
+    """The visualizer's compact reading guide, including the target linked from every oracle measurement.
+
+    Formulae use semantic HTML rather than a network-loaded maths library so exported pages keep working as
+    self-contained files. Each formula is immediately restated in words for readers and assistive technology.
+    """
+    private = not _preferences_are_public(payload)
+    information_note = (
+        "<div class='warn'><b>PRIVATE episode: this oracle is omniscient.</b> The standard saved "
+        "<code>bestresponse</code> annotation reads every party's hidden score sheet and threshold. It does not "
+        "infer them from the public conversation. Its recommendation and improvement gap are hindsight "
+        "diagnostics, not actions or regret from a policy the acting seat could implement.</div>"
+        if private else
+        "<div class='sub'><b>FULL episode:</b> every score sheet and threshold used by the oracle was also "
+        "revealed to the participants.</div>"
+    )
+    return f"""<div class='infointro'>A reading guide for the measurements and counterfactuals on this page.</div>
+<section class='infosection' id='info-oracle'>
+ <h2>Oracle values and the improvement gap</h2>
+ {information_note}
+ <p>The oracle is a <b>post-hoc counterfactual evaluator</b>, not another participant. At turn <var>t</var>, it
+ enumerates legal deals, reads the full utility and threshold table, computes continuation values by
+ <b>backward induction</b> over the remaining turns, and selects the highest-valued action. A proposed deal closes only when
+ every responder's surplus clears that responder's computed continuation value.</p>
+ <div class='formula' role='math' aria-label='a star at turn t equals arg max over actions a of V sub t of a'>
+  <var>a<sup>*</sup><sub>t</sub> = arg max<sub>a</sub> V<sub>t</sub>(a)</var></div>
+ <p><b>Oracle's value of the model's move</b>, <var>V<sub>t</sub>(a<sub>t</sub>)</var>, appears with the model's
+ action. <b>Oracle's value of its best move</b>, <var>V<sub>t</sub>(a<sup>*</sup><sub>t</sub>)</var>, appears with
+ the counterfactual action. Their difference is the oracle's value gap:</p>
+ <div class='formula' role='math' aria-label='R sub t equals V sub t of a star sub t minus V sub t of a sub t,
+ and is greater than or equal to zero'>
+  <var>R<sub>t</sub> = V<sub>t</sub>(a<sup>*</sup><sub>t</sub>) − V<sub>t</sub>(a<sub>t</sub>) ≥ 0</var></div>
+ <p>This is often called <i>regret</i>. A value of 4.18 means the oracle estimates that its best legal move was
+ worth 4.18 more than the model's move. Values are in that oracle's own units: compare moves within the same
+ turn and oracle, not raw values across different seats or oracle types. The result is only as good as the
+ oracle's candidate set, evaluator, and information reconstruction; it is not proof of the uniquely correct move.</p>
+</section>
+<section class='infosection' id='info-utility'>
+ <h2>Utility, threshold, surplus, and <var>z</var></h2>
+ <p><var>u<sub>i</sub>(d)</var> is party <var>i</var>'s score for deal <var>d</var>; <var>τ<sub>i</sub></var> is
+ its walk-away threshold. Raw surplus is <var>u<sub>i</sub>(d) − τ<sub>i</sub></var>. Normalized surplus
+ <var>z<sub>i</sub></var> expresses that gain relative to the party's own available range, making differently
+ scaled score sheets more comparable. “Below τ” means a deal is not individually rational for that party.</p>
+</section>
+<section class='infosection' id='info-frontier'>
+ <h2>Frontier and reference points</h2>
+ <p>Each dot is a legal deal. Up and right is better; the Pareto frontier contains deals where no party can gain
+ without another losing. Numbered circles are the model's proposals, orange circles are oracle proposals, and
+ the square is the agreement. NBS, KS, UTIL, EGAL, and MNW are normative reference rules, not additional plays.
+ Hover or focus any point for its deal, scores, party ranking, and the reference rule's definition.</p>
+</section>
+<section class='infosection' id='info-sidebar'>
+ <h2>Conversation and issue views</h2>
+ <p><b>Conversation</b> contains only published messages and formal moves. It excludes private scratchpads,
+ prompts, failed attempts that were retried, and post-hoc oracle verdicts. <b>Issues</b> is an analyst's view of
+ a seat's score sheet; in a private-information game, other seats could not see it while negotiating. Both views
+ follow the turn currently in the transcript.</p>
+</section>
+<section class='infosection' id='info-provenance'>
+ <h2>Provenance and generated failures</h2>
+ <p>The annotation label identifies which saved oracle pass supplied the counterfactuals. A “NOT GENERATED” turn
+ is an engine placeholder after generation failed, not an intentional model move. Expand a turn's audit panels
+ to distinguish the published action, private reasoning, reconstructed prompt view, and raw stored text.</p>
+</section>"""
+
+
 def _sidebar(payload: dict) -> str:
-    """The episode page's right-hand sidebar: four tabs over one sticky column, three of them scroll-synced.
+    """The episode page's right-hand sidebar: five tabs over one sticky column, three of them scroll-synced.
 
     ``Game info`` is the panel the page always carried. ``Conversation`` is the public chat as the seat in view
     experienced it. ``Frontier`` is the deal-space chart restricted to what had been proposed by the turn in view.
@@ -421,6 +538,7 @@ def _sidebar(payload: dict) -> str:
                  "view speaks on the right.</div>" + _chat_bubbles(payload)),
         "frontier": frontier,
         "issues": _issue_pane(payload),
+        "info": _info_pane(payload),
     }
     bodies = "".join(
         f"<section class='pane' id='pane-{k}' role='tabpanel' aria-labelledby='tab-{k}'"
@@ -485,9 +603,11 @@ def render_episode_html(payload: dict) -> str:
     options = "".join(f'<option value="{_e(o)}">{_e(o)}</option>' for o in ordered)
     selector = (f"<label class='sub'>counterfactual oracle <select id='oracle-select'>{options}</select></label>"
                 if oracles else "")
+    oracle_scope = ("full-information oracle" if _preferences_are_public(payload)
+                    else "omniscient hindsight oracle")
     no_cf = ("" if counterfactual else
              "<div class='warn'><b>No best-response oracle on this run.</b> Its episodes were scored with "
-             f"{_e(', '.join(oracles) or 'no oracles')}, so the per-turn 'what a rational agent would have done' "
+             f"{_e(', '.join(oracles) or 'no oracles')}, so the per-turn post-hoc oracle "
              "column shows only the oracles that are present. Re-annotate the run with the "
              "<code>bestresponse</code> oracle to fill it in.</div>")
     chart = (f"""<section class='card' id='frontier'><h2>Where every deal sits, and where this episode went</h2>
@@ -502,17 +622,19 @@ def render_episode_html(payload: dict) -> str:
   <span class='sub muted'>every reference point, exactly</span></div>
  <div id='chart-table' hidden>{_reference_table(game)}</div>
  <div class='detail' id='detail'></div></section>""" if game else "")
-    regret = (f"""<section class='card'><h2>Per-turn regret against the rational agent</h2>
+    regret = (f"""<section class='card'><h2>Per-turn value gap against the {_e(oracle_scope)}</h2>
  <div class='sub'>Each bar is the oracle's value of its own best move minus its value of the move the seat played,
- in that oracle's units — the centipawn-loss analogue. Click a bar to jump to the turn.</div>
+ in that oracle's units — the centipawn-loss analogue. On PRIVATE episodes this is an omniscient hindsight gap,
+ not implementable-policy regret. Click a bar to jump to the turn.</div>
  <div class='bar'>{selector}</div><div id='regret'></div></section>""" if oracles else "")
     body = f"""<h1>{_e(ep.get('scenario'))} — <code>{_e(ep.get('episode_id'))}</code></h1>
 {_meta_pills(payload)}{_source_links(payload)}
+{_preference_visibility_banner(payload)}
 {summary_strip(payload)}{_contamination_banner(payload)}{no_cf}
 <div class='layout'><div>
 {chart}{regret}
 {_system_prompt_audit(payload)}
-<section class='card'><h2>Transcript — what the model did, and what a rational agent would have done</h2>
+<section class='card'><h2>Transcript — what the model did, and what the {_e(oracle_scope)} scores as best</h2>
  <div class='sub'>Every panel is expandable: the reasoning recorded for the turn, the exact prompt the seat saw,
  the raw turn text, and every action each oracle scored with its value. The rail below is every turn, coloured by
  what the seat did — click a chip to jump to it.</div>
@@ -523,7 +645,8 @@ def render_episode_html(payload: dict) -> str:
 </div>{_sidebar(payload)}</div>"""
     return _document(f"{ep.get('episode_id')} — episode",
                      topbar(_e(ep.get("cell") or ep.get("scenario") or "run"), "index.html",
-                            quick_stats(payload), brand_title="back to the run index"),
+                            quick_stats(payload) + _preference_visibility_quick(payload),
+                            brand_title="back to the run index"),
                      body, payload, JS + "\n" + JS_EPISODE)
 
 
@@ -614,11 +737,13 @@ def render_compare_html(payload: dict) -> str:
     quick = (f"<span><span class='k'>{_e(labels['left'])}</span> <b>{_num((L.get('outcome') or {}).get('primary'))}</b></span>"
              f"<span><span class='k'>{_e(labels['right'])}</span> <b>{_num((R.get('outcome') or {}).get('primary'))}</b></span>"
              f"<span><span class='k'>divergence</span> <b>"
-             f"{payload['divergence'] if payload.get('divergence') is not None else 'none'}</b></span>")
+             f"{payload['divergence'] if payload.get('divergence') is not None else 'none'}</b></span>"
+             f"{_preference_visibility_quick(L)}")
     body = f"""<h1>Seat-swap comparison — <code>{_e(le.get('instance_id'))}</code> seed {_e(le.get('seed'))}</h1>
 <div class='sub'>{_e(labels['left'])} <code>{_e(le.get('episode_id'))}</code> ({_e(le.get('model'))})
  vs {_e(labels['right'])} <code>{_e(re_.get('episode_id'))}</code> ({_e(re_.get('model'))})</div>
 {_verdict_strip(payload)}
+{_preference_visibility_banner(L)}
 {''.join(banner)}
 {_contamination_banner(L, labels['left'])}{_contamination_banner(R, labels['right'])}
 <section class='card'><h2>What changed, in numbers</h2>
@@ -632,7 +757,7 @@ def render_compare_html(payload: dict) -> str:
  outlined; after the first such turn the two episodes are in different states, so the columns are two separate
  trajectories rather than a line-by-line diff.</div>
  <div class='bar'><button id='jump-divergence'>Jump to the divergence point</button>
- <button id='cf-toggle' aria-pressed='false'>Show each turn's rational-agent counterfactual</button>
+ <button id='cf-toggle' aria-pressed='false'>Show each turn's post-hoc oracle counterfactual</button>
  <button id='expand-all'>Expand all panels</button><button id='collapse-all'>Collapse all</button>
  <span class='sub'>{('divergence at aligned slot ' + str(payload['divergence'])) if payload.get('divergence') is not None else 'no divergence'}</span></div>
  <div class='two'>
@@ -651,6 +776,7 @@ def render_compare_html(payload: dict) -> str:
 #: ``num`` for a tabular figure, ``bar`` for a figure with an inline magnitude bar, ``pct`` for a percentage that
 #: goes red above zero, ``text`` for everything else.
 INDEX_COLUMNS = [("page", "label", "link"), ("model", "model", "text"), ("arm", "arm", "text"),
+                 ("visibility", "visibility", "visibility"),
                  ("instance", "instance", "text"), ("seed", "seed", "num"), ("outcome", "deal", "deal"),
                  ("primary", "primary", "bar"), ("dist NBS", "dist_nbs", "num"), ("USW", "usw", "num"),
                  ("worst-off", "esw", "num"), ("fabricated", "fabricated_pct", "pct"),
@@ -666,6 +792,9 @@ def _index_cell(row: dict, key: str, kind: str, scale: float) -> str:
     if kind == "deal":
         return (f"<td data-sort='{1 if row.get('deal') else 0}'>"
                 f"{'deal' if row.get('deal') else '<span class=neg>no deal</span>'}</td>")
+    if kind == "visibility":
+        label = str(v or "PRIVATE").upper()
+        return f"<td data-sort='{_e(label)}'><span class='visibility'>{_e(label)}</span></td>"
     if kind == "pct":
         if not v:
             return "<td data-sort='0' class='muted'>0%</td>"
@@ -683,7 +812,7 @@ def _index_cell(row: dict, key: str, kind: str, scale: float) -> str:
     return f"<td data-sort='{_e(v)}'>{_e(v)}</td>"
 
 
-def render_index_html(rows: list[dict], title: str, note: str = "") -> str:
+def render_index_html(rows: list[dict], title: str, note: str = "", readme_markdown: str = "") -> str:
     """A run index: one row per generated page, sortable on every column and filterable by text, outcome, and
     whether the engine fabricated any turns.
 
@@ -710,7 +839,10 @@ def render_index_html(rows: list[dict], title: str, note: str = "") -> str:
              f"<tbody>{''.join(body)}</tbody></table></div>"
              "<div class='sub muted'>Click a column header to sort; <kbd>/</kbd> focuses the filter, "
              "<kbd>Enter</kbd> opens the first row that survives it.</div></section>")
-    body_html = f"<h1>{_e(title)}</h1>" + (f"<div class='sub'>{note}</div>" if note else "") + table
+    readme = _render_readme(readme_markdown)
+    readme_html = f"<section class='card run-readme'>{readme}</section>" if readme else ""
+    body_html = (f"<h1>{_e(title)}</h1>" + (f"<div class='sub'>{note}</div>" if note else "")
+                 + readme_html + table)
     return _document(title,
                      topbar(title, None, f"<span><span class='k'>pages</span> <b>{len(rows)}</b></span>",
                             brand_title=title, nav=False),

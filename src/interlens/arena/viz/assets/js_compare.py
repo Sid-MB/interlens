@@ -40,9 +40,10 @@ function pickC(mk, clicked) {
 if (G) {
   const marks = [];
   Object.entries(G.solutions).forEach(([name, pt]) => marks.push({
-    index: pt.index, kind: "star", color: "s3", label: pt.label, r: 7, role: "solution", concept: name,
+    index: pt.index, ...solutionMarkStyle(name), label: pt.label, r: 7, role: "solution", concept: name,
     title: `${pt.label} — ${name}` }));
-  G.party_best.forEach(pb => marks.push({ index: pb.index, kind: "diamond", color: "s3", r: 5, role: "solution",
+  G.party_best.forEach(pb => marks.push({ index: pb.index, kind: "diamond", color: "s3", r: 5,
+    ...partyBestLabel(G, pb), role: "party_best", party: pb.party,
     title: `best efficient deal for ${seatName(G, pb.party)} — surplus ${pb.surplus}` }));
   [[L, "s1", "left", C.labels.left], [R, "s2", "right", C.labels.right]].forEach(([side, color, role, label]) => {
     side.trajectory.forEach(p => marks.push({ index: p.index, kind: "circle", color, r: 6, role,
@@ -65,7 +66,7 @@ const byIdx = (side) => Object.fromEntries(side.turns.map(t => [t.idx, t]));
 const LT = byIdx(L), RT = byIdx(R);
 const PREFIX = { left: "lturn-", right: "rturn-" };
 const oracleOf = (side) => side.counterfactual_oracles[0] || side.oracle_names[0] || "";
-let SHOW_CF = false;   // per-turn rational-agent counterfactual column, off by default (the seat swap IS the contrast)
+let SHOW_CF = false;   // per-turn post-hoc oracle counterfactual column, off by default
 
 function column(side, rows, which) {
   const prov = SHOW_CF ? annProvenance(side.annotations_source, side.counterfactual_oracles) : "";
@@ -84,6 +85,7 @@ function column(side, rows, which) {
 function bindColumn(which, side) {
   const host = $("col-" + which);
   bindLazy(host, side.turns);
+  bindCounterfactualCards(host, G, side.turns, oracleOf(side));
   const select = makeSelectTurn(null, PREFIX[which]);
   host.querySelectorAll(".chip[data-goturn]").forEach(b =>
     b.addEventListener("click", () => select(Number(b.dataset.turnidx))));
@@ -91,7 +93,7 @@ function bindColumn(which, side) {
     const idx = Number(hd.closest(".turn").dataset.turnidx);
     hd.addEventListener("click", () => select(idx, { scroll: false }));
   });
-  host.querySelectorAll("[data-deal]").forEach(a => a.addEventListener("click", ev => {
+  host.querySelectorAll("[data-deal]:not([data-counterfactual]):not([data-package-preview])").forEach(a => a.addEventListener("click", ev => {
     ev.preventDefault();
     pickC({ index: Number(a.dataset.deal), title: "deal referenced from a transcript" }, true);
     $("frontier").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -105,7 +107,7 @@ function renderColumns() {
 }
 renderColumns();
 
-/* Opt-in overlay of each turn's "what a rational agent would have done" column INSIDE the side-by-side. Off by
+/* Opt-in overlay of each turn's post-hoc oracle column INSIDE the side-by-side. Off by
    default because the seat swap is itself the rational-vs-LLM contrast, so the extra column is only wanted when
    auditing per-turn. */
 const cfToggle = $("cf-toggle");
@@ -139,7 +141,7 @@ if (collapseC) collapseC.addEventListener("click", () => bothCols().forEach(c =>
 registerKeys(shellKeys().concat([
   { keys: ["d"], what: "jump to the divergence point", run: jumpDivergence },
   { keys: ["f"], what: "jump to the shared frontier chart", run: () => { const n = $("frontier"); if (n) n.scrollIntoView({ behavior: "smooth", block: "start" }); } },
-  { keys: ["x"], what: "show or hide the per-turn rational-agent counterfactual", run: () => { if (cfToggle) cfToggle.click(); } },
+  { keys: ["x"], what: "show or hide the per-turn post-hoc oracle counterfactual", run: () => { if (cfToggle) cfToggle.click(); } },
   { keys: ["e"], what: "expand every panel in both columns", run: () => bothCols().forEach(c => setAllOpen(c, true)) },
   { keys: ["c"], what: "collapse every panel in both columns", run: () => bothCols().forEach(c => setAllOpen(c, false)) },
   { keys: ["0"], what: "reset the chart's zoom", run: () => { if (CCHART) CCHART.reset(); } },

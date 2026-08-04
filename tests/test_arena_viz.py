@@ -19,7 +19,7 @@
 
 No browser is involved: the pages render every number in Python (the browser script only draws the charts and the
 transcript cards), so the assertions are on real structure and real values in the emitted document — the frontier
-panel, the reference-point table with each solution concept, the per-turn rational-agent counterfactual, the
+panel, the reference-point table with each solution concept, the per-turn post-hoc oracle counterfactual, the
 expandable prompt panels with their provenance, the comparison score table and divergence point.
 """
 from __future__ import annotations
@@ -283,16 +283,34 @@ def test_episode_page_has_every_panel(payload):
         "best for P0", "Pareto",
         # the per-turn regret strip and the counterfactual oracle selector
         "id='regret'", "id='oracle-select'", ">bestresponse<",
-        # the game side panel: seats, thresholds, protocol, problem size, private sheets
+        # the game side panel: seats, thresholds, protocol, problem size, score sheets
         "Who is at the table", "threshold τ", "ideal surplus",
         "Protocol", "cheap talk", "discount δ",
         "Size of the problem", "on the Pareto frontier",
-        "Private score sheets", "Private score sheet — P0",
+        "Public score sheets", "Score sheet — P0",
         # the expandable system-prompt audit and the headline numbers
         "System prompts", "<details>", "worst-off", "Gini",
         # every solution concept must be named in the table view
         *(f"<b>{label}</b>" for label in ("NBS", "KS", "UTIL", "EGAL", "MNW")),
     ) == []
+
+
+def test_public_preferences_are_called_out_at_the_top_but_private_stays_the_default(payload):
+    """``info=full`` is a materially different experimental condition: every seat saw every score sheet. It
+    must be visible before the analysis, while the default private condition remains visually quiet."""
+    public = json.loads(json.dumps(payload))
+    public["game"]["protocol"]["info"] = "full"
+    h = viz.render_episode_html(public)
+    assert h.lower().count("preference visibility") == 2, "one page banner plus one sticky quick-read label"
+    assert _missing(h, "<strong>PUBLIC</strong>", "full score sheet and threshold were revealed",
+                    "Public score sheets", "revealed to every seat before play") == []
+    assert "What each party is secretly optimizing" not in h
+
+    private = json.loads(json.dumps(payload))
+    private["game"]["protocol"]["info"] = "private"
+    h = viz.render_episode_html(private)
+    assert "<div class='prefvis'" not in h and "<span class='prefvisquick'" not in h
+    assert _missing(h, "Private score sheets", "What each party is secretly optimizing") == []
 
 
 def test_episode_page_is_self_contained_and_theme_aware():
@@ -452,7 +470,22 @@ def test_export_run_writes_pages_index_and_manifest(two_runs, tmp_path):
     page = Path(manifest["pages"][0])
     assert page.exists() and page.read_text().startswith("<!doctype html>")
     index = (out / "index.html").read_text()
-    assert "total regret" in index and page.name in index
+    assert "total regret" in index and "visibility" in index and "FULL" in index and page.name in index
+
+
+def test_export_run_renders_optional_readme_above_index_table(two_runs, tmp_path):
+    lrun, _ = two_runs
+    (lrun / "README.md").write_text(
+        "## Clean private results\n\n- Use the corrected `annotations_v1`.\n\n<script>bad()</script>\n"
+    )
+    out = tmp_path / "pages-with-readme"
+    viz.export_run(lrun, out)
+    index = (out / "index.html").read_text()
+    assert "<h2>Clean private results</h2>" in index
+    assert "<code>annotations_v1</code>" in index
+    assert index.index("class='card run-readme'") < index.index("class='card'><div class='filterbar'")
+    assert "<script>bad()</script>" not in index
+    assert "&lt;script&gt;bad()&lt;/script&gt;" in index
 
 
 def test_export_run_survives_one_unreadable_episode(two_runs, tmp_path):
@@ -659,11 +692,52 @@ def test_frontier_chart_advertises_full_cloud_hover(payload):
     assert "mousemove" in h                       # the nearest-deal handler ships in the page's script
 
 
+def test_semantic_mark_replaces_cloud_duplicate_but_coincident_meaningful_marks_survive(payload, tmp_path):
+    """One exact deal gets one anonymous representation at most. If it has a meaningful marker, the ordinary
+    cloud dot/ring must disappear from both drawing and nearest-deal hover; if it has TWO meaningful identities,
+    both stay. In particular the green party-best diamond is layered over (not replaced by) a played blue dot."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    overlap = json.loads(json.dumps(payload))
+    deal = overlap["trajectory"][0]["index"]
+    overlap["game"]["party_best"][0]["index"] = deal
+    report = _run_harness(viz.render_episode_html(overlap), [
+        {"hover": "move 1:"}, {"hover": "best efficient deal for"}
+    ], tmp_path)
+    assert report["ok"] and not report["errors"]
+    snap = report["steps"][0]
+    assert not snap["cloud_mark_overlap"], "no marked deal may retain an anonymous dot or frontier ring"
+    coincident = next(group for group in snap["mark_stacks"] if group["deal"] == deal)
+    blue = next(i for i, (kind, fill) in enumerate(zip(coincident["kinds"], coincident["fills"]))
+                if kind == "circle" and fill == "var(--s1)")
+    diamond = next(i for i, (kind, fill) in enumerate(zip(coincident["kinds"], coincident["fills"]))
+                   if kind == "diamond" and fill == "var(--s3)")
+    assert blue < diamond, "diamond must layer over a still-visible blue rim"
+    assert "Move 1" in report["steps"][1]["card_kind"]
+    assert "Party-best" in report["steps"][2]["card_kind"]
+
+
+def test_party_best_diamonds_have_tiny_party_labels_with_distinct_shared_deal_anchors(payload, tmp_path):
+    """Every green diamond names its party directly. When two parties share a best deal, their labels use
+    different party-specific anchors instead of becoming one unreadable text stack."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    shared = json.loads(json.dumps(payload))
+    shared["game"]["party_best"][1]["index"] = shared["game"]["party_best"][0]["index"]
+    report = _run_harness(viz.render_episode_html(shared), [], tmp_path)
+    assert report["ok"] and not report["errors"]
+    labels = report["steps"][0]["party_best_labels"]
+    expected = [seat["name"] for seat in shared["seats"]]
+    assert [label["text"] for label in labels] == expected
+    assert len({(label["x"], label["y"], label["anchor"]) for label in labels[:2]}) == 2
+    assert "svg .lab.partybest" in viz.render_episode_html(shared), "party labels need their tiny-label styling"
+
+
 def test_comparison_page_ships_the_counterfactual_toggle(two_runs):
-    """The seat-swap page carries the opt-in per-turn rational-agent counterfactual toggle (off by default)."""
+    """The seat-swap page carries the opt-in per-turn post-hoc oracle counterfactual toggle (off by default)."""
     c = viz.pair_runs(*two_runs)[0][0]
     h = viz.render_compare_html(c)
-    assert "cf-toggle" in h and "rational-agent counterfactual" in h.lower()
+    assert "cf-toggle" in h and "post-hoc oracle counterfactual" in h.lower()
 
 
 # ------------------------------------------------------------------- fabricated-turn visibility --
@@ -823,16 +897,18 @@ def test_index_is_a_sortable_filterable_table_with_the_columns_that_decide_what_
     numbers as COLUMNS (outcome, primary, distance to the Nash solution, fabricated share, arm/seed/instance), a
     machine-sortable value on every numeric cell, and filters — all client-side over the rows already present, so
     the file stays one static table rather than a table plus a JSON copy of itself."""
-    rows = [{"href": "a.html", "label": "a", "model": "m", "arm": "moves_chat", "instance": "inst1", "seed": 0,
+    rows = [{"href": "a.html", "label": "a", "model": "m", "arm": "moves_chat", "visibility": "PRIVATE",
+             "instance": "inst1", "seed": 0,
              "deal": True, "primary": 0.7, "dist_nbs": 0.12, "usw": 3.0, "esw": 0.5, "fabricated_pct": 0.0,
              "regret": 2.0},
-            {"href": "b.html", "label": "b", "model": "m", "arm": "moves_only", "instance": "inst2", "seed": 1,
+            {"href": "b.html", "label": "b", "model": "m", "arm": "moves_only", "visibility": "FULL",
+             "instance": "inst2", "seed": 1,
              "deal": False, "primary": 0.0, "dist_nbs": None, "usw": 0.0, "esw": -1.0, "fabricated_pct": 40.0,
              "regret": None}]
     h = viz.render_index_html(rows, "Episodes — run")
     assert _missing(h, "class='sortable'", "id='idx-search'", "data-filter='outcome:1'",
                     "data-filter='outcome:0'", "data-filter='flag:fabricated'", "id='idx-count'",
-                    "dist NBS", "fabricated", "instance", "total regret") == []
+                    "visibility", "PRIVATE", "FULL", "dist NBS", "fabricated", "instance", "total regret") == []
     assert "data-sort='0.7'" in h and "data-sort='0.12'" in h, "numeric cells sort on the number"
     assert "data-fabricated='40.0'" in h, "the fabricated filter reads a row attribute, not the rendered text"
     assert h.count("<tr data-hay=") == 2
@@ -993,7 +1069,7 @@ def test_sidebar_carries_five_tabs_and_renders_every_pane_server_side(payload):
     # the first tab is the game panel the page always had, and it is the one that opens
     assert "data-tab='game' aria-controls='pane-game' aria-selected='true'" in h
     assert "data-tab='chat' aria-controls='pane-chat' aria-selected='false'" in h
-    assert _missing(_pane(h, "game"), "Who is at the table", "Private score sheets", "Protocol") == []
+    assert _missing(_pane(h, "game"), "Who is at the table", "Public score sheets", "Protocol") == []
     # the panes that follow the scroll are hidden markup, not empty ones
     assert "id='pane-chat'" in h and "class='chatlog'" in h
     assert "id='mini-chart'" in h and "id='issue-seats'" in h
@@ -1019,6 +1095,123 @@ def test_oracle_values_are_spatially_grouped_and_the_gap_is_positive(payload, tm
     assert str(round(first["divergence"], 2)) in loaded["oracle_table_text"], "show best - chosen, without negating it"
     assert loaded["info_buttons"] >= 3
     assert linked["activeTab"]["tab"] == "info" and not linked["info_hidden"], "the i button opens Info"
+
+
+def test_rational_package_link_opens_reused_frontier_with_every_decision_overlay(payload, tmp_path):
+    """The package is a preview affordance, not a disguised jump to the distant main chart. Its graph uses the
+    shared frontier renderer and distinguishes agreement and both directions of accept/reject disagreement."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    import copy
+    base = next(t for t in payload["turns"]
+                if (t.get("oracles") or {}).get("bestresponse") is not None)
+    cases = [
+        ("reject", "REJECT P1", "agree-reject", "var(--critical)", False),
+        ("accept", "REJECT P1", "model-accept-rational-reject", "var(--good)", True),
+        ("reject", "ACCEPT P1", "model-reject-rational-accept", "var(--good)", False),
+    ]
+    for model_action, rational_action, state, expected_fill, arrow in cases:
+        p = copy.deepcopy(payload)
+        for row in p["turns"]:
+            if "bestresponse" in (row.get("oracles") or {}):
+                row["oracles"]["bestresponse"]["best_deal_index"] = None
+        t = next(row for row in p["turns"] if row["idx"] == base["idx"])
+        t["seat"] = "Devon"
+        t["action"]["atype"] = model_action
+        t["action"]["label"] = model_action.upper() + " P1"
+        t["standing_deal_index"] = 0
+        oracle = t["oracles"]["bestresponse"]
+        oracle["best_label"] = rational_action
+        oracle["best_deal_index"] = (None if rational_action.startswith("ACCEPT")
+                                     else min(1, p["game"]["deals"]["n"] - 1))
+        report = _run_harness(viz.render_episode_html(p),
+                              [{"counterfactual": {"event": "focus"}},
+                               {"counterfactual": {"event": "click"}}], tmp_path / state)
+        assert report["ok"] and not report["errors"]
+        focused, pinned = report["steps"][1:]
+        assert focused["cf_card_on"] and focused["cf_overlay"] == state
+        assert any(m["fill"] == expected_fill for m in focused["cf_marks"])
+        assert focused["cf_arrow"] is arrow
+        assert focused["cf_focusable_marks"] == 0
+        assert focused["cf_svg_label"].startswith("Static decision preview")
+        assert pinned["cf_card_pinned"], "activation pins the same preview for keyboard and touch"
+        if rational_action.startswith("ACCEPT"):
+            assert focused["cf_card_on"], "ACCEPT previews the standing package without a best_deal_index"
+        if rational_action.startswith("REJECT"):
+            h = viz.render_episode_html(p)
+            assert ("because the following package, better for Devon, is plausibly acceptable to the table "
+                    "in the remaining rounds") in focused["cf_context"]
+            assert "frontierChart(node.querySelector(\".cfchart\")" in h, "the preview must reuse frontierChart"
+            assert 'data-counterfactual' in h and 'aria-haspopup="dialog"' in h
+
+
+def test_different_model_and_rational_proposals_get_two_points_and_a_directed_dashed_line(payload, tmp_path):
+    """PROPOSE/PROPOSE is agreement on the action type, not necessarily on the decision. Different packages need
+    the same explicit movement grammar as accept/reject: both endpoints and an arrow toward the rational one."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    import copy
+    p = copy.deepcopy(payload)
+    t = next(row for row in p["turns"] if "bestresponse" in (row.get("oracles") or {}))
+    n = p["game"]["deals"]["n"]
+    model_index, rational_index = 0, min(1, n - 1)
+    t["action"].update({"atype": "propose", "label": "PROPOSE", "deal_index": model_index})
+    t["standing_deal_index"] = model_index
+    oracle = t["oracles"]["bestresponse"]
+    oracle.update({"best_label": "PROPOSE", "best_deal_index": rational_index})
+    report = _run_harness(viz.render_episode_html(p),
+                          [{"counterfactual": {"event": "focus"}}], tmp_path / "different")
+    assert report["ok"] and not report["errors"]
+    snap = report["steps"][1]
+    assert snap["cf_overlay"] == "model-propose-rational-propose"
+    assert snap["cf_arrow"] and len(snap["cf_marks"]) == 2
+    assert {m["fill"] for m in snap["cf_marks"]} == {"var(--s1)", "var(--s2)"}
+    assert "arrow points toward the oracle alternative" in snap["cf_note"]
+
+    # The same action AND same package is one decision, so it gets one point and no meaningless zero-length arrow.
+    oracle["best_deal_index"] = model_index
+    report = _run_harness(viz.render_episode_html(p),
+                          [{"counterfactual": {"event": "focus"}}], tmp_path / "same")
+    snap = report["steps"][1]
+    assert snap["cf_overlay"] == "agree-propose" and len(snap["cf_marks"]) == 1 and not snap["cf_arrow"]
+
+
+def test_model_package_links_open_the_same_large_frontier_preview(payload, tmp_path):
+    """Every named package in the transcript is one interaction, not rational packages as previews while model
+    packages unexpectedly jump away. A model proposal gets the same hover/focus/pin card with its point plotted."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    report = _run_harness(viz.render_episode_html(payload),
+                          [{"package": {"event": "focus"}}, {"package": {"event": "click"}}], tmp_path)
+    assert report["ok"] and not report["errors"]
+    loaded, focused, pinned = report["steps"]
+    assert loaded["model_package_links"] > 0 and loaded["rational_package_links"] > 0
+    assert focused["cf_card_on"] and focused["cf_overlay"] == "model-package"
+    assert len(focused["cf_marks"]) == 1 and focused["cf_marks"][0]["fill"] == "var(--s1)"
+    assert not focused["cf_arrow"] and "same deal space as the main frontier" in focused["cf_note"]
+    assert pinned["cf_card_pinned"]
+    h = viz.render_episode_html(payload)
+    assert "[data-deal]:not([data-counterfactual]):not([data-package-preview])" in h
+
+
+def test_reasoning_is_inline_above_the_message_with_provenance_and_escaped_lines(payload, tmp_path):
+    """Scratchpad is no longer a disclosure. It stays visually separate from the public message, preserves its
+    provenance and line breaks, and treats model-supplied markup as text."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    import copy
+    p = copy.deepcopy(payload)
+    p["turns"][0]["reasoning"] = "first line\n<script>unsafe()</script>"
+    p["turns"][0]["reasoning_provenance"] = "stored-test"
+    p["turns"][0]["action"]["message"] = "public message"
+    report = _run_harness(viz.render_episode_html(p), [], tmp_path)
+    assert report["ok"] and not report["errors"]
+    snap = report["steps"][0]
+    assert snap["reasoning_before_message"]
+    assert "Reasoning / scratchpad [stored-test]" in snap["reasoning_text"]
+    assert "first line<script>unsafe()</script>" in snap["reasoning_text"].replace("\n", "")
+    assert "&lt;script&gt;unsafe()&lt;/script&gt;" in snap["reasoning_html"]
+    assert "<br>" in snap["reasoning_html"]
 
 
 def test_conversation_tab_is_the_public_record_and_nothing_else(episode):
@@ -1078,6 +1271,29 @@ def test_issue_tab_states_the_viewer_is_omniscient_on_a_private_game(payload):
     public = json.loads(json.dumps(payload))
     public["game"]["protocol"]["info"] = "public"
     assert "omniscient" not in _pane(viz.render_episode_html(public), "issues")
+
+
+def test_private_oracle_is_labeled_as_omniscient_hindsight(payload):
+    """PRIVATE best-response annotations use the complete game table, so the viewer must never imply that the
+    acting seat could implement the displayed counterfactual from its information set."""
+    private = json.loads(json.dumps(payload))
+    private["game"]["protocol"]["info"] = "private"
+    h = viz.render_episode_html(private)
+    info = _pane(h, "info")
+    assert _missing(info, "PRIVATE episode: this oracle is omniscient", "every party's hidden score sheet",
+                    "not actions or regret from a policy the acting seat could implement", "backward induction") == []
+    assert "using the information available to the acting seat" not in h
+    assert "omniscient hindsight oracle" in h
+    assert "hindsight value gap" in h
+    assert "what a rational agent would have done" not in h
+
+
+def test_full_oracle_distinguishes_shared_information(payload):
+    full = json.loads(json.dumps(payload))
+    full["game"]["protocol"]["info"] = "full"
+    h = viz.render_episode_html(full)
+    assert _missing(_pane(h, "info"), "FULL episode:", "also revealed to the participants") == []
+    assert "full-information oracle" in h
 
 
 def test_sidebar_degrades_without_a_game(episode):
@@ -1412,10 +1628,19 @@ def test_the_page_script_runs_in_a_dom_and_the_sidebar_follows_the_scroll(payloa
 
     # the frontier tab draws the shared chart, restricted to the proposals up to the turn in view. A proposal the
     # reader has not reached is the same series at a different time, so it is ghosted by WEIGHT — spending a
-    # fourth hue on it would collide with the solution points under deuteranopia (measured ΔE 2.0).
+    # fourth trajectory hue on it would collide with the solution points under deuteranopia (measured ΔE 2.0).
     assert frontier["mini_marks"] > 0 and "tabled by turn" in frontier["mini_note"]
     assert frontier["ghosted_marks"] > 0, "proposals after the turn in view must be ghosted, not dropped"
-    assert set(frontier["mini_fills"]) <= {"var(--s1)", "var(--s2)", "var(--s3)"}, "three categorical slots, still"
+    assert set(frontier["mini_fills"]) <= {
+        "var(--s1)", "var(--s2)", "var(--s3)", "var(--reference-alt)"
+    }, "three trajectory slots plus the redundant solution-reference accent"
+    by_label = {m["label"].split()[0]: m for m in frontier["mini_solution_marks"]}
+    assert {"UTIL", "MNW"} <= by_label.keys()
+    assert all(by_label[label]["kind"] == "triangle" and
+               by_label[label]["fill"] == "var(--reference-alt)" and
+               by_label[label]["tag"] == "polygon" for label in ("UTIL", "MNW"))
+    assert all(by_label[label]["kind"] == "star" and by_label[label]["fill"] == "var(--s3)"
+               for label in ("NBS", "KS", "EGAL"))
 
     # a pinned seat survives a repeated observation and is released the next time the reader actually moves
     assert pinned["issue_seat_shown"] == [payload["seats"][0]["name"]] and "pinned" in pinned["sync_note"]

@@ -31,6 +31,7 @@ does the geometry).
 - **Issues** shows the acting seat's private valuation of each issue, with a marker on the option the deal on the
   table picks. The bars, ticks and threshold line come from the server-rendered SVG; the marker is placed by
   reading each tick's own ``data-y``, so the browser never re-derives the scale.
+- **Info** is a standing reading guide. Inline information buttons open it directly at the oracle explanation.
 
 The seat shown in the issue tab can be pinned with the picker; the next time scrolling changes which turn is in
 view the pin is released, because a pin that silently survived a scroll is how a reader ends up reading one
@@ -68,6 +69,16 @@ function mountSidebar(cfg) {
     if (key === "chat") scrollChatTo(current);
   }
   tabs.forEach(t => t.addEventListener("click", () => showTab(keyOf(t))));
+  /* Measurements outside the sidebar link into the standing guide. Scroll the PANE, not the whole document,
+     because the sidebar itself is sticky and moving the transcript would destroy the reader's place. */
+  document.addEventListener("click", (ev) => {
+    const link = ev.target.closest && ev.target.closest("[data-info-target]");
+    if (!link) return;
+    ev.preventDefault();
+    showTab("info");
+    const pane = $("pane-info"), target = $(link.dataset.infoTarget);
+    if (pane && target) pane.scrollTop = Math.max(0, target.offsetTop - pane.offsetTop - 8);
+  });
   function cycleTab(delta) {
     if (!tabs.length) return;
     const at = tabs.findIndex(t => keyOf(t) === activeTab());
@@ -103,10 +114,10 @@ function mountSidebar(cfg) {
     const marks = [];
     if (!G) return marks;
     Object.entries(G.solutions || {}).forEach(([name, pt]) => marks.push({
-      index: pt.index, kind: "star", color: "s3", label: pt.label, r: 6,
-      title: pt.label + " — " + name, role: "solution" }));
+      index: pt.index, ...solutionMarkStyle(name), label: pt.label, r: 6,
+      title: pt.label + " — " + name, role: "solution", concept: name }));
     (G.party_best || []).forEach(pb => marks.push({
-      index: pb.index, kind: "diamond", color: "s3", r: 4.5, role: "party_best",
+      index: pb.index, kind: "diamond", color: "s3", r: 4.5, ...partyBestLabel(G, pb), role: "party_best",
       title: "best efficient deal for " + seatName(G, pb.party) + " (" + pb.agent + ")" }));
     TRAJ.forEach(p => {
       const later = p.turn_idx > upto;

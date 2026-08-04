@@ -29,7 +29,7 @@ from pathlib import Path
 from .chrome import distance_to_nbs, inject_nav, nav_group
 from .compare import DEFAULT_PAIR_KEY, pair_runs
 from .episode import RunDir
-from .page import render_compare_html, render_episode_html, render_index_html
+from .page import preference_visibility, render_compare_html, render_episode_html, render_index_html
 
 
 def _link_pages(paths: list[Path], rows: list[dict]) -> None:
@@ -103,6 +103,7 @@ def export_run(run: str | Path, out_dir: str | Path, *, limit: int | None = None
         (out_dir / name).write_text(render_episode_html(payload))
         paths.append(out_dir / name)
         rows.append({"href": name, "label": ep["episode_id"], "model": ep.get("model"), "arm": ep.get("arm"),
+                     "visibility": preference_visibility(payload),
                      "instance": ep.get("instance_id"), "seed": ep.get("seed"), "deal": bool(out.get("deal")),
                      "primary": out.get("primary"), "dist_nbs": distance_to_nbs(payload),
                      "usw": out.get("usw"), "esw": out.get("esw"),
@@ -111,7 +112,11 @@ def export_run(run: str | Path, out_dir: str | Path, *, limit: int | None = None
     _link_pages(paths, rows)
     note = (f"{len(rows)} episode(s) from <code>{run_dir.root}</code>. "
             + (f"{len(failures)} episode(s) failed to render." if failures else ""))
-    (out_dir / "index.html").write_text(render_index_html(rows, f"Episodes — {run_dir.root.name}", note))
+    readme_path = run_dir.root / "README.md"
+    readme = readme_path.read_text() if readme_path.is_file() else ""
+    (out_dir / "index.html").write_text(
+        render_index_html(rows, f"Episodes — {run_dir.root.name}", note, readme)
+    )
     manifest = {"run": str(run_dir.root), "out_dir": str(out_dir), "n_episodes": len(rows),
                 "index": str(out_dir / "index.html"), "failures": failures,
                 "pages": [str(out_dir / r["href"]) for r in rows]}
@@ -153,6 +158,7 @@ def export_comparison(left_run: str | Path, right_run: str | Path, out_dir: str 
                               + (f" · swapped {', '.join(f['name'] for f in focal)}" if focal else
                                  " · no seat swap"),
                      "model": f"{le.get('model')} vs {re_.get('model')}", "arm": le.get("arm"),
+                     "visibility": preference_visibility(cmp_payload["left"]),
                      "instance": le.get("instance_id"), "seed": le.get("seed"),
                      "deal": bool((cmp_payload["right"].get("outcome") or {}).get("deal")),
                      "primary": scores.get("primary score", {}).get("delta"),

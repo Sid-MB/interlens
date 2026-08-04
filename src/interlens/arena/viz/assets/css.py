@@ -42,7 +42,8 @@ _DARK = """
  color-scheme:dark;
  --surface-1:#1a1a19; --surface-2:#222220; --plane:#0d0d0d; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
  --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10); --ring-2:rgba(255,255,255,.18);
- --s1:#3987e5; --s2:#d95926; --s3:#199e70; --up:#0ca30c; --shadow:0 1px 2px rgba(0,0,0,.5);
+ --s1:#3987e5; --s2:#d95926; --s3:#199e70; --reference-alt:#b69cff;
+ --up:#0ca30c; --shadow:0 1px 2px rgba(0,0,0,.5);
 """
 
 CSS = """
@@ -50,7 +51,7 @@ CSS = """
  color-scheme:light;
  --surface-1:#fcfcfb; --surface-2:#f3f2ef; --plane:#f9f9f7; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
  --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10); --ring-2:rgba(11,11,11,.18);
- --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a;
+ --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --reference-alt:#7c3aed;
  --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --critical:#d03b3b; --up:#006300;
  --shadow:0 1px 2px rgba(11,11,11,.06);
  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
@@ -79,8 +80,14 @@ kbd{border:1px solid var(--ring-2);border-radius:4px;padding:1px 5px;background:
 .sub{color:var(--ink-2);font-size:var(--t-md)}
 .muted{color:var(--muted)}
 .neg{color:var(--critical)} .pos{color:var(--up)} .zero{color:var(--muted)}
+.visibility{font-size:var(--t-xs);font-weight:650;letter-spacing:.04em}
 .card{background:var(--surface-1);border:1px solid var(--ring);border-radius:var(--r-3);
  padding:var(--sp-4);margin-bottom:var(--sp-3)}
+.run-readme{margin-top:var(--sp-3)}
+.run-readme>:first-child{margin-top:0}.run-readme>:last-child{margin-bottom:0}
+.run-readme h1{font-size:var(--t-lg)}.run-readme h2{margin-top:var(--sp-4)}
+.run-readme p,.run-readme ul,.run-readme ol,.run-readme blockquote{max-width:100ch}
+.run-readme blockquote{margin-left:0;padding-left:var(--sp-3);border-left:3px solid var(--ring-2);color:var(--ink-2)}
 
 /* --- top bar: run identity, episode navigation, the quick read, the controls ------------------------------ */
 .topbar{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;
@@ -97,6 +104,8 @@ kbd{border:1px solid var(--ring-2);border-radius:4px;padding:1px 5px;background:
  font-variant-numeric:tabular-nums}
 .quick b{color:var(--ink);font-weight:600}
 .quick .k{color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.04em}
+.quick .prefvisquick{border-left:2px solid var(--s1);padding-left:var(--sp-2)}
+.quick .prefvisquick b{color:var(--s1);text-transform:uppercase;letter-spacing:.04em}
 a.disabled,button:disabled{opacity:.38;pointer-events:none}
 
 /* --- controls -------------------------------------------------------------------------------------------- */
@@ -135,6 +144,14 @@ button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible,su
 .strip .n{font-size:var(--t-xs);color:var(--ink-2)}
 .strip .stat.bad .v{color:var(--critical)}
 
+/* Public preferences are the exceptional experimental condition, so they are called out at the page top and
+   in the sticky quick read. Private is the default and deliberately emits no corresponding banner. */
+.prefvis{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;margin:var(--sp-2) 0 var(--sp-3);
+ padding:7px var(--sp-3);border:1px solid color-mix(in oklab,var(--s1) 35%,var(--ring));border-left:3px solid var(--s1);
+ border-radius:var(--r-2);background:color-mix(in oklab,var(--s1) 7%,var(--surface-1));font-size:var(--t-sm)}
+.prefvis .k{font-size:var(--t-xs);color:var(--ink-2);text-transform:uppercase;letter-spacing:.05em}
+.prefvis strong{color:var(--s1);letter-spacing:.05em}
+
 /* --- layout ---------------------------------------------------------------------------------------------- */
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:var(--sp-3);align-items:start}
 aside{position:sticky;top:calc(var(--topbar) + var(--sp-2));max-height:calc(100vh - var(--topbar) - var(--sp-4));
@@ -171,6 +188,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:var(--sp-1) 0;background:
 .legend span{display:flex;align-items:center;gap:5px;white-space:nowrap}
 .swatch{width:10px;height:10px;border-radius:50%;border:2px solid var(--surface-1);flex:none}
 .swatch.sq{border-radius:2px} .swatch.di{border-radius:2px;transform:rotate(45deg)}
+.swatch.tri{border:0;border-radius:0;clip-path:polygon(50% 0,100% 100%,0 100%)}
 .chartwrap{overflow-x:auto;position:relative}
 svg{display:block;max-width:100%;height:auto;touch-action:pan-y}
 svg text{fill:var(--ink-2);font-size:11px;font-family:system-ui,sans-serif}
@@ -179,6 +197,7 @@ svg .axisline{stroke:var(--axis);stroke-width:1}
 svg .axistitle{fill:var(--muted);font-size:11px}
 svg .lab{fill:var(--ink);font-size:10.5px;font-weight:600;paint-order:stroke;
  stroke:var(--surface-1);stroke-width:3px;stroke-linejoin:round}
+svg .lab.partybest{fill:var(--s3);font-size:8.5px;font-weight:600;letter-spacing:.01em;stroke-width:2.5px}
 svg .dot{fill:var(--muted);opacity:.35}
 svg .front{fill:none;stroke:var(--ink-2);stroke-width:1.5;opacity:.75}
 svg .envfill{fill:var(--ink-2);opacity:.07}
@@ -186,6 +205,8 @@ svg .envline{fill:none;stroke:var(--ink-2);stroke-width:2;opacity:.35}
 svg .mark{stroke:var(--surface-1);stroke-width:2;cursor:pointer}
 svg .path1{fill:none;stroke:var(--s1);stroke-width:2;opacity:.85}
 svg .path2{fill:none;stroke:var(--s2);stroke-width:2;opacity:.85}
+svg .cfpath{fill:none;stroke:var(--critical);stroke-width:2.5;stroke-dasharray:8 6;opacity:.95}
+svg .cfpath.proposal{stroke:var(--s2)}
 svg .mark.ghost{opacity:.3;stroke-width:1}
 svg .sel{stroke:var(--ink);stroke-width:2.5}
 svg .pinned{stroke:var(--ink);stroke-width:3}
@@ -294,9 +315,24 @@ svg .infodot:hover text,svg .infodot:focus-visible text{fill:var(--s1)}
 .col.acted{border-top:2px solid var(--s1)} .col.oracle{border-top:2px solid var(--s2)}
 .act{font-weight:600;font-size:var(--t-md)}
 .deal{font-size:var(--t-sm);color:var(--ink-2);margin-top:3px}
+.cfcontext{font-size:var(--t-xs);line-height:1.35;color:var(--ink-2);margin:2px 0 5px;max-width:48ch}
+.reasoning{color:var(--ink-2);font-size:var(--t-sm);line-height:1.45;margin:var(--sp-2) 0}
+.reasoninghd{margin-bottom:2px}.reasoningbody{white-space:normal;overflow-wrap:anywhere}
 .msg{border-left:3px solid var(--grid);padding-left:9px;margin:var(--sp-2) 0;font-size:var(--t-md)}
 .gap{border:1px dashed var(--axis);border-radius:var(--r-1);padding:8px 10px;font-size:var(--t-sm);
  color:var(--ink-2);background:var(--plane)}
+
+/* The package link's large frontier preview. It is its own interactive surface because it contains the shared
+   chart; hover can cross from link to card, while click/touch pins it and Escape dismisses it. */
+.cfcard{position:fixed;left:0;top:0;z-index:70;width:min(700px,calc(100vw - 24px));max-height:min(86vh,650px);
+ overflow:auto;opacity:0;visibility:hidden;pointer-events:none;background:var(--surface-1);
+ border:1px solid var(--ring-2);border-radius:var(--r-2);box-shadow:0 10px 34px rgba(0,0,0,.22),var(--shadow);
+ padding:var(--sp-3);color:var(--ink);transition:opacity .08s linear}
+.cfcard.on{opacity:1;visibility:visible;pointer-events:auto}.cfcard.pinned{border-color:var(--s1)}
+.cfcardhd{display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp-2);font-size:var(--t-sm)}
+.cfcardnote{font-size:var(--t-xs);color:var(--ink-2);margin:2px 0 var(--sp-1)}
+.cfcard .compactchart{overflow:hidden}.cfcard .compactchart svg{width:100%;max-height:430px}
+.cfcard .compactchart .infodot{display:none}.cfcard .hfoot{font-size:var(--t-xs);color:var(--muted)}
 
 /* the turn scrubber: every turn as one chip, coloured by action type, fabricated ones ringed. One row that
    scrolls sideways rather than wrapping — a sticky element whose height depends on the turn count would push the

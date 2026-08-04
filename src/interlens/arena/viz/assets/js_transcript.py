@@ -74,22 +74,210 @@ function bindLazy(container, turns) {
   return byId;
 }
 
-function oracleColumn(t, game, oracle) {
+function oracleColumn(t, game, oracle, showInfoLinks) {
   const o = (t.oracles || {})[oracle];
-  if (!o) return `<div class="col oracle"><div class="hd">rational agent (${E(oracle)})</div>
+  const privateInfo = String((((game || {}).protocol || {}).info || "")).toLowerCase().startsWith("priv");
+  const heading = privateInfo ? `omniscient hindsight oracle (${E(oracle)})` : `full-information oracle (${E(oracle)})`;
+  const gapLabel = privateInfo ? "hindsight value gap" : "value improvement available";
+  if (!o) return `<div class="col oracle"><div class="hd">${heading}</div>
     <div class="gap">This run carries no <code>${E(oracle)}</code> verdict for this turn, so there is no counterfactual to compare against.</div></div>`;
   const reg = o.divergence;
-  return `<div class="col oracle"><div class="hd">rational agent would (${E(oracle)})</div>
+  const context = counterfactualContext(t, o);
+  const previewIndex = counterfactualDealIndex(t, o);
+  return `<div class="col oracle"><div class="hd">${heading} would</div>
     <div class="act">${E(o.best_label)}</div>
-    ${o.best_deal_index !== null && o.best_deal_index !== undefined
-      ? `<div class="deal"><a href="#" data-deal="${o.best_deal_index}">${E(dealSummary(game, o.best_deal_index))}</a></div>` : ""}
+    ${context ? `<div class="cfcontext">${E(context)}</div>` : ""}
+    ${previewIndex !== null && previewIndex !== undefined
+      ? `<div class="deal"><a href="#" class="cflink" data-counterfactual data-turnidx="${t.idx}"
+          data-deal="${previewIndex}" aria-haspopup="dialog" aria-expanded="false"
+          aria-label="Preview the rational agent's package on the frontier">${E(dealSummary(game, previewIndex))}</a></div>` : ""}
     <table><tbody>
-      <tr><td>oracle value of the model's move</td><td>${N(o.chosen_value)}</td></tr>
-      <tr><td>oracle value of its own best</td><td>${N(o.best_value)}</td></tr>
-      <tr class="${typeof reg === "number" && reg > 0 ? "hi" : ""}"><td><b>regret</b></td>
-        <td class="${CLS(reg === 0 ? 0 : -reg)}"><b>${SIGN(reg === null || reg === undefined ? null : -reg)}</b></td></tr>
+      <tr><td>oracle's value of its best move ${infoLink("How the oracle scores moves", showInfoLinks)}</td><td>${N(o.best_value)}</td></tr>
+      <tr class="${typeof reg === "number" && reg > 0 ? "hi" : ""}"><td><b>${gapLabel}</b>
+        ${infoLink("How the oracle calculates the improvement gap", showInfoLinks)}</td>
+        <td class="${CLS(reg === 0 ? 0 : -reg)}"><b>${N(reg)}</b></td></tr>
     </tbody></table>
     ${o.flags && o.flags.length ? `<div class="pills">${o.flags.map(f => `<span class="pill"><b class="neg">${E(f)}</b></span>`).join("")}</div>` : ""}</div>`;
+}
+
+function decisionWord(label) {
+  const m = String(label || "").trim().toLowerCase().match(/^(accept|reject|propose|walk|vote|talk|none)\b/);
+  return m ? m[1] : "";
+}
+
+/* ACCEPT names the offer already standing on the table and therefore commonly carries no `best_deal_index`.
+   Every other constructive counterfactual previews the oracle's alternative package. */
+function counterfactualDealIndex(t, oracle) {
+  const standing = t.standing_deal_index;
+  if (decisionWord(oracle.best_label) === "accept" && standing !== null && standing !== undefined) return standing;
+  return oracle.best_deal_index;
+}
+
+/* The rationale describes the relationship between a rejection and the package shown directly under it. The
+   package is the best-response oracle's constructive alternative, not the offer being rejected. */
+function counterfactualContext(t, oracle) {
+  const decision = decisionWord(oracle.best_label);
+  if (decision === "reject" && oracle.best_deal_index !== null && oracle.best_deal_index !== undefined)
+    return `because the following package, better for ${t.seat}, is plausibly acceptable to the table in the remaining rounds`;
+  if (decision === "propose" && oracle.best_deal_index !== null && oracle.best_deal_index !== undefined)
+    return `because the following package is the strongest plausible remaining-round move for ${t.seat}`;
+  if (decision === "accept") return "because the package on the table is preferable to continuing from this state";
+  return "";
+}
+
+/* Build ONLY the semantic overlay; frontierChart remains the sole owner of axes, frontier geometry and marks. */
+function counterfactualOverlay(t, oracle) {
+  const model = decisionWord((t.action || {}).atype || (t.action || {}).label);
+  const rational = decisionWord(oracle.best_label);
+  const standing = t.standing_deal_index;
+  const modelProposal = (t.action || {}).deal_index;
+  const alternative = oracle.best_deal_index;
+  const valid = i => i !== null && i !== undefined;
+  const marks = [], paths = [];
+  let state = "other", note = "The highlighted package is the oracle's counterfactual move.";
+  if (model === rational && (model === "accept" || model === "reject") && valid(standing)) {
+    state = `agree-${model}`;
+    marks.push({ index: standing, kind: "circle", color: model === "accept" ? "good" : "critical", r: 9,
+      label: model === "accept" ? "ACCEPTED" : "REJECTED", title: `model and oracle both ${model}` });
+    note = `The model and oracle agree to ${model} the package currently under consideration.`;
+  } else if (model === "accept" && rational === "reject" && valid(standing)) {
+    state = "model-accept-rational-reject";
+    marks.push({ index: standing, kind: "circle", color: "good", r: 8, label: "MODEL ACCEPTED",
+      title: "package accepted by the model" });
+    if (valid(alternative)) {
+      marks.push({ index: alternative, kind: "diamond", color: "critical", r: 8, label: "ORACLE PROPOSAL",
+        title: "package the oracle would propose after rejecting" });
+      paths.push({ cls: "cfpath", indices: [standing, alternative], arrowEnd: true });
+    }
+    note = "The model accepted the current package; the oracle would reject it and move toward the proposed alternative.";
+  } else if (model === "reject" && rational === "accept" && valid(standing)) {
+    state = "model-reject-rational-accept";
+    marks.push({ index: standing, kind: "circle", color: "good", r: 9, label: "ORACLE: ACCEPT",
+      title: "package rejected by the model but accepted by the oracle" });
+    note = "The model rejected this package; the oracle would accept the same package.";
+  } else if (model === "propose" && rational === "propose" && valid(modelProposal) && valid(alternative)) {
+    if (Number(modelProposal) === Number(alternative)) {
+      state = "agree-propose";
+      marks.push({ index: modelProposal, kind: "circle", color: "s1", r: 9, label: "SAME PROPOSAL",
+        title: "model and oracle proposed the same package" });
+      note = "The model and oracle proposed the same package.";
+    } else {
+      state = "model-propose-rational-propose";
+      marks.push({ index: modelProposal, kind: "circle", color: "s1", r: 8, label: "MODEL PROPOSAL",
+        title: "package proposed by the model" });
+      marks.push({ index: alternative, kind: "diamond", color: "s2", r: 8, label: "ORACLE PROPOSAL",
+        title: "package the oracle would propose instead" });
+      paths.push({ cls: "cfpath proposal", indices: [modelProposal, alternative], arrowEnd: true,
+        arrowColor: "s2" });
+      note = "The model and oracle would propose different packages; the arrow points toward the oracle alternative.";
+    }
+  } else if (valid(alternative)) {
+    marks.push({ index: alternative, kind: "diamond", color: "critical", r: 8, label: "ORACLE MOVE",
+      title: "oracle's counterfactual package" });
+  }
+  return { state, marks, paths, note };
+}
+
+function modelPackageOverlay(t, index) {
+  return {
+    state: "model-package",
+    marks: [{ index, kind: "circle", color: "s1", r: 9, label: "MODEL PROPOSAL",
+      title: "package proposed by the model" }],
+    paths: [],
+    note: `The package ${t.seat} proposed on turn ${t.idx}, shown in the same deal space as the main frontier.`,
+  };
+}
+
+let COUNTERFACTUAL_CARD = null;
+function counterfactualCard() {
+  if (COUNTERFACTUAL_CARD) return COUNTERFACTUAL_CARD;
+  const node = document.createElement("div");
+  node.className = "cfcard";
+  node.setAttribute("role", "dialog");
+  node.setAttribute("aria-label", "Oracle counterfactual on the frontier");
+  node.setAttribute("tabindex", "-1");
+  document.body.appendChild(node);
+  let pinned = false, owner = null, closeTimer = null;
+  const cancelClose = () => { if (closeTimer) clearTimeout(closeTimer); closeTimer = null; };
+  function place(link) {
+    const box = link.getBoundingClientRect(), pad = 12;
+    const w = node.offsetWidth || 680, h = node.offsetHeight || 500;
+    let left = Math.min(box.left, (window.innerWidth || 1200) - w - pad);
+    let top = box.bottom + 10;
+    if (top + h > (window.innerHeight || 800) - pad) top = Math.max(pad, box.top - h - 10);
+    node.style.left = Math.max(pad, left) + "px"; node.style.top = top + "px";
+  }
+  function hide(force) {
+    if (pinned && !force) return;
+    cancelClose(); pinned = false; node.classList.remove("on", "pinned");
+    if (owner) owner.setAttribute("aria-expanded", "false"); owner = null;
+  }
+  function scheduleHide() { cancelClose(); closeTimer = setTimeout(() => hide(false), 90); }
+  function open(link, game, t, heading, overlay, doPin) {
+    cancelClose();
+    if (owner && owner !== link) owner.setAttribute("aria-expanded", "false");
+    owner = link; pinned = Boolean(doPin); link.setAttribute("aria-expanded", "true");
+    node.dataset.overlay = overlay.state;
+    node.innerHTML = `<div class="cfcardhd"><b>${E(heading)}</b><span class="muted">turn ${t.idx} · ${E(t.seat)}</span></div>
+      <div class="cfcardnote">${E(overlay.note)}</div><div class="cfchart"></div>
+      <div class="hfoot">${pinned ? "Pinned · press Escape or activate the package again to close" : "Hover or focus to inspect · activate to pin"}</div>`;
+    node.classList.toggle("pinned", pinned); node.classList.add("on"); place(link);
+    frontierChart(node.querySelector(".cfchart"), game, overlay.marks, overlay.paths, () => {},
+      { compact: true, interactive: false });
+  }
+  function show(link, game, t, oracle, doPin) {
+    open(link, game, t, oracle.best_label, counterfactualOverlay(t, oracle), doPin);
+  }
+  function showPackage(link, game, t, index, doPin) {
+    open(link, game, t, (t.action || {}).label || "MODEL PROPOSAL", modelPackageOverlay(t, index), doPin);
+  }
+  node.addEventListener("mouseenter", cancelClose);
+  node.addEventListener("mouseleave", scheduleHide);
+  node.addEventListener("focusin", cancelClose);
+  node.addEventListener("focusout", scheduleHide);
+  document.addEventListener("keydown", evt => { if (evt.key === "Escape") hide(true); });
+  COUNTERFACTUAL_CARD = { node, show, showPackage, hide, scheduleHide,
+    isPinned: () => pinned, owner: () => owner };
+  return COUNTERFACTUAL_CARD;
+}
+
+function bindCounterfactualCards(container, game, turns, oracleName) {
+  if (!game) return;
+  const byId = Object.fromEntries(turns.map(t => [String(t.idx), t]));
+  const card = counterfactualCard();
+  function bind(link, open) {
+    link.addEventListener("mouseenter", () => { if (!card.isPinned()) open(false); });
+    link.addEventListener("mouseleave", card.scheduleHide);
+    link.addEventListener("focus", () => { if (!card.isPinned()) open(false); });
+    link.addEventListener("blur", card.scheduleHide);
+    link.addEventListener("click", evt => {
+      evt.preventDefault(); evt.stopPropagation();
+      if (card.isPinned() && card.owner() === link) card.hide(true); else open(true);
+    });
+    link.addEventListener("keydown", evt => {
+      if (evt.key === " " || evt.key === "Enter") { evt.preventDefault(); link.click(); }
+    });
+  }
+  container.querySelectorAll("[data-counterfactual]").forEach(link => {
+    bind(link, pin => {
+      const t = byId[String(link.dataset.turnidx)], oracle = t && (t.oracles || {})[oracleName];
+      if (t && oracle) card.show(link, game, t, oracle, pin);
+    });
+  });
+  container.querySelectorAll("[data-package-preview]").forEach(link => {
+    bind(link, pin => {
+      const t = byId[String(link.dataset.turnidx)], index = Number(link.dataset.deal);
+      if (t && Number.isInteger(index)) card.showPackage(link, game, t, index, pin);
+    });
+  });
+}
+
+/* A real button, rather than a fragile hash into a hidden panel. The sidebar layer switches to Info and places
+   its oracle explanation in view; comparison pages have no tabbed sidebar, where the button safely does nothing. */
+function infoLink(label, enabled) {
+  if (!enabled) return "";
+  return `<button type="button" class="infobtn" data-info-target="info-oracle" aria-label="${E(label)}"
+    title="${E(label)}">i</button>`;
 }
 
 function turnCard(t, game, oracle, opts) {
@@ -103,10 +291,13 @@ function turnCard(t, game, oracle, opts) {
        so it looks like a deliberate pass — it is not. Detected by ${E(t.gen_failed_detected_by || "stamp")}.</div>`
     : "";
   const dealLink = a.deal_index !== null && a.deal_index !== undefined
-    ? `<div class="deal"><a href="#" data-deal="${a.deal_index}">${E(dealSummary(game, a.deal_index))}</a></div>`
+    ? `<div class="deal"><a href="#" class="cflink" data-package-preview data-turnidx="${t.idx}"
+        data-deal="${a.deal_index}" aria-haspopup="dialog" aria-expanded="false"
+        aria-label="Preview the model's package on the frontier">${E(dealSummary(game, a.deal_index))}</a></div>`
     : (a.deal_named ? `<div class="deal neg">proposal did not resolve to a legal deal: ${E(JSON.stringify(a.deal_named))}</div>` : "");
   const w = t.deal_welfare;
   const oracles = Object.keys(t.oracles || {});
+  const selectedOracle = (t.oracles || {})[oracle];
   const prefix = opts.idPrefix || "turn-";
   return `<article class="turn ${k.cls} k-${E(t.kind)}${t.gen_failed ? " fabricated" : ""}" id="${prefix}${t.idx}" data-turnidx="${t.idx}">
    <div class="turnhd" role="button" tabindex="0" aria-label="turn ${t.idx}, ${E(t.seat)}, ${E(k.word)}">
@@ -118,16 +309,17 @@ function turnCard(t, game, oracle, opts) {
    </div>
    ${opts.showCounterfactual ? `<div class="cols">
      <div class="col acted"><div class="hd">the model acted</div><div class="act">${E(a.label || a.atype)}</div>${dealLink}
-       ${w ? `<div class="pills"><span class="pill">USW <b>${N(w.usw, 1)}</b></span><span class="pill">worst-off <b class="${w.esw >= 0 ? "pos" : "neg"}">${SIGN(w.esw, 1)}</b></span>${w.n_below_threshold ? `<span class="pill"><b class="neg">${w.n_below_threshold}</b> below τ</span>` : ""}</div>` : ""}</div>
-     ${oracleColumn(t, game, oracle)}</div>`
+       ${w ? `<div class="pills"><span class="pill">USW <b>${N(w.usw, 1)}</b></span><span class="pill">worst-off <b class="${w.esw >= 0 ? "pos" : "neg"}">${SIGN(w.esw, 1)}</b></span>${w.n_below_threshold ? `<span class="pill"><b class="neg">${w.n_below_threshold}</b> below τ</span>` : ""}</div>` : ""}
+       ${selectedOracle ? `<table><tbody><tr><td>oracle's value of the model's move
+         ${infoLink("How the oracle scores the model's move", opts.infoLinks)}</td><td>${N(selectedOracle.chosen_value)}</td></tr></tbody></table>` : ""}</div>
+     ${oracleColumn(t, game, oracle, opts.infoLinks)}</div>`
     : `<div class="act">${E(a.label || a.atype)}</div>${dealLink}`}
    ${fabricatedNote}
+   ${t.reasoning ? `<div class="reasoning"><div class="reasoninghd"><b>Reasoning / scratchpad [${E(t.reasoning_provenance)}]</b></div>
+      <div class="reasoningbody">${E(t.reasoning).replace(/\r?\n/g, "<br>")}</div></div>`
+     : `<div class="sub muted">No reasoning recorded (provenance ${E(t.reasoning_provenance)}). Do not impute it.</div>`}
    ${a.message ? `<div class="msg">${E(a.message)}</div>` : ""}
    ${a.syntax_error ? `<div class="gap neg">syntax error: ${E(a.syntax_error)}</div>` : ""}
-   ${t.reasoning ? `<details data-lazy="reasoning" data-turnidx="${t.idx}">
-      <summary>Reasoning / scratchpad — provenance ${E(t.reasoning_provenance)}</summary>
-      <div class="body"><div class="lazybody"></div></div></details>`
-     : `<div class="sub muted">No reasoning recorded (provenance ${E(t.reasoning_provenance)}). Do not impute it.</div>`}
    ${viewPanel(t)}
    ${t.content ? `<details data-lazy="content" data-turnidx="${t.idx}"><summary>Raw turn text as the table saw it</summary>
       <div class="body"><div class="lazybody"></div></div></details>` : ""}

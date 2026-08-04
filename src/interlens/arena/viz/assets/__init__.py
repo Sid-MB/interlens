@@ -58,9 +58,10 @@ slot          episode page               comparison page
 3 (aqua)      normative solution points   normative solution points
 ============  =========================  ==========================
 
-Everything else is encoded by **shape plus a direct label**: the five solution concepts share slot 3 and are each
-labelled on the chart (``NBS``, ``KS``, ``UTIL``, ``EGAL``, ``MNW``), and the per-party ideal points share one
-diamond with the party named on hover and enumerated in the side panel's table. Deals themselves are chart chrome,
+Everything else is encoded by **shape plus a direct label**: NBS, KS, and EGAL are aqua stars; UTIL and MNW are
+violet triangles; every concept is directly labelled on the chart. Violet is a redundant reference-point accent,
+not a fourth trajectory identity—the triangle and labels carry the distinction without colour. The per-party
+ideal points share one aqua diamond with the party named on hover and enumerated in the side panel's table. Deals themselves are chart chrome,
 not a series: dominated deals are muted dots, frontier deals carry the secondary-ink ring. Slot 3 sits below 3:1
 against the light surface, which obligates the relief rule — hence the always-visible direct labels and the
 numeric table view that every chart ships with. Action types on the transcript are STATES rather than a series, so

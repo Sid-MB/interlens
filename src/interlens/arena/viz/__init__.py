@@ -20,7 +20,7 @@
 This is the shared renderer for negotiation episodes — the graphical counterpart of
 :mod:`interlens.arena.export`, which produces the flat markdown/HTML transcript. Where the exporter answers "what
 was said", this answers "was it any good": every deal placed against the exact Pareto frontier and the axiomatic
-solution points, every turn's action next to what a rational agent would have done there with the regret between
+solution points, every turn's action next to the post-hoc oracle counterfactual and its value gap
 them, and every prompt the models actually saw, expandable and marked with its provenance.
 
 Swapping a run in is one call — nothing about a run is hard-coded, and the same renderer serves any scenario whose
