@@ -63,7 +63,6 @@ function fillLazy(details, turnsById) {
     body.innerHTML = (viewOf(t) || []).map(msg =>
       `<div class="msgrole">${E(msg.role)}</div><pre>${E(msg.content)}</pre>`).join("");
   else if (details.dataset.lazy === "content") body.innerHTML = `<pre>${E(t.content)}</pre>`;
-  else if (details.dataset.lazy === "reasoning") body.innerHTML = `<pre>${E(t.reasoning)}</pre>`;
 }
 function bindLazy(container, turns) {
   const byId = Object.fromEntries(turns.map(t => [String(t.idx), t]));
@@ -72,6 +71,25 @@ function bindLazy(container, turns) {
     if (d.tagName === "DETAILS" && d.open && d.dataset.lazy) fillLazy(d, byId);
   }, true);
   return byId;
+}
+
+/* WHAT KIND of record the scratchpad text is, which the stored provenance token alone does not say: `full` and
+   `withheld_or_summarized` are internal spellings, and a reader deciding how much weight to give a scratchpad
+   needs to know whether they are reading the model's own reasoning stream, a provider's summary of it, or prose
+   the scaffold ASKED the seat to write in its response body. The raw token is kept beside the phrase so the
+   record is never hidden behind an interpretation of it, and an unrecognized token renders alone rather than
+   being described wrongly. */
+const REASONING_KIND = {
+  full: "verbatim chain of thought",
+  withheld_or_summarized: "provider summary — the raw chain of thought was not returned",
+};
+function reasoningLabel(t) {
+  const token = t.reasoning_provenance || "none";
+  // `elicited` wins over the token: the text came out of the response BODY, so a provider-stream provenance of
+  // "none" is not a contradiction to report, it is simply about a different channel.
+  if (t.reasoning_source === "elicited") return "elicited rationale";
+  const kind = REASONING_KIND[token];
+  return kind ? `${kind} · ${token}` : token;
 }
 
 function oracleColumn(t, game, oracle, showInfoLinks) {
@@ -110,30 +128,47 @@ function decisionWord(label) {
   return m ? m[1] : "";
 }
 
+/* The KIND of the recommended action. Reads the payload's `best_atype`, which is parsed server-side from the
+   stored action (`episode._oracle_payload`), and falls back to the display label only for records written before
+   that field existed — a semantic branch must not depend on how a label happened to be formatted. */
+function oracleDecision(oracle) {
+  return String((oracle || {}).best_atype || "").toLowerCase() || decisionWord((oracle || {}).best_label);
+}
+
 /* ACCEPT names the offer already standing on the table and therefore commonly carries no `best_deal_index`.
    Every other constructive counterfactual previews the oracle's alternative package. */
 function counterfactualDealIndex(t, oracle) {
   const standing = t.standing_deal_index;
-  if (decisionWord(oracle.best_label) === "accept" && standing !== null && standing !== undefined) return standing;
+  if (oracleDecision(oracle) === "accept" && standing !== null && standing !== undefined) return standing;
   return oracle.best_deal_index;
 }
 
-/* The rationale describes the relationship between a rejection and the package shown directly under it. The
-   package is the best-response oracle's constructive alternative, not the offer being rejected. */
+/* The COUNTERFACTUAL PACKAGE: one the reference would put on the table, as opposed to the offer already standing
+   there. An accept has none by construction — its deal IS the standing offer — which is why an accept
+   recommendation gets no explanatory context line below it. */
+function counterfactualPackageIndex(oracle) {
+  if (oracleDecision(oracle) === "accept") return null;
+  const index = oracle.best_deal_index;
+  return (index === null || index === undefined) ? null : index;
+}
+
+/* The rationale describes the relationship between a DECLINED offer and the package shown directly under it. The
+   package is the reference's constructive alternative, not the offer being declined — so this renders only when
+   such a package exists, and never for an accept, where inventing a "because" would attribute to the oracle a
+   comparison it did not make. */
 function counterfactualContext(t, oracle) {
-  const decision = decisionWord(oracle.best_label);
-  if (decision === "reject" && oracle.best_deal_index !== null && oracle.best_deal_index !== undefined)
+  const decision = oracleDecision(oracle);
+  if (!decision || decision === "accept") return "";
+  if (counterfactualPackageIndex(oracle) === null) return "";
+  if (decision === "reject")
     return `because the following package, better for ${t.seat}, is plausibly acceptable to the table in the remaining rounds`;
-  if (decision === "propose" && oracle.best_deal_index !== null && oracle.best_deal_index !== undefined)
-    return `because the following package is the strongest plausible remaining-round move for ${t.seat}`;
-  if (decision === "accept") return "because the package on the table is preferable to continuing from this state";
-  return "";
+  return `because the following package is the strongest plausible remaining-round move for ${t.seat}`;
 }
 
 /* Build ONLY the semantic overlay; frontierChart remains the sole owner of axes, frontier geometry and marks. */
 function counterfactualOverlay(t, oracle) {
   const model = decisionWord((t.action || {}).atype || (t.action || {}).label);
-  const rational = decisionWord(oracle.best_label);
+  const rational = oracleDecision(oracle);
   const standing = t.standing_deal_index;
   const modelProposal = (t.action || {}).deal_index;
   const alternative = oracle.best_deal_index;
@@ -364,7 +399,7 @@ function turnCard(t, game, oracle, opts) {
      ${oracleColumn(t, game, oracle, opts.infoLinks)}</div>`
     : `<div class="act">${E(a.label || a.atype)}</div>${dealLink}`}
    ${fabricatedNote}
-   ${t.reasoning ? `<div class="reasoning"><div class="reasoninghd"><b>Reasoning / scratchpad [${E(t.reasoning_provenance)}]</b></div>
+   ${t.reasoning ? `<div class="reasoning"><div class="reasoninghd"><b>Reasoning / scratchpad [${E(reasoningLabel(t))}]</b></div>
       <div class="reasoningbody">${E(t.reasoning).replace(/\r?\n/g, "<br>")}</div></div>`
      : `<div class="sub muted">No reasoning recorded (provenance ${E(t.reasoning_provenance)}). Do not impute it.</div>`}
    ${a.message ? `<div class="msg">${E(a.message)}</div>` : ""}

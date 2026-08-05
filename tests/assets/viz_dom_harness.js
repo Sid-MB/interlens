@@ -126,6 +126,16 @@ function driveChart(step) {
   return node.getAttribute("aria-label");
 }
 
+// A mark's centre in chart coordinates, whatever shape the renderer chose: circles carry cx/cy, the diamond and
+// the square are rects (the diamond additionally rotated about its own centre, which does not move it).
+function markCentre(node) {
+  if (node.hasAttribute("cx")) return [Number(node.getAttribute("cx")), Number(node.getAttribute("cy"))];
+  if (node.hasAttribute("x"))
+    return [Number(node.getAttribute("x")) + Number(node.getAttribute("width")) / 2,
+            Number(node.getAttribute("y")) + Number(node.getAttribute("height")) / 2];
+  return null;
+}
+
 function snapshot(label, hovered) {
   const shownSeat = all("#issue-seats .issueseat").filter(n => !n.hasAttribute("hidden"));
   const card = q(".hcard");
@@ -135,7 +145,9 @@ function snapshot(label, hovered) {
   const solutionMarks = (selector) => all(selector)
     .filter(n => /^(NBS|KS|UTIL|EGAL|MNW)\b/.test(n.getAttribute("aria-label") || ""))
     .map(n => ({ label: n.getAttribute("aria-label"), kind: n.dataset.kind,
-                 fill: n.getAttribute("fill"), tag: n.tagName.toLowerCase() }));
+                 fill: n.getAttribute("fill"), tag: n.tagName.toLowerCase(),
+                 box: [n.getAttribute("cx") || n.getAttribute("x") || n.getAttribute("points"),
+                       n.getAttribute("cy") || n.getAttribute("y")] }));
   all("#chart [data-mark]").forEach(n => {
     const deal = String(Number(n.dataset.deal));
     (marksByDeal[deal] ||= []).push({
@@ -195,14 +207,29 @@ function snapshot(label, hovered) {
     ghosted_marks: classesOf("#mini-chart [data-mark]").filter(c => /\bghost\b/.test(c)).length,
     mini_fills: Array.from(new Set(all("#mini-chart [data-mark]").map(n => n.getAttribute("fill")))).sort(),
     solution_marks: solutionMarks("#chart [data-mark]"),
+    solution_leaders: all("#chart .solutionleader").length,
     mini_solution_marks: solutionMarks("#mini-chart [data-mark]"),
     cf_card_on: Boolean(q(".cfcard.on")),
     cf_card_pinned: Boolean(q(".cfcard.pinned")),
     cf_overlay: (q(".cfcard") || { dataset: {} }).dataset.overlay || "",
     cf_note: (q(".cfcardnote") || {}).textContent || "",
     cf_context: (q("#turnlist .cfcontext") || {}).textContent || "",
-    cf_marks: all(".cfchart [data-mark]").map(n => ({ fill: n.getAttribute("fill"), label: n.getAttribute("aria-label") })),
+    // The COUNT as well as the first one: "no card anywhere explains an accept" is a statement about the whole
+    // transcript, and reading one node cannot distinguish an empty document from a correctly silent one.
+    cf_context_count: all("#turnlist .cfcontext").length,
+    // `at` is the mark's CENTRE regardless of shape, so a test can ask where a mark sits without knowing whether
+    // the renderer drew it as a circle or as a rotated rect: the arrow-direction assertion needs exactly that.
+    cf_marks: all(".cfchart [data-mark]").map(n => ({ fill: n.getAttribute("fill"), label: n.getAttribute("aria-label"),
+      deal: n.dataset.deal, at: markCentre(n) })),
     cf_arrow: Boolean(q(".cfchart .cfpath[marker-end]")),
+    // The marker sits on the polyline's LAST vertex, so the final point is where the arrowhead is. Reported as
+    // data because "an arrow exists" and "the arrow points at the oracle" are different claims.
+    cf_arrow_end: (() => {
+      const line = q(".cfchart .cfpath[marker-end]");
+      if (!line) return null;
+      const pts = (line.getAttribute("points") || "").trim().split(/\s+/);
+      return pts.length ? pts[pts.length - 1].split(",").map(Number) : null;
+    })(),
     cf_focusable_marks: all(".cfchart [data-mark][tabindex],.cfchart [data-mark][role=button]").length,
     cf_svg_label: (q(".cfchart svg") || {}).getAttribute && q(".cfchart svg").getAttribute("aria-label") || "",
     model_package_links: all("[data-package-preview]").length,

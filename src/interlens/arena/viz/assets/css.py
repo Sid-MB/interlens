@@ -202,6 +202,7 @@ svg .dot{fill:var(--muted);opacity:.35}
 svg .front{fill:none;stroke:var(--ink-2);stroke-width:1.5;opacity:.75}
 svg .envfill{fill:var(--ink-2);opacity:.07}
 svg .envline{fill:none;stroke:var(--ink-2);stroke-width:2;opacity:.35}
+svg .solutionleader{stroke:var(--ink-2);stroke-width:1;opacity:.5;pointer-events:none}
 svg .mark{stroke:var(--surface-1);stroke-width:2;cursor:pointer}
 svg .path1{fill:none;stroke:var(--s1);stroke-width:2;opacity:.85}
 svg .path2{fill:none;stroke:var(--s2);stroke-width:2;opacity:.85}
@@ -317,7 +318,12 @@ svg .infodot:hover text,svg .infodot:focus-visible text{fill:var(--s1)}
 .deal{font-size:var(--t-sm);color:var(--ink-2);margin-top:3px}
 .cfcontext{font-size:var(--t-xs);line-height:1.35;color:var(--ink-2);margin:2px 0 5px;max-width:48ch}
 .reasoning{color:var(--ink-2);font-size:var(--t-sm);line-height:1.45;margin:var(--sp-2) 0}
-.reasoninghd{margin-bottom:2px}.reasoningbody{white-space:normal;overflow-wrap:anywhere}
+.reasoninghd{margin-bottom:2px}
+/* Capped and SCROLLED, never truncated: a long thinking trace must stay complete and quotable — an ellipsis in a
+   scratchpad is a claim about the reasoning that the record does not support — while a 4000-token trace must not
+   push the next turn a screen and a half down. */
+.reasoningbody{white-space:normal;overflow-wrap:anywhere;max-height:22em;overflow-y:auto;
+ border-left:2px solid var(--grid);padding-left:9px}
 .msg{border-left:3px solid var(--grid);padding-left:9px;margin:var(--sp-2) 0;font-size:var(--t-md)}
 .gap{border:1px dashed var(--axis);border-radius:var(--r-1);padding:8px 10px;font-size:var(--t-sm);
  color:var(--ink-2);background:var(--plane)}
@@ -333,6 +339,11 @@ svg .infodot:hover text,svg .infodot:focus-visible text{fill:var(--s1)}
 .cfcardnote{font-size:var(--t-xs);color:var(--ink-2);margin:2px 0 var(--sp-1)}
 .cfcard .compactchart{overflow:hidden}.cfcard .compactchart svg{width:100%;max-height:430px}
 .cfcard .compactchart .infodot{display:none}.cfcard .hfoot{font-size:var(--t-xs);color:var(--muted)}
+/* The preview answers ONE question — where this decision sits relative to its alternative — so the cloud recedes
+   further than it does on the main chart and the case-relevant marks carry the ink. It stays DRAWN rather than
+   dropped: the two labelled points mean nothing without the space they sit in. The envelope is already the
+   faintest thing on the chart (.07/.35 above) and is left alone, because it is what orients the reader. */
+.cfcard .compactchart .dot{opacity:.2}.cfcard .compactchart .front{opacity:.38}
 
 /* the turn scrubber: every turn as one chip, coloured by action type, fabricated ones ringed. One row that
    scrolls sideways rather than wrapping — a sticky element whose height depends on the turn count would push the

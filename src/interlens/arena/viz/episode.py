@@ -171,17 +171,28 @@ def _oracle_records(episode: dict, annotation: dict | None) -> dict[int, dict[st
     return out
 
 
-def _action_label(action: Any) -> str:
-    """A compact human label for a stored action dict (``PROPOSE`` / ``ACCEPT P3`` / ``WALK`` / ``VOTE``)."""
+def _action_kind(action: Any) -> str:
+    """A stored action's kind, lowercased (``propose`` / ``accept`` / ``reject`` / ``walk`` / ``vote``), or ``""``.
+
+    Prefers the typed parse (``arena.actions.action_from_json``) and falls back to whichever of the three stored
+    spellings the record carries, so the SAME answer serves the page's label and the page's branching — a cell that
+    renders "REJECT P1" and a cell that asks "was this an accept?" must not disagree about one action."""
     if not isinstance(action, dict):
-        return "—"
+        return ""
     try:
         typed = action_from_json(action)
     except Exception:
         typed = None
-    kind = (action.get("action") or action.get("atype") or action.get("type") or "").upper()
     if typed is not None:
-        kind = typed.kind.upper()
+        return typed.kind.lower()
+    return str(action.get("action") or action.get("atype") or action.get("type") or "").lower()
+
+
+def _action_label(action: Any) -> str:
+    """A compact human label for a stored action dict (``PROPOSE`` / ``ACCEPT P3`` / ``WALK`` / ``VOTE``)."""
+    if not isinstance(action, dict):
+        return "—"
+    kind = _action_kind(action).upper()
     ref = action.get("offer_id") or action.get("offer") or action.get("id")
     return f"{kind} {ref}".strip() if ref else (kind or "—")
 
@@ -224,10 +235,15 @@ def _oracle_payload(name: str, rec: dict, geo: GameGeometry | None) -> dict:
     ``best_deal_index`` is the deal the oracle would have put on the table. It prefers the verdict's
     ``extra.best_response_deal`` — a best-response oracle's *unconstrained* optimum, which is the honest answer to
     "what would a rational agent have done" even when its own best scored action was to accept a standing offer —
-    and falls back to the deal carried by the best scored action."""
+    and falls back to the deal carried by the best scored action.
+
+    ``best_atype`` is the KIND of that recommended action (``accept`` / ``reject`` / ``propose`` / ``walk``), so a
+    page can branch on the recommendation — "explain a rejection, but never an accept" — by reading the stored
+    action rather than by pattern-matching the display label ``best_label`` was formatted into."""
     if rec.get("_direct_counterfactual"):
         action = rec.get("action")
         label = _action_label(action) if isinstance(action, dict) else str(action or "—").upper()
+        kind = _action_kind(action) if isinstance(action, dict) else str(action or "").lower()
         deal = rec.get("deal")
         direct_index = rec.get("deal_index")
         if not isinstance(direct_index, int):
@@ -242,6 +258,7 @@ def _oracle_payload(name: str, rec: dict, geo: GameGeometry | None) -> dict:
             "divergence": rec.get("divergence"),
             "flags": list(rec.get("flags") or []),
             "best_label": label,
+            "best_atype": kind,
             "best_deal_index": direct_index,
             "action_values": list(rec.get("action_values") or []),
             "extra": dict(rec.get("extra") or {}),
@@ -255,6 +272,7 @@ def _oracle_payload(name: str, rec: dict, geo: GameGeometry | None) -> dict:
     deal = extra.get("best_response_deal")
     if deal is None and isinstance(best, dict):
         deal = best.get("deal")
+    index_of = lambda d: (geo.deal_index(d) if (geo is not None and d is not None) else None)
     return {
         "oracle": name,
         "chosen_value": rec.get("chosen_value"),
@@ -262,7 +280,8 @@ def _oracle_payload(name: str, rec: dict, geo: GameGeometry | None) -> dict:
         "divergence": rec.get("divergence"),
         "flags": list(rec.get("flags") or verdict.get("flags") or []),
         "best_label": _action_label(best),
-        "best_deal_index": (geo.deal_index(deal) if (geo is not None and deal is not None) else None),
+        "best_atype": _action_kind(best),
+        "best_deal_index": index_of(deal),
         "action_values": _verdict_actions(verdict),
         "extra": {k: v for k, v in extra.items() if k != "surplus_loss"},
         "counterfactual": name in COUNTERFACTUAL_ORACLES,
@@ -466,6 +485,12 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
             "content": t.get("content"),
             "reasoning": parsed.get("thinking") or t.get("reasoning"),
             "reasoning_provenance": t.get("reasoning_provenance") or "none",
+            # WHICH of the two sources above the text came from, which `reasoning_provenance` cannot say: an
+            # ``elicited`` rationale is prose the scaffold ASKED the seat to write in its response body, and is a
+            # different kind of evidence from a ``provider`` reasoning stream the model produced before answering.
+            # A page that labelled a scaffold-elicited rationale as a chain of thought would overclaim.
+            "reasoning_source": ("elicited" if parsed.get("thinking")
+                                 else ("provider" if t.get("reasoning") else "none")),
             "n_tokens_out": t.get("n_tokens_out"), "n_tokens_in": t.get("n_tokens_in"),
             "cap": t.get("cap"), "stop_reason": t.get("stop_reason"),
             "view": view, "view_source": source,

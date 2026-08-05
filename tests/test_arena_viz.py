@@ -1218,7 +1218,11 @@ def test_rational_package_link_opens_reused_frontier_with_every_decision_overlay
         t["action"]["label"] = model_action.upper() + " P1"
         t["standing_deal_index"] = 0
         oracle = t["oracles"]["bestresponse"]
+        # Both, because a real payload always carries both: `best_atype` is the stored action's kind and the one
+        # the page branches on, `best_label` the display string built from it. Fabricating only the label would
+        # test a state no episode can be in.
         oracle["best_label"] = rational_action
+        oracle["best_atype"] = rational_action.split()[0].lower()
         oracle["best_deal_index"] = (None if rational_action.startswith("ACCEPT")
                                      else min(1, p["game"]["deals"]["n"] - 1))
         report = _run_harness(viz.render_episode_html(p),
@@ -1255,7 +1259,7 @@ def test_different_model_and_rational_proposals_get_two_points_and_a_directed_da
     t["action"].update({"atype": "propose", "label": "PROPOSE", "deal_index": model_index})
     t["standing_deal_index"] = model_index
     oracle = t["oracles"]["bestresponse"]
-    oracle.update({"best_label": "PROPOSE", "best_deal_index": rational_index})
+    oracle.update({"best_label": "PROPOSE", "best_atype": "propose", "best_deal_index": rational_index})
     report = _run_harness(viz.render_episode_html(p),
                           [{"counterfactual": {"event": "focus"}}], tmp_path / "different")
     assert report["ok"] and not report["errors"]
@@ -1309,6 +1313,153 @@ def test_reasoning_is_inline_above_the_message_with_provenance_and_escaped_lines
     assert "first line<script>unsafe()</script>" in snap["reasoning_text"].replace("\n", "")
     assert "&lt;script&gt;unsafe()&lt;/script&gt;" in snap["reasoning_html"]
     assert "<br>" in snap["reasoning_html"]
+
+
+def test_the_disagreement_arrow_points_at_the_rational_agents_package(payload, tmp_path):
+    """The dashed line carries a DIRECTION: it runs from what the model did toward what a rational agent would have
+    done. Reversed, the same two points and the same dashes would read as the opposite recommendation, so the
+    arrowhead's position is asserted against the oracle's own mark rather than merely counted."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    import copy
+    p = copy.deepcopy(payload)
+    t = next(row for row in p["turns"] if "bestresponse" in (row.get("oracles") or {}))
+    accepted, oracle_package = 0, min(1, p["game"]["deals"]["n"] - 1)
+    t["action"].update({"atype": "accept", "label": "ACCEPT P1"})
+    t["standing_deal_index"] = accepted
+    t["oracles"]["bestresponse"].update({"best_atype": "reject", "best_label": "REJECT P1",
+                                         "best_deal_index": oracle_package})
+    report = _run_harness(viz.render_episode_html(p),
+                          [{"counterfactual": {"event": "focus"}}], tmp_path)
+    assert report["ok"] and not report["errors"]
+    snap = report["steps"][1]
+    assert snap["cf_overlay"] == "model-accept-rational-reject" and snap["cf_arrow"]
+    by_deal = {m["deal"]: m for m in snap["cf_marks"]}
+    assert set(by_deal) == {str(accepted), str(oracle_package)}, "both endpoints must be plotted"
+    # Approximate because the polyline rounds its vertices to a tenth of a chart unit while a mark's centre is
+    # exact; a tenth of a unit is far below a mark's own radius, so it cannot hide a wrong endpoint.
+    assert snap["cf_arrow_end"] == pytest.approx(by_deal[str(oracle_package)]["at"], abs=0.15), \
+        "the arrowhead must land on the rational agent's package"
+    assert snap["cf_arrow_end"] != pytest.approx(by_deal[str(accepted)]["at"], abs=1.0), \
+        "and not on what the model accepted"
+
+
+def _context_lines(payload: dict, tmp_path: Path, name: str, *, atype: str, label: str,
+                   deal_index: int | None) -> dict:
+    """Force EVERY ``bestresponse`` recommendation to one action, render, run the page's script, and report what
+    the oracle cells said.
+
+    The turn cards are built by the page's own script, so a context line exists only in the executed DOM — an
+    assertion against the HTML string would be reading the renderer's source and would pass on a page that draws
+    nothing. Forcing every turn rather than one makes "no cell anywhere explains an accept" a statement about the
+    whole transcript."""
+    import copy
+    p = copy.deepcopy(payload)
+    for row in p["turns"]:
+        oracle = (row.get("oracles") or {}).get("bestresponse")
+        if oracle is not None:
+            oracle.update({"best_atype": atype, "best_label": label, "best_deal_index": deal_index})
+    report = _run_harness(viz.render_episode_html(p), [], tmp_path / name)
+    assert report["ok"] and not report["errors"]
+    return report["steps"][0]
+
+
+def test_only_a_declined_offer_gets_an_explanatory_context_line(payload, tmp_path):
+    """The context sentence is a claim about a package the reference would put on the table INSTEAD. An accept has
+    no such package — its deal is the offer already standing — so an accept recommendation must get no "because"
+    line at all rather than a plausible-sounding one the oracle never computed. Asserted beside a positive control
+    on the same fixture, so "absent" cannot pass by the cells simply failing to render."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    reject = _context_lines(payload, tmp_path, "reject", atype="reject", label="REJECT P1", deal_index=1)
+    assert reject["cf_context_count"] > 0, "positive control: a declined offer explains itself"
+    assert ("because the following package, better for" in reject["cf_context"]
+            and "is plausibly acceptable to the table in the remaining rounds" in reject["cf_context"])
+
+    accept = _context_lines(payload, tmp_path, "accept", atype="accept", label="ACCEPT P1", deal_index=1)
+    assert accept["cf_context_count"] == 0, "an accept recommendation must not be given a rationale"
+
+    # The other half of the gate: the sentence points at a package rendered directly below it, so a non-accept
+    # with no alternative package to show must stay silent too.
+    walk = _context_lines(payload, tmp_path, "walk", atype="walk", label="WALK", deal_index=None)
+    assert walk["cf_context_count"] == 0
+
+
+def test_the_recommendation_branch_reads_the_stored_action_not_the_display_label(payload, tmp_path):
+    """``best_label`` is a formatted string for a reader; ``best_atype`` is the stored action's kind. The page must
+    branch on the datum, or a change to how labels are formatted would silently redirect the semantics."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    stored_accept = _context_lines(payload, tmp_path, "stored-accept",
+                                   atype="accept", label="REJECT P1", deal_index=1)
+    assert stored_accept["cf_context_count"] == 0, "the stored accept wins over a reject-shaped label"
+    stored_reject = _context_lines(payload, tmp_path, "stored-reject",
+                                   atype="reject", label="ACCEPT P1", deal_index=1)
+    assert stored_reject["cf_context_count"] > 0, "the stored reject wins over an accept-shaped label"
+
+
+def test_the_payload_names_the_kind_of_each_recommended_action(payload):
+    """The field the branch above depends on is really on every oracle record, for both the verdict-shaped and the
+    directly-recorded counterfactual paths."""
+    scored = [o for t in payload["turns"] for o in (t.get("oracles") or {}).values()]
+    assert scored, "the fixture must carry oracle verdicts"
+    for o in scored:
+        assert "best_atype" in o
+        # It is the kind alone (lowercase, no offer reference), and it agrees with the label built from it.
+        assert o["best_atype"] == o["best_atype"].lower() and " " not in o["best_atype"]
+        if o["best_atype"]:
+            assert o["best_label"].lower().startswith(o["best_atype"])
+
+
+def test_the_scratchpad_says_what_kind_of_record_it_is(payload, tmp_path):
+    """``full`` and ``withheld_or_summarized`` are internal spellings. A reader weighing a scratchpad needs to know
+    whether it is the model's own stream, a provider's summary of it, or prose the scaffold asked for — and an
+    unrecognized token must be shown as itself rather than described wrongly."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    import copy
+    cases = [
+        ({"reasoning_provenance": "full", "reasoning_source": "provider"},
+         "Reasoning / scratchpad [verbatim chain of thought · full]"),
+        ({"reasoning_provenance": "withheld_or_summarized", "reasoning_source": "provider"},
+         "provider summary — the raw chain of thought was not returned · withheld_or_summarized]"),
+        # Elicited text came out of the response BODY, so the provider-stream token is about another channel and
+        # pairing "none" with it would read as a contradiction.
+        ({"reasoning_provenance": "none", "reasoning_source": "elicited"},
+         "Reasoning / scratchpad [elicited rationale]"),
+        ({"reasoning_provenance": "some-future-token", "reasoning_source": "provider"},
+         "Reasoning / scratchpad [some-future-token]"),
+    ]
+    for fields, expected in cases:
+        p = copy.deepcopy(payload)
+        p["turns"][0].update({"reasoning": "a thought", **fields})
+        report = _run_harness(viz.render_episode_html(p), [], tmp_path / fields["reasoning_provenance"])
+        assert report["ok"] and not report["errors"]
+        assert expected in report["steps"][0]["reasoning_text"], fields
+
+
+def test_the_scratchpad_is_capped_and_scrolled_rather_than_truncated(payload):
+    """A long trace must not push the next turn a screenful away, and must not be cut off either: an ellipsis in a
+    scratchpad is a claim about the reasoning that the record does not support."""
+    h = viz.render_episode_html(payload)
+    body = next(line for line in h.splitlines() if line.startswith(".reasoningbody{"))
+    assert "max-height" in body and "overflow-y:auto" in body
+    assert "text-overflow" not in body and "-webkit-line-clamp" not in body
+    # The scratchpad renders inline, so the disclosure path that used to fill it lazily must be gone rather than
+    # left behind as a branch nothing can reach.
+    assert 'data-lazy="reasoning"' not in h and '=== "reasoning"' not in h
+
+
+def test_the_decision_preview_lets_its_deal_cloud_recede(payload):
+    """The preview answers one question — where this decision sits relative to its alternative — so the cloud must
+    be quieter inside the card than on the main chart, while still being drawn: two labelled points mean nothing
+    without the space they sit in."""
+    h = viz.render_episode_html(payload)
+    main = next(line for line in h.splitlines() if line.startswith("svg .dot{"))
+    preview = next(line for line in h.splitlines() if ".cfcard .compactchart .dot{" in line)
+    opacity = lambda rule: float(re.search(r"opacity:([\d.]+)", rule).group(1))
+    assert opacity(preview) < opacity(main), "the preview's cloud must be recessive relative to the main chart's"
+    assert "display:none" not in preview, "recessive, not removed"
 
 
 def test_conversation_tab_is_the_public_record_and_nothing_else(episode):
@@ -1742,6 +1893,24 @@ def test_the_page_script_runs_in_a_dom_and_the_sidebar_follows_the_scroll(payloa
     # a pinned seat survives a repeated observation and is released the next time the reader actually moves
     assert pinned["issue_seat_shown"] == [payload["seats"][0]["name"]] and "pinned" in pinned["sync_note"]
     assert released["issue_seat_shown"] == [payload["seats"][0]["name"]], "the same turn is not a move"
+
+
+def test_colocated_solution_concepts_fan_out_without_changing_their_deal(payload, tmp_path):
+    """NBS, KS, EGAL and MNW frequently select one exact deal. They must remain five named, interactive
+    references rather than painting five polygons at one coordinate and leaving only the last one visible."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    shared = json.loads(json.dumps(payload))
+    index = shared["game"]["solutions"]["nash"]["index"]
+    for solution in shared["game"]["solutions"].values():
+        solution["index"] = index
+    report = _run_harness(viz.render_episode_html(shared), [], tmp_path)
+    assert report["ok"] and not report["errors"]
+    snap = report["steps"][0]
+    assert len(snap["solution_marks"]) == 5
+    assert len({tuple(mark["box"]) for mark in snap["solution_marks"]}) == 5, \
+        "co-located concepts need separate visible glyph positions"
+    assert snap["solution_leaders"] == 5, "each offset glyph must disclose its exact shared data coordinate"
 
 
 def test_the_other_page_kinds_still_run_clean_with_the_sidebar_layer_loaded(two_runs, tmp_path):
