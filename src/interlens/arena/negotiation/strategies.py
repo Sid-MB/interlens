@@ -902,14 +902,28 @@ class BayesianRationalPolicy(Policy):
         """
         return None
 
-    def _pick_proposal(self, prop_vals: np.ndarray, objective) -> int:
+    def _pick_proposal(self, prop_vals: np.ndarray, objective, tables, seat: int) -> int:
         """Which deal to table, given the expected value of proposing each one.
 
         Plain ``argmax`` — first index among the maximizers. Deliberately NOT tie-broken any more cleverly:
         this policy's stored proposals are replayed and re-annotated across completed campaigns, so changing
         which of several equally-valued deals it names would re-baseline them. Subclasses whose proposals are
-        not yet on disk override this (see :class:`_TableObjectivePolicy`)."""
+        not yet on disk override this (see :class:`_TableObjectivePolicy`).
+
+        ``tables`` and ``seat`` are unused here and passed for the override's benefit: a policy whose objective
+        does not price its own threshold needs them to avoid tabling a deal that is bad for itself.
+        """
         return int(np.argmax(prop_vals))
+
+    def _own_surplus_ok(self, tables, state, deal) -> bool:
+        """Whether signing ``deal`` is at least as good for THIS seat as never agreeing.
+
+        The single definition of the class's standing refusal — "never sign a deal that is worse for me than
+        no deal" — so the accept branch, the terminal vote and the proposal filter cannot drift apart on what
+        it means. Read off this seat's own surplus column, which is populated from its own sheet under private
+        information as well as full, so the test is valid in both conditions.
+        """
+        return float(tables.surplus[tables.index[tuple(int(x) for x in deal)], state.seat]) >= 0.0
 
     def _proposer_seq(self, state, n_agents: int) -> list:
         """Whose turn it is to propose, round by round, as the DP rollout assumes. Defaults to "starting from
@@ -952,8 +966,7 @@ class BayesianRationalPolicy(Policy):
             # than no deal for this seat and the scenario records it as an IR violation. A fairness variant
             # rarely wants to anyway (an unsatisfied party costs it a coalition member), but the guard makes
             # "never signs a deal that is bad for me" a property of the class rather than of the objective.
-            s = float(tables.surplus[tables.index[tuple(int(x) for x in deal)], state.seat])
-            if p_yes > 0.0 and yes_value >= no_value and s >= 0:
+            if p_yes > 0.0 and yes_value >= no_value and self._own_surplus_ok(tables, state, deal):
                 return Accept(state.standing)
 
         # else best-respond with a proposal, using the DP continuation value
@@ -965,7 +978,7 @@ class BayesianRationalPolicy(Policy):
         cont = np.full(tables.n_agents, disc * float(Vi[self._continuation_index(state)]))
         prop_vals = br.propose_values(tables, cont, min_accept=state.min_accept,
                                       veto_seats=state.veto_seats, objective=obj)
-        best_idx = self._pick_proposal(prop_vals, obj)
+        best_idx = self._pick_proposal(prop_vals, obj, tables, state.seat)
         if self.walk_if_hopeless and prop_vals[best_idx] <= 0 and r_left <= 1:
             return Walk()
         return Propose(tuple(int(x) for x in tables.deals[best_idx]))
@@ -981,9 +994,9 @@ class BayesianRationalPolicy(Policy):
         if values is None:
             return Walk()
         yes_value, no_value, p_yes, _ = values
-        idx = tables.index[tuple(int(x) for x in state.standing_deal)]
-        surplus = float(tables.surplus[idx, state.seat])
-        return (Accept(state.standing) if p_yes > 0.0 and yes_value >= no_value and surplus >= 0.0
+        return (Accept(state.standing)
+                if p_yes > 0.0 and yes_value >= no_value
+                and self._own_surplus_ok(tables, state, state.standing_deal)
                 else Reject(state.standing))
 
 
@@ -1000,22 +1013,46 @@ class BayesianRationalPolicy(Policy):
 class _TableObjectivePolicy(BayesianRationalPolicy):
     """Shared base for the fairness variants: everything except *which* welfare column they can see.
 
-    Adds one behaviour on top of :class:`BayesianRationalPolicy` — a tie-break. Proposing a deal is worth
-    ``p_pass * objective + (1 - p_pass) * continuation``, so every deal that cannot pass collapses to the same
-    number, and whenever holding out is worth exactly as much as the best passable deal the entire unpassable
-    set ties with it. Plain ``argmax`` then returns deal 0, which is an enumeration-order artifact rather than
-    a choice, and for a fairness agent it is a visible one: it tables an arbitrary package instead of the fair
-    one at no cost to itself. Among value-ties this therefore prefers the highest table welfare, then the
-    lowest index. A tie is by construction value-neutral, so this cannot lower the agent's expected payoff.
+    Adds two behaviours on top of :class:`BayesianRationalPolicy`, both about which deal it tables.
+
+    **It will not propose a deal that is below its own threshold.** The parent class enforces "never sign a
+    deal that is worse for me than no deal" on the accept branch and the terminal vote, but not on proposals —
+    and for a self-interested agent it does not need to, because a below-threshold deal has negative own
+    surplus and the payoff argmax rejects it automatically. A table objective supplies no such protection: it
+    scores own surplus through ``clip(u - tau, 0)``, so it is exactly *indifferent* between "me at my
+    threshold" and "me far beneath it", and will happily table a package that pays the other four handsomely
+    out of this seat's own hide. Measured, before this filter existed: the omniscient variant closed 4 of 120
+    games below its own threshold and the private-information one 15 of 55, in every case as the **proposer**
+    of the deal that trampled it, while the matched self-interested control violated individual rationality
+    zero times in 120. That is not the arm this is meant to be — an agent buying "fair" outcomes by
+    sacrificing itself is measuring self-abnegation, not fairness — so the refusal is made a property of the
+    class here too, on the one branch where the objective cannot supply it.
+
+    The filter falls back to the unrestricted argmax when NO deal clears this seat's threshold. In that game
+    there is nothing to protect and the agent should still name the best table outcome it can, exactly as it
+    would if it were about to walk.
+
+    **Tie-break.** Proposing a deal is worth ``p_pass * objective + (1 - p_pass) * continuation``, so every
+    deal that cannot pass collapses to the same number, and whenever holding out is worth exactly as much as
+    the best passable deal the entire unpassable set ties with it. Plain ``argmax`` then returns deal 0, which
+    is an enumeration-order artifact rather than a choice, and for a fairness agent it is a visible one: it
+    tables an arbitrary package instead of the fair one at no cost to itself. Among value-ties this therefore
+    prefers the highest table welfare, then the lowest index. A tie is by construction value-neutral, so this
+    cannot lower the agent's expected payoff.
     """
 
-    def _pick_proposal(self, prop_vals: np.ndarray, objective) -> int:
+    def _pick_proposal(self, prop_vals: np.ndarray, objective, tables, seat: int) -> int:
         vals = np.asarray(prop_vals, dtype=float)
-        top = vals >= vals.max() - 1e-12
-        if objective is None or top.sum() == 1:
+        if objective is None:
             return int(np.argmax(vals))
+        own_ok = np.asarray(tables.surplus[:, int(seat)], dtype=float) >= 0.0
+        candidates = np.flatnonzero(own_ok) if bool(own_ok.any()) else np.arange(vals.shape[0])
+        sub = vals[candidates]
+        top = candidates[sub >= sub.max() - 1e-12]
+        if top.size == 1:
+            return int(top[0])
         obj = np.asarray(objective, dtype=float)
-        return int(np.flatnonzero(top)[int(np.argmax(obj[top]))])
+        return int(top[int(np.argmax(obj[top]))])
 
 
 class FairnessOraclePolicy(_TableObjectivePolicy):
@@ -1029,7 +1066,10 @@ class FairnessOraclePolicy(_TableObjectivePolicy):
       point, and with no acceptance uncertainty (its own table full of IR indicators) is that point outright;
     - its **acceptance** runs the same optimal-stopping recursion in welfare units: take the standing offer iff
       the welfare it delivers is at least the welfare the oracle expects to reach by continuing;
-    - it still refuses to sign below its own threshold, per :meth:`BayesianRationalPolicy.act`.
+    - it still refuses to sign below its own threshold — on all three branches: accepting
+      (:meth:`BayesianRationalPolicy.act`), the terminal vote, and *proposing*
+      (:meth:`_TableObjectivePolicy._pick_proposal`, where the objective's ``clip(u - tau, 0)`` leaves it
+      indifferent to its own losses and so cannot supply the refusal itself).
 
     With no other seats to persuade this degenerates to the utilitarian planner's choice on the welfare
     objective — it simply names the fairest feasible deal — which is the sense in which it is a

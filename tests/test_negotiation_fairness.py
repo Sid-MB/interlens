@@ -36,7 +36,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from interlens.arena.actions import Accept, Propose
+from interlens.arena.actions import Accept, Propose, Walk
 from interlens.arena.negotiation import fairness, solutions
 from interlens.arena.negotiation.acceptance import AcceptanceOracle, offer_surplus_pmf
 from interlens.arena.negotiation.beliefs import BeliefOracle, BeliefState
@@ -379,3 +379,76 @@ def test_fit_belief_gives_every_consumer_the_same_posterior():
     assert isinstance(a, BeliefOracle) and set(a.states) == {1, 2}
     for opp in (1, 2):
         assert a.states[opp].posterior() == pytest.approx(b.states[opp].posterior())
+
+
+# --------------------------------------------------------------------------------------------------------- #
+# The refusal on the PROPOSE branch — the one the objective cannot supply for itself.
+# --------------------------------------------------------------------------------------------------------- #
+def _self_sacrifice_game():
+    """A game whose table-welfare optimum tramples seat 0.
+
+    One issue, two options. ``Y`` pays seat 0 well and the other four nothing; ``X`` pays the other four well
+    and puts seat 0 nine points under its threshold. Maximizing the table's welfare over a clipped own-surplus
+    column therefore points straight at ``X``, which is precisely the configuration where an objective that is
+    indifferent to its own losses will table a deal that harms the seat holding it.
+    """
+    space = DealSpace((Issue("I", ("X", "Y")),))
+    sheets = (ScoreSheet("p0", ((0.0, 20.0),), threshold=9.0),
+              *(ScoreSheet(f"p{i}", ((20.0, 0.0),), threshold=1.0) for i in range(1, 5)))
+    return GameSpec(space, sheets, rounds=3, info="full", proposer=0, chat=False)
+
+
+@pytest.mark.parametrize("policy_cls", [FairnessOraclePolicy, FairnessRationalPolicy])
+def test_fairness_policies_never_propose_a_deal_below_their_own_threshold(policy_cls):
+    """The regression this pins cost a campaign re-run. The parent class guards accepting and voting, but not
+    proposing — and it does not need to for a self-interested agent, whose own-surplus argmax rejects a
+    self-harming deal automatically. A table objective scores own surplus as ``clip(u - tau, 0)``, so it is
+    exactly indifferent between sitting at the threshold and sitting far below it, and will table a package
+    that pays everyone else out of this seat's own hide. Measured before the fix: the omniscient variant closed
+    4 of 120 campaign games below its own threshold and the private one 15 of 55, always as the proposer, while
+    the matched self-interested control violated individual rationality zero times in 120.
+    """
+    game = _self_sacrifice_game()
+    tables, _U, _tau = _tables_and_arrays(game)
+    state = NegotiationState(seat=0, sheet=game.sheets[0], space=game.space, round=1, deadline=game.rounds,
+                             tables=tables, opponents=(1, 2, 3, 4))
+    action = policy_cls()(state)
+    assert isinstance(action, Propose)
+    assert action.deal == (1,), "must table Y (its own IR option), not the table-welfare-maximal X"
+    assert game.sheets[0].surplus(action.deal) >= 0
+
+
+def test_the_objective_really_does_prefer_the_self_sacrificing_deal():
+    """Gives the test above its teeth: without the filter the objective's argmax IS the trampling deal, so the
+    assertion is checking the guard rather than a game where the two happen to coincide."""
+    game = _self_sacrifice_game()
+    tables, _U, _tau = _tables_and_arrays(game)
+    objective = fairness.mnw_objective(tables)
+    assert int(np.argmax(objective)) == 0, "expected X (index 0) to be the table-welfare optimum"
+    assert game.sheets[0].surplus((0,)) < 0
+
+
+def test_the_self_interested_agent_is_untouched_by_the_proposal_filter():
+    """The filter lives on the fairness base class only. The ordinary Bayesian agent's proposals are replayed
+    and re-annotated across completed campaigns, so its choice must not move."""
+    game = _self_sacrifice_game()
+    tables, _U, _tau = _tables_and_arrays(game)
+    state = NegotiationState(seat=0, sheet=game.sheets[0], space=game.space, round=1, deadline=game.rounds,
+                             tables=tables, opponents=(1, 2, 3, 4))
+    action = BayesianRationalPolicy()(state)
+    assert isinstance(action, Propose) and action.deal == (1,)
+    assert BayesianRationalPolicy()._pick_proposal(np.array([5.0, 1.0]), None, tables, 0) == 0
+
+
+def test_the_filter_falls_back_when_no_deal_clears_the_seats_threshold():
+    """In a game where every option is below this seat's threshold there is nothing to protect, and the agent
+    should still name the best table outcome rather than be left with an empty candidate set."""
+    space = DealSpace((Issue("I", ("X", "Y")),))
+    sheets = (ScoreSheet("p0", ((0.0, 1.0),), threshold=50.0),
+              ScoreSheet("p1", ((9.0, 0.0),), threshold=1.0),
+              ScoreSheet("p2", ((9.0, 0.0),), threshold=1.0))
+    game = GameSpec(space, sheets, rounds=3, info="full", proposer=0, chat=False)
+    tables, _U, _tau = _tables_and_arrays(game)
+    state = NegotiationState(seat=0, sheet=sheets[0], space=game.space, round=1, deadline=3, tables=tables,
+                             opponents=(1, 2))
+    assert isinstance(FairnessOraclePolicy()(state), (Propose, Walk))
