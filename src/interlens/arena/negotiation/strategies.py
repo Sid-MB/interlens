@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ...parsing import last_json_with_key
+from . import fairness
 from .oracle_context import Accept, Deal, GameTables, Pass, Propose, Reject, Walk, deal_list
 from .acceptance import AcceptanceOracle
 from .beliefs import BeliefOracle
@@ -766,6 +767,28 @@ class DemandFractionPolicy(GreedyAnchorPolicy):
 # --------------------------------------------------------------------------------------------------------- #
 # Headline composed rational agent.
 # --------------------------------------------------------------------------------------------------------- #
+def fit_belief(state: NegotiationState) -> BeliefOracle:
+    """A :class:`~interlens.arena.negotiation.beliefs.BeliefOracle` fitted to everything ``state`` publicly
+    reveals about the other seats — one posterior per opponent, updated from their observed offers.
+
+    Built FRESH per call rather than cached on a policy: it is fully determined by the offers in ``state`` and
+    ``update_from_offers`` rebuilds it from scratch anyway, so persisting it would buy nothing while making a
+    policy instance shared across concurrent seats race on mutable member state.
+
+    Module-level because two different consumers need the identical posterior — the acceptance-probability
+    table (:meth:`BayesianRationalPolicy._accept_prob_table`) and the fairness objective's opponent columns
+    (:meth:`FairnessRationalPolicy._objective`) — and a private-information agent whose two halves disagreed
+    about what it believes would not be one agent.
+    """
+    from .oracle_context import issue_sizes
+    belief = BeliefOracle(state.seat)
+    option_counts = issue_sizes(state.space, [state.sheet])
+    offers = (state.received_by_opponent or
+              ({opp: list(state.received) for opp in state.opponents} if state.opponents else {}))
+    belief.update_from_offers(offers, option_counts)
+    return belief
+
+
 class BayesianRationalPolicy(Policy):
     """The composed rational negotiator = belief oracle + acceptance oracle + best-response oracle.
 
@@ -811,17 +834,12 @@ class BayesianRationalPolicy(Policy):
         ``state.received`` and ``update_from_offers`` rebuilds it from scratch anyway, so persisting it would
         buy nothing and would make one policy instance shared across concurrent seats race on a mutable
         member (the reported 'dict changed size during iteration')."""
-        from .oracle_context import issue_sizes
         n = tables.n_agents
         if state.tables is not None:
             ap = (state.tables.surplus >= 0.0).astype(float)
             ap[:, state.seat] = 1.0
             return ap
-        belief = BeliefOracle(state.seat)
-        option_counts = issue_sizes(state.space, [state.sheet])
-        offers = (state.received_by_opponent or
-                  ({opp: list(state.received) for opp in state.opponents} if state.opponents else {}))
-        belief.update_from_offers(offers, option_counts)
+        belief = fit_belief(state)
         ap = np.ones((tables.n_deals, n))
         for opp, st in belief.states.items():
             ap[:, opp] = st.accept_prob_matrix(tables.deals_arr)   # vectorized over all deals
@@ -846,11 +864,14 @@ class BayesianRationalPolicy(Policy):
         return GameTables(list(deals), index, deals_arr, util, surplus, thr)
 
     @staticmethod
-    def _standing_vote_values(state, tables, ap, continuation: float):
+    def _standing_vote_values(state, tables, ap, continuation: float, *, objective=None):
         """Conditional yes/no EV for the live offer, including already-cast votes and fixed quorum/veto.
 
         Returns ``None`` when there is no resolvable standing offer, otherwise the public
         :func:`conditional_vote_values` tuple ``(yes_value, no_value, p_yes, p_no)``.
+
+        ``objective`` supplies the payoff column agreement is valued on (``None`` = this seat's own surplus);
+        ``continuation`` must already be in the same units, so both come from the same ``_objective`` call.
         """
         deal = state.standing_deal
         oid = state.standing
@@ -862,17 +883,53 @@ class BayesianRationalPolicy(Policy):
             # Legacy state blocks did not carry offer provenance. Proposer identity does not affect unanimity;
             # for an old numeric-quorum block, fall back deterministically rather than silently crashing.
             proposer = next(iter(state.opponents), state.seat)
+        payoff = tables.surplus[idx, state.seat] if objective is None else objective[idx]
         return conditional_vote_values(
-            ap, proposer, state.seat, idx, tables.surplus[idx, state.seat], continuation,
+            ap, proposer, state.seat, idx, payoff, continuation,
             min_accept=state.min_accept, veto_seats=state.veto_seats,
             forced_yes=state.offer_accepts.get(oid, ()),
             forced_no=set(state.offer_rejects.get(oid, ())) | set(state.walked_seats))
+
+    def _objective(self, state, tables) -> np.ndarray | None:
+        """The ``(|D|,)`` payoff column this policy maximizes, or ``None`` to maximize its OWN surplus.
+
+        This is the single seam between a self-interested negotiator and a fairness-seeking one. The whole
+        machinery below — proposal argmax, optimal-stopping reservation, yes/no vote comparison — is a function
+        of *some* payoff column; returning ``None`` (the default) plugs in ``tables.surplus[:, seat]`` and
+        recovers the classic best-response agent exactly, while returning a table-welfare column
+        (:mod:`~interlens.arena.negotiation.fairness`) makes the same agent optimize the table instead of
+        itself. Any column returned here must score no-deal at zero, since that is the recursion's base case.
+        """
+        return None
+
+    def _pick_proposal(self, prop_vals: np.ndarray, objective) -> int:
+        """Which deal to table, given the expected value of proposing each one.
+
+        Plain ``argmax`` — first index among the maximizers. Deliberately NOT tie-broken any more cleverly:
+        this policy's stored proposals are replayed and re-annotated across completed campaigns, so changing
+        which of several equally-valued deals it names would re-baseline them. Subclasses whose proposals are
+        not yet on disk override this (see :class:`_TableObjectivePolicy`)."""
+        return int(np.argmax(prop_vals))
+
+    def _proposer_seq(self, state, n_agents: int) -> list:
+        """Whose turn it is to propose, round by round, as the DP rollout assumes. Defaults to "starting from
+        me" — correct when the policy has no knowledge of the scenario's actual opening seat. A scenario that
+        offsets its opening proposer per episode overrides this so the rollout solves the order really played
+        (see the five-seat campaign's seed-aware seat)."""
+        return [(state.seat + k) % n_agents for k in range(n_agents)]
+
+    def _continuation_index(self, state) -> int:
+        """Which entry of the value-to-go array is "what I get if I do not close now". Defaults to the
+        one-step-ahead entry ``min(2, deadline + 1)``, i.e. a stationary next-round view; a policy that tracks
+        the true clock overrides it with ``min(round + 1, deadline + 1)``."""
+        return min(2, state.deadline + 1)
 
     def act(self, state: NegotiationState):
         disc = self.discount if self.discount is not None else float(state.discount)
         tables = self._tables(state)
         ap = self._accept_prob_table(state, tables)
-        seq = [(state.seat + k) % tables.n_agents for k in range(tables.n_agents)]
+        obj = self._objective(state, tables)
+        seq = self._proposer_seq(state, tables.n_agents)
         br = BestResponseOracle(state.seat, discount=disc, accept_prob=ap,
                                 min_accept=state.min_accept, veto_seats=state.veto_seats)
 
@@ -883,13 +940,18 @@ class BayesianRationalPolicy(Policy):
                 veto_seats=state.veto_seats)[0])
         acceptor = AcceptanceOracle(state.seat, discount=disc, accept_prob_fn=acc_fn)
         r_left = max(state.deadline - state.round + 1, 1)
-        v = acceptor.reservation(tables, r_left)
+        v = acceptor.reservation(tables, r_left, objective=obj)
 
-        # accept the standing offer if its surplus clears the optimal-stopping reservation
+        # accept the standing offer if its payoff clears the optimal-stopping reservation
         deal = state.standing_deal
-        vote_values = self._standing_vote_values(state, tables, ap, v)
+        vote_values = self._standing_vote_values(state, tables, ap, v, objective=obj)
         if deal is not None and state.standing is not None and vote_values is not None:
             yes_value, no_value, p_yes, _ = vote_values
+            # The yes/no comparison is in whatever units ``obj`` sets; the own-surplus guard is NOT — every
+            # variant of this policy refuses to sign below its own threshold, because agreeing there is worse
+            # than no deal for this seat and the scenario records it as an IR violation. A fairness variant
+            # rarely wants to anyway (an unsatisfied party costs it a coalition member), but the guard makes
+            # "never signs a deal that is bad for me" a property of the class rather than of the objective.
             s = float(tables.surplus[tables.index[tuple(int(x) for x in deal)], state.seat])
             if p_yes > 0.0 and yes_value >= no_value and s >= 0:
                 return Accept(state.standing)
@@ -899,11 +961,11 @@ class BayesianRationalPolicy(Policy):
             tables, state.seat, seq, state.deadline, disc, ap,
             br._model_opp_proposals(tables, None, min_accept=state.min_accept,
                                     veto_seats=state.veto_seats),
-            min_accept=state.min_accept, veto_seats=state.veto_seats)
-        cont = np.full(tables.n_agents, disc * float(Vi[min(2, state.deadline + 1)]))
+            min_accept=state.min_accept, veto_seats=state.veto_seats, objective=obj)
+        cont = np.full(tables.n_agents, disc * float(Vi[self._continuation_index(state)]))
         prop_vals = br.propose_values(tables, cont, min_accept=state.min_accept,
-                                      veto_seats=state.veto_seats)
-        best_idx = int(np.argmax(prop_vals))
+                                      veto_seats=state.veto_seats, objective=obj)
+        best_idx = self._pick_proposal(prop_vals, obj)
         if self.walk_if_hopeless and prop_vals[best_idx] <= 0 and r_left <= 1:
             return Walk()
         return Propose(tuple(int(x) for x in tables.deals[best_idx]))
@@ -914,7 +976,8 @@ class BayesianRationalPolicy(Policy):
             return Walk()
         tables = self._tables(state)
         ap = self._accept_prob_table(state, tables)
-        values = self._standing_vote_values(state, tables, ap, 0.0)
+        obj = self._objective(state, tables)
+        values = self._standing_vote_values(state, tables, ap, 0.0, objective=obj)
         if values is None:
             return Walk()
         yes_value, no_value, p_yes, _ = values
@@ -922,6 +985,109 @@ class BayesianRationalPolicy(Policy):
         surplus = float(tables.surplus[idx, state.seat])
         return (Accept(state.standing) if p_yes > 0.0 and yes_value >= no_value and surplus >= 0.0
                 else Reject(state.standing))
+
+
+# --------------------------------------------------------------------------------------------------------- #
+# Fairness-seeking variants: the SAME agent with the objective swapped.
+#
+# ``BayesianRationalPolicy`` answers "which move maximizes MY surplus". These two answer "which move maximizes
+# the TABLE's welfare" — normalized Nash welfare, the program's scale-invariant judgment metric — using an
+# otherwise byte-identical belief / best-response / optimal-stopping stack. The point of subclassing rather
+# than writing a new negotiator is exactly that: any difference these agents make at a table is attributable
+# to the objective and to nothing else about how they reason, and the pair separates the objective from the
+# information condition (the oracle knows every sheet; the algorithmic one must infer them).
+# --------------------------------------------------------------------------------------------------------- #
+class _TableObjectivePolicy(BayesianRationalPolicy):
+    """Shared base for the fairness variants: everything except *which* welfare column they can see.
+
+    Adds one behaviour on top of :class:`BayesianRationalPolicy` — a tie-break. Proposing a deal is worth
+    ``p_pass * objective + (1 - p_pass) * continuation``, so every deal that cannot pass collapses to the same
+    number, and whenever holding out is worth exactly as much as the best passable deal the entire unpassable
+    set ties with it. Plain ``argmax`` then returns deal 0, which is an enumeration-order artifact rather than
+    a choice, and for a fairness agent it is a visible one: it tables an arbitrary package instead of the fair
+    one at no cost to itself. Among value-ties this therefore prefers the highest table welfare, then the
+    lowest index. A tie is by construction value-neutral, so this cannot lower the agent's expected payoff.
+    """
+
+    def _pick_proposal(self, prop_vals: np.ndarray, objective) -> int:
+        vals = np.asarray(prop_vals, dtype=float)
+        top = vals >= vals.max() - 1e-12
+        if objective is None or top.sum() == 1:
+            return int(np.argmax(vals))
+        obj = np.asarray(objective, dtype=float)
+        return int(np.flatnonzero(top)[int(np.argmax(obj[top]))])
+
+
+class FairnessOraclePolicy(_TableObjectivePolicy):
+    """Omniscient **fairness oracle**: proposes and votes to maximize the table's normalized Nash welfare.
+
+    Reads every party's sheet (it requires the full-information ``state.tables``) and substitutes
+    :func:`~interlens.arena.negotiation.fairness.mnw_objective` for its own surplus column, so:
+
+    - its **proposal** is the deal maximizing expected table welfare given who will accept — which on a game
+      where some deal clears every threshold is exactly the discrete Nash Bargaining / Maximum Nash Welfare
+      point, and with no acceptance uncertainty (its own table full of IR indicators) is that point outright;
+    - its **acceptance** runs the same optimal-stopping recursion in welfare units: take the standing offer iff
+      the welfare it delivers is at least the welfare the oracle expects to reach by continuing;
+    - it still refuses to sign below its own threshold, per :meth:`BayesianRationalPolicy.act`.
+
+    With no other seats to persuade this degenerates to the utilitarian planner's choice on the welfare
+    objective — it simply names the fairest feasible deal — which is the sense in which it is a
+    "self-assembling mediator" rather than a negotiator.
+
+    Falls back to its own surplus (i.e. behaves as the ordinary Bayesian agent) if seated in a game with no
+    full-information tables, since table welfare is not computable from one sheet; use
+    :class:`FairnessRationalPolicy` for the private-information version instead of relying on that fallback.
+    """
+
+    name = "fairness-oracle"
+
+    def __init__(self, *, discount: float | None = None, walk_if_hopeless: bool = True,
+                 name: str = "fairness-oracle"):
+        super().__init__(discount=discount, walk_if_hopeless=walk_if_hopeless, name=name)
+
+    def _objective(self, state, tables):
+        """Exact table welfare from the known sheets, or ``None`` (own surplus) when no full-information
+        tables are available and the welfare of the other seats is therefore unknowable."""
+        if state.tables is None:
+            return None
+        return fairness.mnw_objective(state.tables)
+
+
+class FairnessRationalPolicy(_TableObjectivePolicy):
+    """Private-information **fairness algorithmic** agent: the same welfare objective, estimated under its
+    Bayesian posterior over the other seats' hidden sheets and thresholds.
+
+    Where :class:`FairnessOraclePolicy` reads the opponents' normalized surpluses, this reads their
+    *posterior-expected* normalized surpluses off the same opponent-type grid the ordinary rational agent uses
+    for acceptance probabilities (:func:`fit_belief`, then
+    :meth:`~interlens.arena.negotiation.beliefs.BeliefState.expected_normalized_surplus_matrix`), and its own
+    column exactly. So the two agents differ ONLY in what they know, which is what makes their gap a clean
+    measurement of the price of private information for a fairness-seeker.
+
+    The estimate is a plug-in ``obj(E[z])`` rather than ``E[obj(z)]`` and is therefore optimistic by a Jensen
+    gap (see :mod:`~interlens.arena.negotiation.fairness`); combined with a posterior that only sees public
+    offers, it can target a deal that is not in fact the table's welfare maximizer. That is a substantive
+    prediction about this agent, not an implementation shortcut.
+
+    Uses the exact objective when it happens to be seated in a full-information game, so the two policies
+    coincide there by construction.
+    """
+
+    name = "fairness-rational"
+
+    def __init__(self, *, discount: float | None = None, walk_if_hopeless: bool = True,
+                 name: str = "fairness-rational"):
+        super().__init__(discount=discount, walk_if_hopeless=walk_if_hopeless, name=name)
+
+    def _objective(self, state, tables):
+        """Expected table welfare: own normalized surplus exactly, opponents' from the posterior."""
+        if state.tables is not None:
+            return fairness.mnw_objective(state.tables)
+        belief = fit_belief(state)
+        expected_z = {opp: st.expected_normalized_surplus_matrix(tables.deals_arr)
+                      for opp, st in belief.states.items()}
+        return fairness.expected_objective(tables, state.seat, expected_z)
 
 
 # Convenience registry of the scripted zoo (excludes the composed Bayesian agent, which needs a discount).

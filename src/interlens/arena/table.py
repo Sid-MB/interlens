@@ -50,7 +50,8 @@ from ..participant.participant import Participant
 from .negotiation.oracle_context import GameTables
 from .negotiation.policy_participant import PolicyParticipant
 from .negotiation.sheets import GameSpec
-from .negotiation.strategies import ZOO, BayesianRationalPolicy
+from .negotiation.strategies import (ZOO, BayesianRationalPolicy, FairnessOraclePolicy,
+                                     FairnessRationalPolicy)
 from .schema import PERSONAS
 
 # The offer-id prefix ``ScorableNegotiation`` mints ("P1", "P2", ...). A PolicyParticipant that falls back to
@@ -61,6 +62,10 @@ OFFER_PREFIX = "P"
 # (not in ZOO because it reads the per-round discount off the NegotiationState the participant builds).
 POLICY_FACTORIES = dict(ZOO)
 POLICY_FACTORIES["bayes-rational"] = BayesianRationalPolicy
+# The same composed agent with the objective swapped from own surplus to table welfare: the omniscient
+# fairness mediator and its private-information counterpart.
+POLICY_FACTORIES["fairness-oracle"] = FairnessOraclePolicy
+POLICY_FACTORIES["fairness-rational"] = FairnessRationalPolicy
 
 
 class SeatRouter(Participant):

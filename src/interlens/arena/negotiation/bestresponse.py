@@ -234,7 +234,8 @@ def _proposal_full_info(tables: GameTables, proposer: int, cont: np.ndarray, *,
 # Backward induction — belief-averaged (agent-only continuation; opponents via posterior).
 # --------------------------------------------------------------------------------------------------------- #
 def value_to_go_beliefs(tables: GameTables, agent: int, proposer_seq, T: int, discount: float,
-                        accept_prob, opp_proposal, *, min_accept: int | None = None, veto_seats=()) -> np.ndarray:
+                        accept_prob, opp_proposal, *, min_accept: int | None = None, veto_seats=(),
+                        objective=None) -> np.ndarray:
     """Agent-``agent`` continuation ``Vi[t]`` (shape ``(T+2,)``) under the posterior.
 
     Parameters
@@ -244,8 +245,13 @@ def value_to_go_beliefs(tables: GameTables, agent: int, proposer_seq, T: int, di
         below, so it is ignored for ``agent``).
     opp_proposal : dict[int, int]
         Stationary modeled proposal (deal index) per opponent seat.
+    objective : np.ndarray | None
+        Optional ``(|D|,)`` payoff column replacing ``agent``'s own surplus, so the same rollout produces the
+        continuation value of a **fairness-seeking** seat (``fairness.mnw_objective``) rather than a
+        self-interested one. Only this seat's payoff changes; the modeled opponents keep behaving as
+        self-interested acceptors/proposers. ``None`` (default) is the exact prior behaviour.
     """
-    S = tables.surplus[:, agent]            # (D,)
+    S = tables.surplus[:, agent] if objective is None else np.asarray(objective, dtype=float)   # (D,)
     n = tables.n_agents
     Vi = np.zeros(T + 2, dtype=float)
     for t in range(T, 0, -1):
@@ -307,7 +313,7 @@ class BestResponseOracle(Oracle):
 
     # -- proposal values for the current round (agent as proposer) ----------------------------------------
     def propose_values(self, tables: GameTables, cont: np.ndarray, agent: int | None = None, *,
-                       min_accept: int | None = None, veto_seats=None) -> np.ndarray:
+                       min_accept: int | None = None, veto_seats=None, objective=None) -> np.ndarray:
         """Expected value to ``agent`` of proposing each deal now, given the continuation vector ``cont``
         (full-info: ``cont`` is the length-n discounted continuation; belief: pass agent scalar via a length-n
         vector with opponents' acceptance folded into ``accept_prob``).
@@ -317,17 +323,25 @@ class BestResponseOracle(Oracle):
         stack does (``BestResponseOracle(0)`` reused for every seat), and what :meth:`evaluate` now does with the
         seat it resolved. Getting this wrong is silent: the acceptance mask and the surplus column both come from
         this seat, so a stale seat prices every proposal from the wrong sheet while accept/reject/walk values
-        (computed from the resolved seat) stay correct."""
+        (computed from the resolved seat) stay correct.
+
+        ``objective`` is an optional ``(|D|,)`` payoff column replacing ``agent``'s own surplus as *what the
+        proposal is worth if it passes* — the substitution that makes this best-response machinery serve a
+        fairness-seeking proposer (``fairness.mnw_objective``). Only the payoff changes: which deals can pass
+        is still governed by the other seats' own-surplus acceptance, since the opponents remain
+        self-interested however this seat scores the outcome. ``None`` (default) is the exact prior behaviour.
+        """
         S = tables.surplus
         n = tables.n_agents
         i = self.agent if agent is None else int(agent)
         need = self.min_accept if min_accept is None else min_accept
         veto = self.veto_seats if veto_seats is None else tuple(veto_seats)
+        payoff = S[:, i] if objective is None else np.asarray(objective, dtype=float)
         if self.accept_prob is None:
             accept_mask = _full_info_pass_mask(S, i, cont, min_accept=need, veto_seats=veto)
-            return np.where(accept_mask, S[:, i], cont[i])
+            return np.where(accept_mask, payoff, cont[i])
         p_pass = passage_probability(self.accept_prob, i, min_accept=need, veto_seats=veto)
-        return p_pass * S[:, i] + (1.0 - p_pass) * cont[i]
+        return p_pass * payoff + (1.0 - p_pass) * cont[i]
 
     def evaluate(self, game, history, agent, legal):
         """Value each legal action; ``best`` is the surplus-maximizing one. ``extra`` carries the per-turn

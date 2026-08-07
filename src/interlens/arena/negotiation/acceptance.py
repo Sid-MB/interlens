@@ -98,7 +98,7 @@ def reservation_values(values, probs, T: int, *, cost: float = 0.0, discount: fl
 # Offer distribution induced by beliefs.
 # --------------------------------------------------------------------------------------------------------- #
 def offer_surplus_pmf(tables: GameTables, agent: int, accept_prob_fn=None, *, only_closable: bool = True,
-                      only_ir: bool = True):
+                      only_ir: bool = True, objective=None):
     """The distribution ``F`` of the surplus ``agent`` expects to *receive*, induced by the belief posterior.
 
     Each deal ``d`` is weighted by ``P(all opponents accept d)`` (so only deals that can actually close carry
@@ -118,11 +118,18 @@ def offer_surplus_pmf(tables: GameTables, agent: int, accept_prob_fn=None, *, on
         Drop deals with zero acceptance probability.
     only_ir : bool
         Drop deals with negative surplus for ``agent`` (below own threshold — never worth receiving).
+    objective : np.ndarray | None
+        Optional ``(|D|,)`` payoff column to use **instead of** ``agent``'s own surplus — the objective
+        substitution that makes this recursion serve a fairness-seeking agent (``fairness.mnw_objective``)
+        as well as a self-interested one. ``None`` (default) reads ``tables.surplus[:, agent]``, which is the
+        exact prior behaviour. Whatever is passed must share own-surplus's convention that **no-deal scores
+        zero**, since that is the recursion's ``v_0`` base case; the ``only_ir`` filter then reads
+        "non-negative on this column" in the substituted units.
 
     Returns ``(values, probs)`` — a normalized pmf. Empty support falls back to a point mass at surplus 0
     (i.e. "no acceptable offer expected", so the reservation collapses to the no-deal value).
     """
-    surplus = tables.surplus[:, agent]
+    surplus = tables.surplus[:, agent] if objective is None else np.asarray(objective, dtype=float)
     D = tables.n_deals
     if accept_prob_fn is None:
         w = np.ones(D)
@@ -181,15 +188,21 @@ class AcceptanceOracle(Oracle):
 
     # -- reusable scalar for strategies -------------------------------------------------------------------
     def reservation(self, tables: GameTables, rounds_left: int, discount: float | None = None,
-                    agent: int | None = None) -> float:
+                    agent: int | None = None, *, objective=None) -> float:
         """The reservation surplus ``v_{rounds_left}`` given the belief-induced offer distribution.
 
         ``agent`` is the seat whose offer-surplus distribution sets the reservation; ``None`` falls back to the
         constructor's ``self.agent``. Pass it whenever one instance serves several seats (a scenario's shared
         oracle stack) — :meth:`evaluate` passes the seat it resolved, since a stale seat here would silently set
         every party's stopping threshold from seat 0's sheet and so mis-flag ``premature_accept`` /
-        ``should_accept``."""
-        vals, ps = offer_surplus_pmf(tables, self.agent if agent is None else int(agent), self.accept_prob_fn)
+        ``should_accept``.
+
+        ``objective`` substitutes a table-level payoff column for own surplus (see :func:`offer_surplus_pmf`),
+        which is what turns this into a fairness-seeking agent's stopping rule: the returned number is then the
+        table welfare it expects to reach by continuing, and it should accept iff the standing offer's welfare
+        clears it."""
+        vals, ps = offer_surplus_pmf(tables, self.agent if agent is None else int(agent), self.accept_prob_fn,
+                                     objective=objective)
         curve = reservation_values(vals, ps, max(rounds_left, 0), cost=self.cost,
                                    discount=self._disc(discount), flow=self.flow,
                                    outside_value=self.outside_value)

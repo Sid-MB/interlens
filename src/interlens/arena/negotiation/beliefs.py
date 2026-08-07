@@ -194,7 +194,15 @@ def _prepared_default_grid(option_counts: tuple, tau_levels: tuple, max_rankings
     U_all = sum(W[:, j][:, None] * S[j][:, deals_arr[:, j]] for j in range(len(option_counts)))    # (T, D)
     accept = (U_all >= TAU[:, None]).astype(np.float64)                                            # (T, D)
     accept.flags.writeable = False
-    return types, W, S, TAU, ideal, accept
+    # Per-type normalized surplus, the fairness objective's coordinate: clip(u - tau, 0) / (that type's best
+    # attainable surplus). Cached beside ``accept`` for the same reason — a fairness-seeking policy needs the
+    # posterior-expected value over ALL deals every turn, which is one gemv against this instead of rebuilding
+    # the (|types| x |D|) tensor per opponent per turn.
+    Xt = np.clip(U_all - TAU[:, None], 0.0, None)                                                  # (T, D)
+    bt = Xt.max(axis=1)
+    znorm = (Xt / np.where(bt > 0.0, bt, 1.0)[:, None]).astype(np.float64)                         # (T, D)
+    znorm.flags.writeable = False
+    return types, W, S, TAU, ideal, accept, znorm
 
 
 # --------------------------------------------------------------------------------------------------------- #
@@ -270,14 +278,17 @@ class BeliefState:
         self.option_counts = tuple(int(x) for x in option_counts)
         if types is None:
             # reuse the cached immutable default grid + arrays + acceptance matrix (shared read-only)
-            grid, self._W, self._S, self._TAU, self._ideal, self._accept_matrix = _prepared_default_grid(
+            (grid, self._W, self._S, self._TAU, self._ideal, self._accept_matrix,
+             self._znorm_matrix) = _prepared_default_grid(
                 self.option_counts, tuple(tau_levels), int(max_rankings), int(seed))
             self.types = list(grid)
         else:
             self.types = list(types)
             self._W, S, self._TAU, self._ideal = _build_arrays(self.types, self.option_counts)
             self._S = list(S)
-            self._accept_matrix = None   # small custom grid: acceptance computed on the fly (cheap)
+            # small custom grid: acceptance and normalized surplus are computed on the fly (cheap)
+            self._accept_matrix = None
+            self._znorm_matrix = None
         self.sigma = float(sigma)
         self.lam = float(lam)
         self.floor = float(floor)
@@ -405,6 +416,28 @@ class BeliefState:
             return self.posterior() @ self._accept_matrix          # cached full-space acceptance
         U = sum(self._W[:, j][:, None] * self._S[j][:, deals_arr[:, j]] for j in range(deals_arr.shape[1]))
         return self.posterior() @ (U >= self._TAU[:, None])
+
+    def expected_normalized_surplus_matrix(self, deals_arr: np.ndarray) -> np.ndarray:
+        """Posterior-expected **normalized surplus** for a whole batch of deals: ``deals_arr`` is the ``(D, J)``
+        int option-index array (``GameTables.deals_arr``); returns a ``(D,)`` vector in ``[0, 1]``.
+
+        Per candidate type, the normalized surplus of a deal is ``clip(u_type(d) - tau_type, 0)`` divided by
+        that type's best attainable surplus, so every type contributes on a common ``[0, 1]`` scale regardless
+        of the point scale it implies; the readout is then the posterior mixture of those. This is the
+        opponent-side input the fairness objective needs (``fairness.expected_objective``) and is the exact
+        analogue of :meth:`accept_prob_matrix`, which mixes the 0/1 *indicator* of the same surplus being
+        positive — this mixes its magnitude.
+
+        Uses the cached type-by-deal matrix when the batch is the full enumerated space (one gemv), and builds
+        the tensor on the fly otherwise. Both paths normalize by the type's ideal surplus over the WHOLE deal
+        space (``ideal - tau``, exact for an additive type) rather than over whatever subset was passed, so a
+        partial batch returns the same numbers as the corresponding slice of a full one."""
+        if self._znorm_matrix is not None and self._znorm_matrix.shape[1] == deals_arr.shape[0]:
+            return self.posterior() @ self._znorm_matrix
+        U = sum(self._W[:, j][:, None] * self._S[j][:, deals_arr[:, j]] for j in range(deals_arr.shape[1]))
+        X = np.clip(U - self._TAU[:, None], 0.0, None)
+        b = np.clip(self._ideal - self._TAU, 0.0, None)
+        return self.posterior() @ (X / np.where(b > 0.0, b, 1.0)[:, None])
 
     def threshold_distribution(self):
         """Posterior distribution over the opponent's reservation ``tau``: ``{tau: prob}``."""
