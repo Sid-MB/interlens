@@ -96,6 +96,45 @@ state = asyncio.run(ratchet.run())              # {"found": ..., "probe_means": 
 
 State persists after every batch: a restarted ratchet resumes where it stopped and never duplicates a completed episode (instances are deterministic per level and skipped by id, so team/solo pairings stay intact). `speculative=True` probes the first wave of levels concurrently — faster wall-clock at the cost of probing levels a sequential climb might have skipped; the found decision is the same pure function (`found_level`) either way.
 
+## Rollout sets: more episodes, into the same place, safely
+
+`EpisodePool` runs episodes; `RolloutSet` is the bookkeeping *around* a set of them, so "run twenty more seeds" is one call instead of a new directory and a merge script. A set is a directory holding an `EpisodeStore`, the instances played, and a manifest recording what produced them (model, scenario, config fingerprint, every accepted key, each invocation, artifact links).
+
+```python
+from interlens.arena import rollout
+from interlens.arena.negotiation.sheets import GameSpec
+from interlens.arena.scenarios.scorable import ScorableNegotiation
+from interlens.arena.table import rational_table
+
+def seats(instance, arm, seed):          # a factory: policy seats hold per-episode mutable state
+    game = GameSpec.from_json(instance.payload)
+    return rational_table(game, ["boulware", "conceder", "tough"], deadline=game.rounds)
+
+cfg = {"model": "policy:zoo", "scaffold": "canonical", "info": "full"}
+rs = rollout(scenario=ScorableNegotiation(), instances=instances, participant=seats,
+             out="runs/pilot", seeds=[0, 1], arms=["moves_chat"], config=cfg)
+print(rs.summary_text())
+```
+
+```
+RolloutSet runs/pilot
+  model=policy:zoo scenario=scorable_negotiation cfg=8f2c1a09b4de
+  episodes: 6 (6 distinct keys) statuses={'done': 6}
+  arms: {'moves_chat': 6}
+  success: 4/6 = 0.667
+  mean primary: 0.7143 over 6 scored episodes
+  usage: 0 in / 0 out tokens, $0.00
+  fabricated turns: 0 (in 0 episodes)
+```
+
+Re-run with `seeds=[0, 1, 2, 3]` and only the two new seeds cost anything: resume is unconditional and keyed on `(instance_id, seed, arm)`, read from the episodes on disk rather than the manifest, so a crash between the two writes still resumes correctly. Reuse the set's own bank with `rs.load_instances()` — instance ids are uuid-based, so regenerating "the same" instances mints new ids and matches nothing.
+
+**Appending never silently mixes protocols.** `config` is the set's protocol identity, hashed into a fingerprint; an append whose fingerprint differs raises `RolloutConfigMismatch` *before* any episode runs, naming the differing keys. `allow_mismatch=True` proceeds but is an audit trail, not a silencer: each accepted episode is stamped in its `cell_cfg` and the divergence is recorded in the manifest.
+
+Put in `config` anything that changes what an episode *means* (model, scaffold, information condition, arms, bank identity) and nothing that merely changes how it was scheduled (concurrency, output path), or a wider resume will refuse itself.
+
+`summary()` is deliberately a **health check**, not a results table — counts, statuses, success rate, mean `outcome["primary"]`, spend, and the engine-fabrication audit (`gen_failures`), which is surfaced here because a set is read long after the run log that made it. Metrics defined by your protocol belong in your own analyzers.
+
 ## Replay and re-scoring
 
 Scenarios are pure state machines, so a stored episode replays exactly:

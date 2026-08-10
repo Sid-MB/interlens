@@ -142,6 +142,7 @@ nav:
               - oracles: reference/interlens/arena/oracles.md
               - ratchet: reference/interlens/arena/ratchet.md
               - replay: reference/interlens/arena/replay.md
+              - rollouts: reference/interlens/arena/rollouts.md
               - scenario: reference/interlens/arena/scenario.md
               - scenarios:
                   - reference/interlens/arena/scenarios/index.md

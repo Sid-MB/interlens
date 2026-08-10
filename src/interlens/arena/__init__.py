@@ -48,6 +48,7 @@ from .oracles import Oracle, OracleRecord, OracleVerdict, annotate
 from .engine import (BatchedEpisodePool, EMPTY_TURN_PLACEHOLDER, EpisodePool, EpisodeRun,
                      GenerationFailureBudgetExceeded, gen_failures)
 from .ratchet import DifficultyRatchet, found_level
+from .rollouts import RolloutConfigMismatch, RolloutSet, config_fingerprint, rollout
 from .replay import ReplayError, replay_episode, rescore
 from .gates import check_reasoning_leak, check_template_fidelity, scenario_smoke_views
 from .views import build_view, extract_json, strip_think
@@ -93,6 +94,11 @@ __all__ = [
 	"GenerationFailureBudgetExceeded",
 	"DifficultyRatchet",
 	"found_level",
+	# rollout-set management: a directory of episodes + the manifest that says what produced them
+	"RolloutSet",
+	"rollout",
+	"config_fingerprint",
+	"RolloutConfigMismatch",
 	"replay_episode",
 	"rescore",
 	"ReplayError",
