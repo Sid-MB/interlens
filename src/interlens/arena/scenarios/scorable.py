@@ -77,6 +77,19 @@ class ScorableNegotiation(Scenario):
 		Rational-reference oracles run inline after every turn (:meth:`annotate_turn`) to score the seat's actual
 		move against the oracle's best — the per-turn regret series. ``None`` runs no oracles (episodes still
 		carry the full move ledger for post-hoc annotation via :meth:`oracle_inputs`).
+	turn_max_tokens : int | None
+		Raise every request's per-turn output cap to at least this many tokens. ``None`` (the default) leaves the
+		protocol's own caps — 2048 on ordinary turns, 2560 on the forced final — exactly as every frozen campaign
+		ran them. This is the ONLY hook for the budget, because the engine's ``turn_cap`` can only ever SHRINK a
+		request's cap (:meth:`interlens.arena.engine.EpisodeRun.turn_cap`), so a per-turn budget large enough for
+		a reasoning stream plus a visible action has to be set where the request is built.
+
+		Setting it is a PROTOCOL CHANGE, not a tuning knob: turn caps censor behaviour, so a run at a raised cap
+		does not pair with a run at the default and must not be pooled with one. It exists because of a measured
+		failure — with native thinking ON, Qwen3-8B spends the entire 2048 inside ``<think>`` on ~2/3 of turns
+		and Qwen3-32B on 24.4%, and the engine then substitutes ``EMPTY_TURN_PLACEHOLDER`` for the visible
+		action (rational_agents notes 0026/0041). A turn that says nothing is real model behaviour, so no
+		fabrication gate catches it; only a cap census does.
 	"""
 
 	name = "scorable_negotiation"
@@ -86,9 +99,13 @@ class ScorableNegotiation(Scenario):
 	SOLO_SEAT = "Mediator"
 	SOLO_CEILING = 8  # hard iteration cap for the solo arm when no engine budget is set (guarantees termination)
 
-	def __init__(self, scaffold: PromptScaffold | None = None, oracles: list[Oracle] | None = None):
+	def __init__(self, scaffold: PromptScaffold | None = None, oracles: list[Oracle] | None = None,
+	             turn_max_tokens: int | None = None):
 		self.scaffold = scaffold or DEFAULT_SCAFFOLD
 		self.oracles = list(oracles or [])
+		if turn_max_tokens is not None and turn_max_tokens <= 0:
+			raise ValueError(f"turn_max_tokens must be a positive token count or None, got {turn_max_tokens!r}")
+		self.turn_max_tokens = turn_max_tokens
 
 	# ------------------------------------------------------------ instances --
 	def generate_instance(self, level: int, seed: int, **overrides) -> Instance:
@@ -413,7 +430,23 @@ class ScorableNegotiation(Scenario):
 		return build_view(st["seat_names"][si], self._system_prompt(st, si), events, phase_prompt)
 
 	# ------------------------------------------------------------ stepping --
+	def _raise_caps(self, requests: list[SeatRequest]) -> list[SeatRequest]:
+		"""Apply the ``turn_max_tokens`` protocol option to freshly built requests (identity when unset).
+
+		``max()``, never a plain assignment: the forced-final request asks for more than a regular turn (2560 vs
+		2048) and must not be silently cut back to a smaller campaign-wide number. The single place the option
+		takes effect, so every request-building path — regular turns, the forced final, solo, provisional
+		probes — gets it without restating the rule.
+		"""
+		if self.turn_max_tokens:
+			for r in requests:
+				r.max_tokens = max(r.max_tokens, self.turn_max_tokens)
+		return requests
+
 	def next_requests(self, st) -> list[SeatRequest]:
+		return self._raise_caps(self._next_requests(st))
+
+	def _next_requests(self, st) -> list[SeatRequest]:
 		if st["done"]:
 			return []
 		if st["arm"] == "solo":
@@ -700,6 +733,9 @@ class ScorableNegotiation(Scenario):
 		return {n * r for r in range(1, st["rounds"] + 1)}
 
 	def provisional_due(self, st) -> list[SeatRequest]:
+		return self._raise_caps(self._provisional_due(st))
+
+	def _provisional_due(self, st) -> list[SeatRequest]:
 		"""Optional forked self-elicitation (``self_elicit`` cfg): "if you had to lock a deal in RIGHT NOW, what
 		would it be?" asked of the upcoming opener, scored as its realized primary — a cheap per-turn signal that
 		reuses the engine's provisional plumbing (recorded in ``round_checkpoints`` as provisional OracleRecords).

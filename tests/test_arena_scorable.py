@@ -489,3 +489,67 @@ def test_single_shot_state_block_reports_the_terminal_round():
 	plain = drive_state(scen, make_instance(make_game(rounds=1)), "moves_chat",
 	                    lambda seat, view: {"action": "propose", "deal": SEEDED_DEAL})
 	assert plain["round"] == 2
+
+
+# --- the turn-cap protocol option ---------------------------------------------------------------------------
+# [rational_agents: uncap-protocol] 2026-08-10 — session eb951d8f. The per-turn output cap is a PROTOCOL
+# VERSION, not a tuning knob: at the frozen 2,048 a thinking-ON model burns the whole budget inside <think> and
+# the engine substitutes a placeholder (notes 0026/0041), so a raised-cap run measures different behaviour and
+# must not be pooled with a default-cap one. These tests pin both halves of that: the default is untouched so
+# every frozen campaign still reproduces, and the option reaches the actual generation kwarg.
+
+def _all_caps(scen, rounds: int = 2) -> list[tuple[str, int]]:
+	"""Every ``(phase, max_tokens)`` the scenario stamps across a whole episode, incl. the forced final."""
+	inst, caps = make_instance(make_game(rounds=rounds)), []
+	st = scen.make_state(inst, "moves_chat", seed=0)
+	for _guard in range(400):
+		if st["done"]:
+			break
+		reqs = scen.next_requests(st)
+		if not reqs:
+			break
+		for req in reqs:
+			caps.append((req.phase, req.max_tokens))
+			# always propose, never accept: nothing closes early, so the walk reaches the forced final AND the
+			# final up/down vote (where a propose is merely illegal, which still emits the request being measured)
+			scen.apply(st, req, "```json\n" + json.dumps(
+				{"action": "propose", "deal": {"Site": "North", "Fund": "High"}}) + "\n```")
+	return caps
+
+
+def test_default_turn_caps_are_unchanged():
+	# The frozen protocol every published five-seat campaign ran. If this ever moves, no old run reproduces.
+	caps = dict(_all_caps(ScorableNegotiation()))
+	assert caps["turn"] == 2048
+	assert caps["final_proposal"] == 2560
+	assert caps["final_vote"] == 2048
+	assert ScorableNegotiation().turn_max_tokens is None
+
+
+def test_turn_max_tokens_raises_every_phase_and_never_shrinks_the_final():
+	scen = ScorableNegotiation(turn_max_tokens=32768)
+	assert {cap for _phase, cap in _all_caps(scen)} == {32768}
+	# below the protocol's own numbers it is a floor, not an assignment: the forced final keeps its larger cap
+	lowered = dict(_all_caps(ScorableNegotiation(turn_max_tokens=100)))
+	assert (lowered["turn"], lowered["final_proposal"]) == (2048, 2560)
+	with pytest.raises(ValueError):
+		ScorableNegotiation(turn_max_tokens=0)
+
+
+def test_turn_max_tokens_reaches_the_generation_kwarg():
+	# The engine's own turn_cap can only SHRINK a request's cap, so this is the only path that widens the real
+	# max_new_tokens. Asserting on the kwarg (not the request) is what makes this a threading test.
+	seen: list[int | None] = []
+
+	class RecordingSeat(JsonSeat):
+		def generate(self, view, *, max_new_tokens=None, **kw):
+			seen.append(max_new_tokens)
+			return super().generate(view, max_new_tokens=max_new_tokens, **kw)
+
+	inst = make_instance(make_game(rounds=1))
+	decide = lambda seat, view: {"action": "none"}     # noqa: E731 — every turn a no-op; the caps are the point
+	run(ScorableNegotiation(turn_max_tokens=32768), inst, "moves_chat", RecordingSeat(decide))
+	assert seen and set(seen) == {32768}
+	seen.clear()
+	run(ScorableNegotiation(), inst, "moves_chat", RecordingSeat(decide))
+	assert set(seen) == {2048, 2560}
