@@ -198,7 +198,8 @@ def _legend(mode: str) -> str:
             "<span><i class='swatch' style='background:var(--s3)'></i>NBS / KS / EGAL solution (star)</span>"
             "<span><i class='swatch tri' style='background:var(--reference-alt)'></i>UTIL / MNW solution (triangle)</span>"
             "<span><i class='swatch di' style='background:var(--s3)'></i>a party's individually-best deal</span>"
-            "<span><i class='swatch' style='background:var(--ink-2)'></i>Pareto-frontier deal</span>"
+            "<span><i class='swatch' style='background:var(--ink-2)'></i>Pareto-frontier deal (acceptable to all)</span>"
+            "<span><i class='swatch xmark'></i>efficient but below a party's threshold &mdash; cannot close</span>"
             "<span><i class='swatch' style='background:var(--muted)'></i>dominated deal</span></div>")
 
 

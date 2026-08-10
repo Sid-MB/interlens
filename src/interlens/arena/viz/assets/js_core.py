@@ -91,6 +91,24 @@ function dealSummary(game, index) {
 }
 function seatName(game, party) { return (PAYLOAD.seatNames || game.parties)[party] || game.parties[party]; }
 
+/* Is this deal on the frontier a rational table could actually REACH — Pareto-optimal AND individually rational?
+   `d.pareto` alone answers a different question (is any value being wasted), and a deal can be efficient while
+   leaving a party below its threshold, in which case nobody would accept it. Every chart and card that styles or
+   describes a point as "on the frontier" goes through here, so the two facts can never be conflated in one place
+   and separated in another. `geometry.to_json` ships `pareto_ir`; the conjunction is the fallback for a payload
+   written before it existed. Takes `game.deals`, not `game`, because that is what the callers already hold. */
+/* The "below the frontier by ..." distance is measured to the UNCONSTRAINED Pareto frontier (`geometry.d_frontier`
+   — a metric other analysis depends on), so the nearest efficient deal it is compared against may itself be one
+   nobody could accept. The number is not changed to match the chart's IR-feasible styling; it is labelled. */
+const FRONTIER_PILL_NOTE = "Efficiency (is value wasted) and acceptability (is every party above its threshold) "
+  + "are separate. The distance below the frontier is measured to the nearest Pareto-optimal deal, whether or not "
+  + "that deal clears every threshold.";
+
+function dealIsReachable(deals, index) {
+  return deals.pareto_ir ? Boolean(deals.pareto_ir[index])
+                         : Boolean(deals.pareto[index] && deals.ir[index]);
+}
+
 /* Tiny direct labels for party-best diamonds. The six anchors deliberately occupy different sides of a point:
    several parties can share the same best deal, and identical x/y text would make the labels less informative
    precisely where they are most needed. More than six parties cycles deterministically. */
@@ -123,7 +141,10 @@ function dealDetail(game, index, title, extra, pinned) {
    <div class="pills">
      <span class="pill">joint welfare <b>${N(usw, 1)}</b></span>
      <span class="pill">worst-off <b class="${esw >= 0 ? "pos" : "neg"}">${SIGN(esw, 1)}</b></span>
-     <span class="pill">${d.pareto[index] ? "on the Pareto frontier" : "below the frontier by <b>" + N(d.d_frontier[index], 3) + "</b>"}</span>
+     <span class="pill" title="${E(FRONTIER_PILL_NOTE)}">${!d.pareto[index]
+       ? "below the frontier by <b>" + N(d.d_frontier[index], 3) + "</b>"
+       : dealIsReachable(d, index) ? "on the Pareto frontier"
+       : "efficient but <b class=\"neg\">below a party's threshold</b>"}</span>
      <span class="pill">${d.feasible[index] ? "can close under the protocol" : "<b>cannot close</b> (agreement rule)"}</span>
      ${below ? `<span class="pill"><b class="neg">${below}</b> part${below === 1 ? "y" : "ies"} below threshold</span>` : ""}
    </div>`;

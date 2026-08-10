@@ -70,8 +70,12 @@ function pointIdentity(game, mk) {
   /* The cloud phrasing, and the honest fallback for a mark whose role this layer does not know (the comparison
      page marks a point by SIDE): say what the mark says about itself and place it, rather than attaching an
      explanation that might be the wrong one. */
-  const placed = d.pareto[i] ? "on the Pareto frontier &mdash; no party can gain without another losing"
-                             : "dominated &mdash; some other deal is at least as good for everyone";
+  /* Efficiency and acceptability are separate facts and the card says both: an efficient deal that leaves a party
+     below its threshold is a real point in the space, but calling it "on the frontier" full stop is what let the
+     chart imply a rational table could land there. */
+  const placed = !d.pareto[i] ? "dominated &mdash; some other deal is at least as good for everyone"
+    : dealIsReachable(d, i) ? "on the Pareto frontier &mdash; no party can gain without another losing"
+    : "efficient but below a party's threshold &mdash; nobody would accept it, so it cannot close";
   if (role === "solution") {
     const c = CONCEPT_NOTES[mk.concept] || null;
     if (!c) return { head: E(mk.title || mk.label || "reference point"), sub: placed, note: "" };
@@ -109,7 +113,9 @@ function pointIdentity(game, mk) {
   if (role === "standing")
     return { head: "On the table", sub: "the live offer at this turn", note: ROLE_NOTES.standing };
   if (mk.title) return { head: E(mk.title), sub: placed, note: "" };
-  return { head: d.pareto[i] ? "Efficient deal" : "Deal in the space", sub: placed, note: "" };
+  return { head: !d.pareto[i] ? "Deal in the space"
+                 : dealIsReachable(d, i) ? "Efficient deal" : "Efficient but unacceptable deal",
+           sub: placed, note: "" };
 }
 
 /* The deal in words: "Location: Kestrel Park · Power: solar with storage · …". Decoded from the index against
@@ -130,6 +136,7 @@ function dealStats(game, index) {
   const nw = z.some(v => v <= 0) ? 0 : Math.exp(z.reduce((a, b) => a + Math.log(b), 0) / n);
   const below = s.filter(v => v < 0).length;
   return { mean, worst, nw, below, pareto: Boolean(d.pareto[index]), ir: Boolean(d.ir[index]),
+           reachable: dealIsReachable(d, index),
            feasible: Boolean(d.feasible[index]), dfront: d.d_frontier[index] };
 }
 
@@ -193,8 +200,9 @@ function hoverCardHtml(game, mk) {
     `<span class="pill">mean z <b>${N(st.mean * 100, 0)}%</b></span>`,
     `<span class="pill">worst-off z <b class="${st.worst > 0 ? "pos" : "neg"}">${N(st.worst * 100, 0)}%</b></span>`,
     `<span class="pill">Nash welfare <b>${N(st.nw, 3)}</b></span>`,
-    st.pareto ? `<span class="pill">on the frontier</span>`
-              : `<span class="pill">below the frontier by <b>${N(st.dfront, 3)}</b></span>`,
+    !st.pareto ? `<span class="pill" title="${E(FRONTIER_PILL_NOTE)}">below the frontier by <b>${N(st.dfront, 3)}</b></span>`
+      : st.reachable ? `<span class="pill">on the frontier</span>`
+      : `<span class="pill" title="${E(FRONTIER_PILL_NOTE)}">efficient, <b class="neg">but not reachable</b></span>`,
     st.ir ? `<span class="pill">individually rational</span>`
           : `<span class="pill"><b class="neg">${st.below}</b> below threshold</span>`,
     st.feasible ? `<span class="pill">can close</span>` : `<span class="pill"><b class="neg">cannot close</b></span>`,

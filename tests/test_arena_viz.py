@@ -170,6 +170,50 @@ def test_envelope_is_a_monotone_staircase_of_frontier_deals(episode):
                    for i in range(geo.n_deals))
 
 
+def test_pareto_but_not_ir_deals_are_kept_off_the_drawn_frontier(episode):
+    """The IR-feasible frontier is ``pareto & ir``, and a deal that is efficient while leaving somebody below
+    threshold must not be styled as a frontier deal.
+
+    This pins the fix for the bug where the chart ringed bottom-right corner deals — maximal joint welfare bought
+    by pushing one party under its threshold, which no rational table can agree to — identically to deals that
+    could actually close. ``pareto_mask`` itself is untouched: this is a derived presentation mask."""
+    _, inst = episode
+    geo = viz.GameGeometry.from_instance(inst)
+    assert np.array_equal(geo.pareto_ir, geo.pareto & geo.ir)
+    infeasible = np.nonzero(geo.pareto & ~geo.ir)[0]
+    assert infeasible.size, "this fixture is the regression case and must contain efficient-but-unacceptable deals"
+    for i in infeasible:
+        rec = geo.at(int(i))
+        assert rec.pareto and not rec.ir and not rec.pareto_ir
+        assert rec.to_json()["pareto_ir"] == 0
+    for i in np.nonzero(geo.pareto_ir)[0]:
+        assert geo.at(int(i)).pareto_ir and geo.X[i].min() >= 0
+
+    payload = geo.to_json()
+    assert payload["deals"]["pareto_ir"] == [int(v) for v in (geo.pareto & geo.ir)]
+    # the drawn region is the reachable one, and it never extends past the reachable frontier's reach
+    env_ir, env = payload["envelope_ir"], payload["envelope"]
+    assert env_ir != env, "the fixture's two frontiers differ, which is what makes the styling split visible"
+    assert all(any(geo.pareto_ir[i] and abs(geo.wx[i] - x) < 1e-3 and abs(geo.wy[i] - y) < 1e-3
+                   for i in range(geo.n_deals)) for x, y in env_ir)
+    assert max((y for _, y in env), default=0) == max((y for _, y in env_ir), default=0)
+
+
+def test_chart_styles_the_unreachable_frontier_distinctly(episode, payload):
+    """The presentation layer must consult the IR mask, not only ``pareto``: an efficient-but-unacceptable deal is
+    drawn as a cross with its own legend entry, never dropped and never ringed like a reachable frontier deal."""
+    _, inst = episode
+    geo = viz.GameGeometry.from_instance(inst)
+    corner = int(np.nonzero(geo.pareto & ~geo.ir)[0][0])
+    html = viz.render_episode_html(payload)
+    assert _missing(html, "efficient but below a party's threshold", 'class="frontx"',
+                    "envline unreachable", "swatch xmark", "dealIsReachable") == []
+    # the payload the browser reads carries the mask, and it is 0 at the offending deal
+    blob = json.loads(re.search(r'id="viz-payload">(.*?)</script>', html, re.S).group(1))
+    assert blob["game"]["deals"]["pareto_ir"][corner] == 0
+    assert blob["game"]["deals"]["pareto"][corner] == 1
+
+
 def test_geometry_returns_none_for_a_non_game_payload():
     assert viz.GameGeometry.from_instance({"payload": {"not": "a game"}}) is None
     assert viz.GameGeometry.from_instance({}) is None

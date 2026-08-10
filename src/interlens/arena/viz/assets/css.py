@@ -200,8 +200,12 @@ svg .lab{fill:var(--ink);font-size:10.5px;font-weight:600;paint-order:stroke;
 svg .lab.partybest{fill:var(--s3);font-size:8.5px;font-weight:600;letter-spacing:.01em;stroke-width:2.5px}
 svg .dot{fill:var(--muted);opacity:.35}
 svg .front{fill:none;stroke:var(--ink-2);stroke-width:1.5;opacity:.75}
+/* Efficient but below some party's threshold: a cross, not a ring. It must not read as a member of the frontier
+   family (nothing here can close), but it is a real deal in the space, so it is drawn rather than dropped. */
+svg .frontx{fill:none;stroke:var(--muted);stroke-width:1.3;opacity:.65}
 svg .envfill{fill:var(--ink-2);opacity:.07}
 svg .envline{fill:none;stroke:var(--ink-2);stroke-width:2;opacity:.35}
+svg .envline.unreachable{stroke:var(--muted);stroke-width:1.5;stroke-dasharray:5 4;opacity:.45}
 svg .solutionleader{stroke:var(--ink-2);stroke-width:1;opacity:.5;pointer-events:none}
 svg .mark{stroke:var(--surface-1);stroke-width:2;cursor:pointer}
 svg .path1{fill:none;stroke:var(--s1);stroke-width:2;opacity:.85}
@@ -344,6 +348,7 @@ svg .infodot:hover text,svg .infodot:focus-visible text{fill:var(--s1)}
    dropped: the two labelled points mean nothing without the space they sit in. The envelope is already the
    faintest thing on the chart (.07/.35 above) and is left alone, because it is what orients the reader. */
 .cfcard .compactchart .dot{opacity:.2}.cfcard .compactchart .front{opacity:.38}
+.cfcard .compactchart .frontx{opacity:.3}
 
 /* the turn scrubber: every turn as one chip, coloured by action type, fabricated ones ringed. One row that
    scrolls sideways rather than wrapping — a sticky element whose height depends on the turn count would push the
@@ -483,6 +488,9 @@ svg.issuesvg .dealdot{fill:var(--s1);stroke:var(--surface-1);stroke-width:1.5}
 .legend .swatch.tick{width:12px;height:2px;border-radius:0;border:0;background:var(--ink-2)}
 .legend .swatch.line{width:12px;height:4px;border-radius:2px;border:0;background:var(--s1)}
 .legend .swatch.dash{width:12px;height:0;border:0;border-top:2px dashed var(--ink-2);border-radius:0}
+/* Matches svg .frontx: a muted cross for a deal that is efficient but that no party could accept. */
+.legend .swatch.xmark{border:0;border-radius:0;background:linear-gradient(45deg,transparent 43%,var(--muted) 43%,var(--muted) 57%,transparent 57%),
+ linear-gradient(-45deg,transparent 43%,var(--muted) 43%,var(--muted) 57%,transparent 57%)}
 .issuenums{display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-top:var(--sp-2);font-variant-numeric:tabular-nums}
 
 /* --- responsive / print ---------------------------------------------------------------------------------- */

@@ -59,12 +59,13 @@ See :func:`~interlens.arena.viz.serve.serve_directory` to do the same from Pytho
 """
 from __future__ import annotations
 
-from .chrome import NAV_MARKER, distance_to_nbs, inject_nav, nav_group, slim_payload, summary_strip
+from .chrome import (NAV_MARKER, distance_to_nbs, inject_nav, nav_group, slim_payload, summary_strip,
+                     unslim_payload)
 from .compare import (DEFAULT_PAIR_KEY, SELECTIONS, align, compare_payload, focal_seats, pair_key,
                       pair_runs, score_table)
 from .episode import RETRY_SOURCE, RunDir, episode_payload, public_ledger, reconstruct_views, seat_kinds
 from .export import export_comparison, export_episode, export_run, render_compare, render_episode
-from .geometry import DealGeometry, GameGeometry
+from .geometry import DealGeometry, GameGeometry, staircase
 from .page import SIDEBAR_TABS, render_compare_html, render_episode_html, render_index_html
 from .serve import DEFAULT_HOST, make_server, serve_banner, serve_directory
 
@@ -75,5 +76,5 @@ __all__ = [
     "export_episode", "export_run", "focal_seats", "inject_nav", "make_server", "nav_group", "pair_key",
     "pair_runs", "public_ledger", "reconstruct_views", "render_compare", "render_compare_html", "render_episode",
     "render_episode_html", "render_index_html", "score_table", "seat_kinds", "serve_banner", "serve_directory",
-    "slim_payload", "summary_strip",
+    "slim_payload", "staircase", "summary_strip", "unslim_payload",
 ]

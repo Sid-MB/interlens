@@ -70,6 +70,33 @@ function solutionMarkStyle(name) {
     : { kind: "star", color: "s3" };
 }
 
+/* Reference concepts often select the SAME deal (especially NBS/KS/EGAL/MNW on the committed bank). Painting
+   their marks and labels at one coordinate makes the last polygon silently erase every earlier concept. Keep
+   the data coordinate exact, but fan the glyphs a few screen pixels around it and connect each glyph back with
+   a hairline. The radial label anchors make all short concept names readable without inventing extra legend
+   state. A singleton remains exactly on the point, preserving the ordinary chart grammar. */
+function solutionReferenceMarks(game, radius) {
+  const entries = Object.entries((game || {}).solutions || {}), groups = {};
+  entries.forEach(([, pt]) => (groups[String(pt.index)] ||= []).push(pt));
+  const seen = {};
+  return entries.map(([name, pt]) => {
+    const group = groups[String(pt.index)], n = group.length, j = seen[String(pt.index)] || 0;
+    seen[String(pt.index)] = j + 1;
+    let placement = {};
+    if (n > 1) {
+      const a = -Math.PI / 2 + j * 2 * Math.PI / n, spread = n === 2 ? 11 : 13;
+      const ox = Math.round(spread * Math.cos(a)), oy = Math.round(spread * Math.sin(a));
+      const horizontal = Math.abs(ox) > 3;
+      placement = { ox, oy, dx: horizontal ? (ox > 0 ? 9 : -9) : 0,
+        dy: horizontal ? 3 : (oy > 0 ? 14 : -8),
+        labelAnchor: horizontal ? (ox > 0 ? "start" : "end") : "middle" };
+    }
+    return { index: pt.index, ...solutionMarkStyle(name), ...placement, label: pt.label,
+      r: radius, role: "solution", concept: name,
+      title: `${pt.label} — ${name}${pt.scale_invariant ? " (scale-invariant)" : " (NOT scale-invariant across private scales)"}` };
+  });
+}
+
 /* A small circled "i" beside an axis title, in SVG so it scales and pans with the chart it annotates. Focusable
    and labelled, so the explanation is reachable by keyboard and by touch (where there is no hover) rather than
    being pointer-only chrome. */
@@ -116,20 +143,41 @@ function frontierChart(host, game, marks, paths, onPick, options) {
   s.push(`<text class="axistitle" transform="rotate(-90 14 ${yc})" x="14" y="${yc}" text-anchor="middle">${yTitle}</text>`);
   // The y control is drawn UNROTATED beside the top of the rotated title: rotating it would tip the glyph on its side.
   s.push(infoDot(14, yc - 140, "y", AXIS_NOTES.y.title));   // clear of the rotated title's top end (~yc-125)
-  // efficient envelope: shaded achievable region + its boundary
-  if (game.envelope && game.envelope.length > 1) {
-    const pts = game.envelope.map(([x, y]) => `${px(x).toFixed(1)},${py(y).toFixed(1)}`).join(" ");
-    const first = game.envelope[0], last = game.envelope[game.envelope.length - 1];
+  /* The REACHABLE efficient region is shaded and bounded: the envelope of deals that are Pareto-optimal AND
+     individually rational. The unconstrained Pareto envelope is kept, but only as a separate dashed line, and
+     only where it runs outside the reachable one — typically the bottom-right corner, where deals maximize joint
+     welfare by pushing some party below its threshold. Shading THAT staircase was the chart's central lie: it
+     drew a boundary no rational table can agree to as the edge of the achievable region. Payloads written before
+     `envelope_ir` existed fall back to the old behaviour rather than losing their envelope. A short (or empty)
+     IR envelope is NOT a reason to fall back — an instance whose reachable frontier is a single deal genuinely
+     has no reachable staircase, and shading the unconstrained one instead would restate the same lie. */
+  const envMain = game.envelope_ir === undefined ? game.envelope : game.envelope_ir;
+  const envFull = game.envelope;
+  const envPts = (e) => e.map(([x, y]) => `${px(x).toFixed(1)},${py(y).toFixed(1)}`).join(" ");
+  if (envFull && envFull.length > 1 && envFull !== envMain
+      && JSON.stringify(envFull) !== JSON.stringify(envMain))
+    s.push(`<polyline class="envline unreachable" points="${envPts(envFull)}"><title>Pareto frontier ignoring thresholds — the dashed part is efficient but below at least one party's threshold, so it cannot close</title></polyline>`);
+  if (envMain && envMain.length > 1) {
+    const pts = envPts(envMain);
+    const first = envMain[0], last = envMain[envMain.length - 1];
     s.push(`<polygon class="envfill" points="${px(first[0]).toFixed(1)},${py(0).toFixed(1)} ${pts} ${px(last[0]).toFixed(1)},${py(0).toFixed(1)}"/>`);
     s.push(`<polyline class="envline" points="${pts}"/>`);
   }
-  // the deal cloud: dominated deals muted, frontier deals ringed
+  /* The deal cloud in three tiers: dominated deals muted, the IR-feasible frontier ringed, and the efficient-but-
+     unreachable deals crossed out. The third tier used to be styled identically to the second, which is what the
+     bug report saw: a bottom-right point ringed as frontier that no party would accept. */
+  const reachable = (i) => dealIsReachable(d, i);
   for (let i = 0; i < d.n; i++) {
     if (d.pareto[i] || markedDeals.has(i)) continue;
     s.push(`<circle class="dot" data-deal="${i}" cx="${px(d.wx[i]).toFixed(1)}" cy="${py(d.wy[i]).toFixed(1)}" r="2"/>`);
   }
   for (let i = 0; i < d.n; i++) {
-    if (!d.pareto[i] || markedDeals.has(i)) continue;
+    if (!d.pareto[i] || markedDeals.has(i) || reachable(i)) continue;
+    const x = px(d.wx[i]), y = py(d.wy[i]), r = 3.2;
+    s.push(`<path class="frontx" data-deal="${i}" d="M${(x - r).toFixed(1)},${(y - r).toFixed(1)} L${(x + r).toFixed(1)},${(y + r).toFixed(1)} M${(x - r).toFixed(1)},${(y + r).toFixed(1)} L${(x + r).toFixed(1)},${(y - r).toFixed(1)}"/>`);
+  }
+  for (let i = 0; i < d.n; i++) {
+    if (!reachable(i) || markedDeals.has(i)) continue;
     s.push(`<circle class="front" data-deal="${i}" cx="${px(d.wx[i]).toFixed(1)}" cy="${py(d.wy[i]).toFixed(1)}" r="3.2"/>`);
   }
   // trajectories, drawn under the marks. A counterfactual preview can request a directed dashed transition;
@@ -145,13 +193,20 @@ function frontierChart(host, game, marks, paths, onPick, options) {
     s.push(`<polyline class="${p.cls}"${p.arrowEnd ? ` marker-end="url(#${arrowId})"` : ""}
       points="${p.indices.map(i => `${px(d.wx[i]).toFixed(1)},${py(d.wy[i]).toFixed(1)}`).join(" ")}"/>`);
   });
+  /* Hairlines disclose that a fanned solution glyph is an offset label for the exact deal, not a nearby deal. */
+  (marks || []).forEach(mk => {
+    if (mk.role !== "solution" || (!mk.ox && !mk.oy)) return;
+    const x = px(d.wx[mk.index]), y = py(d.wy[mk.index]);
+    s.push(`<line class="solutionleader" x1="${x.toFixed(1)}" y1="${y.toFixed(1)}"
+      x2="${(x + (mk.ox || 0)).toFixed(1)}" y2="${(y + (mk.oy || 0)).toFixed(1)}"/>`);
+  });
   /* Shape layering is semantic rather than input-order-dependent. Circles go below diamonds, so when a played
      blue proposal is ALSO a green party-best deal the blue rim and the diamond are both visible; each keeps its
      own hit target. `k` remains the original marks-array index, which the event handlers use as their key. */
   const markLayer = { circle: 0, square: 1, diamond: 2, triangle: 3, star: 3 };
   marks.map((mk, k) => ({ mk, k })).sort((a, b) =>
     (markLayer[a.mk.kind] ?? 0) - (markLayer[b.mk.kind] ?? 0)).forEach(({ mk, k }) => {
-    const x = px(d.wx[mk.index]), y = py(d.wy[mk.index]), r = mk.r || 6.5;
+    const x = px(d.wx[mk.index]) + (mk.ox || 0), y = py(d.wy[mk.index]) + (mk.oy || 0), r = mk.r || 6.5;
     const tip = E(mk.title || mk.label || "");
     /* `mk.cls` is a STATE of a mark (e.g. a proposal the reader has not scrolled to yet), never an identity:
        it changes weight, not hue, so the chart never spends a categorical slot on "later".

@@ -89,6 +89,28 @@ def slim_payload(payload: dict) -> dict:
     return out
 
 
+def unslim_payload(payload: dict) -> dict:
+    """The inverse of :func:`slim_payload`: pooled view indices back to full ``{role, content}`` messages.
+
+    A published page embeds the SLIMMED payload, so this is what makes an already-written page re-renderable — the
+    only way to refresh a page whose original run directory is gone. A payload that carries no ``msgpool`` is
+    already inflated and is returned unchanged, so the call is safe to make unconditionally."""
+    pool = payload.get("msgpool")
+    if not pool:
+        return payload
+
+    def inflate(side: dict) -> dict:
+        turns = [{**t, "view": [{"role": pool[i][0], "content": pool[i][1]} for i in t["view"]]}
+                 if isinstance(t.get("view"), list) and all(isinstance(i, int) for i in t["view"]) else t
+                 for t in side.get("turns") or []]
+        return {**side, "turns": turns}
+
+    out = ({**payload, "left": inflate(payload["left"]), "right": inflate(payload["right"])}
+           if payload.get("kind") == "compare" else inflate(payload))
+    out.pop("msgpool", None)
+    return out
+
+
 # ------------------------------------------------------------------------------------------ chrome --
 def topbar(brand: str, brand_href: str | None, quick: str = "", *, brand_title: str = "",
            nav: bool = True) -> str:

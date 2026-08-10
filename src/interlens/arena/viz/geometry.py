@@ -57,7 +57,33 @@ from ..negotiation.sheets import GameSpec
 from ..negotiation.solutions import (all_solutions, ir_mask, nash_geomean, normalized_surplus, pareto_mask)
 from .concepts import CONCEPT_LABELS
 
-__all__ = ["CONCEPT_LABELS", "DealGeometry", "GameGeometry"]
+__all__ = ["CONCEPT_LABELS", "DealGeometry", "GameGeometry", "staircase"]
+
+
+def staircase(wx: np.ndarray, wy: np.ndarray, mask: np.ndarray) -> list[list[float]]:
+    """The left-to-right monotone staircase of the masked points in the 2-D embedding: those not dominated on
+    ``(wx, wy)`` by another masked point. Free of :class:`GameGeometry` so a caller holding only the wire payload's
+    ``deals`` arrays (an already-published page being re-rendered, say) traces exactly the same envelope the
+    charts do, rather than reimplementing the sweep.
+
+    Parameters
+    ----------
+    wx, wy : numpy.ndarray
+        The ``(|D|,)`` embedding coordinates (joint welfare and min surplus).
+    mask : numpy.ndarray
+        Boolean ``(|D|,)`` selecting which deals the envelope is traced over — :attr:`GameGeometry.pareto` for
+        the unconstrained frontier, :attr:`GameGeometry.pareto_ir` for the one a rational table can reach.
+    """
+    wx, wy = np.asarray(wx, dtype=float), np.asarray(wy, dtype=float)
+    pts = sorted(((float(wx[i]), float(wy[i])) for i in np.nonzero(np.asarray(mask, dtype=bool))[0]),
+                 key=lambda p: (-p[0], -p[1]))
+    out: list[list[float]] = []
+    best_y = -np.inf
+    for x, y in pts:                         # sweeping right to left, keep each new record for min-surplus
+        if y > best_y:
+            out.append([round(x, 4), round(y, 4)])
+            best_y = y
+    return out[::-1]
 
 
 @dataclass
@@ -68,7 +94,9 @@ class DealGeometry:
     ``u``/``s``/``xn`` are the per-party utility, raw surplus, and normalized surplus vectors; ``wx``/``wy`` the
     embedding coordinates; ``pareto``/``ir``/``feasible`` its membership flags (Pareto-optimal, individually
     rational for every party, and passing this game's full agreement rule including veto/min-accept/structural
-    constraints); ``d_frontier`` its normalized-surplus distance below the frontier (0 iff Pareto-optimal)."""
+    constraints); ``pareto_ir`` the conjunction ``pareto and ir`` — efficient AND acceptable to everyone, i.e. on
+    the frontier a rational table could actually reach; ``d_frontier`` its normalized-surplus distance below the
+    UNCONSTRAINED frontier (0 iff Pareto-optimal, so a deal below somebody's threshold can still read 0)."""
 
     index: int
     named: dict[str, str]
@@ -82,10 +110,16 @@ class DealGeometry:
     feasible: bool
     d_frontier: float
 
+    @property
+    def pareto_ir(self) -> bool:
+        """Efficient *and* individually rational — derived, never stored, so it cannot drift from its parts."""
+        return bool(self.pareto and self.ir)
+
     def to_json(self) -> dict:
         return {"index": self.index, "named": self.named, "u": self.u, "s": self.s, "xn": self.xn,
                 "wx": self.wx, "wy": self.wy, "pareto": int(self.pareto), "ir": int(self.ir),
-                "feasible": int(self.feasible), "d_frontier": self.d_frontier}
+                "pareto_ir": int(self.pareto_ir), "feasible": int(self.feasible),
+                "d_frontier": self.d_frontier}
 
 
 class GameGeometry:
@@ -104,6 +138,10 @@ class GameGeometry:
         The ``(|D|,)`` embedding coordinates (mean and min normalized surplus).
     pareto, ir, feasible : numpy.ndarray
         Boolean ``(|D|,)`` membership masks.
+    pareto_ir : numpy.ndarray
+        ``pareto & ir`` — the IR-feasible frontier: efficient AND above every party's threshold. This is the
+        frontier the charts ring and shade; ``pareto & ~ir`` deals are efficient but unreachable and are drawn
+        distinctly rather than dropped.
     solutions : dict
         ``{concept: SolutionPoint.to_json()}`` for every concept in
         :data:`~interlens.arena.viz.geometry.CONCEPT_LABELS` plus any extra the stored analysis carried.
@@ -126,11 +164,39 @@ class GameGeometry:
         self.pareto = pareto_mask(self.U)
         self.ir = ir_mask(self.U, self.tau)
         self.feasible = game.feasible_mask(self.U)
+        # The frontier a rational table can actually REACH. `pareto` alone is a statement about waste, not about
+        # acceptability: a deal can be Pareto-optimal while leaving some party below its threshold, and no such
+        # deal can close. Drawing those two sets with one styling is what made the bottom-right corner of the
+        # chart claim reachable efficiency it does not have, so the presentation layer reads this mask instead.
+        # Purely derived (and deliberately so — `pareto_mask` semantics elsewhere are load-bearing and untouched):
+        # a globally-Pareto IR deal is also Pareto within the IR subset, and if any IR deal exists at least one
+        # Pareto deal is IR (whatever dominates an IR deal is weakly better for everyone, hence IR too).
+        self.pareto_ir = self.pareto & self.ir
         # Stored solutions are preferred over recomputing: they are what the run was actually scored against, so
         # a solver change after the fact shows up as a difference to investigate rather than being papered over.
         self.solutions = dict(solutions) if solutions else {
             name: point.to_json() for name, point in all_solutions(game.space, game.sheets).items()}
         self.solutions_source = "stored" if solutions else "recomputed"
+        # Keep the historical raw EGAL point for auditability, but expose the scale-invariant normalized
+        # maximin point only when it selects a different deal.  This avoids drawing a duplicate marker in
+        # the common case while making the scale issue visible exactly where it changes the reference.
+        raw_egal = self.solutions.get("egalitarian")
+        if raw_egal is not None:
+            ir_idx = np.nonzero(self.ir)[0]
+            if ir_idx.size:
+                scores = self.Xn[ir_idx].min(axis=1)
+                nidx = int(ir_idx[int(np.argmax(scores))])
+                if nidx != int(raw_egal.get("index", -1)):
+                    deal = game.space.deal_at(nidx)
+                    self.solutions["normalized_egalitarian"] = {
+                        "concept": "normalized_egalitarian", "index": nidx,
+                        "deal": list(deal), "named": game.space.named(deal),
+                        "utilities": [float(v) for v in self.U[nidx]],
+                        "surpluses": [float(v) for v in self.X[nidx]],
+                        "ties": [int(i) for i in ir_idx[np.isclose(scores, scores.max())]],
+                        "note": "maximizes the worst party's normalized surplus",
+                        "scale_invariant": True,
+                    }
         self._d_frontier = self._frontier_distances()
         self.party_best = self._party_best()
 
@@ -229,23 +295,20 @@ class GameGeometry:
                 "nsw_geomean": round(nash_geomean([float(v) for v in s]), 4),
                 "n_below_threshold": int((s < 0).sum())}
 
-    def envelope(self) -> list[list[float]]:
+    def envelope(self, mask: np.ndarray | None = None) -> list[list[float]]:
         """The efficient envelope of the frontier IN THE 2-D EMBEDDING: the staircase of frontier deals that are
         non-dominated on ``(joint welfare, min surplus)`` themselves, ordered left to right.
+
+        ``mask`` selects which frontier is traced and defaults to :attr:`pareto` (the unconstrained one). Pass
+        :attr:`pareto_ir` for the envelope of the deals that could actually close; the charts draw that one as
+        the shaded region and keep the unconstrained staircase as a separate, visibly different line.
 
         The projection is lossy, so a deal on the true ``R^n`` frontier can sit strictly inside this envelope —
         it is efficient overall while being beaten on both plotted summaries by some other efficient deal. The
         envelope is therefore drawn as the outer boundary of the achievable region and never used to decide
         whether a deal is Pareto-optimal; that always comes from :attr:`pareto`."""
-        pts = sorted(((float(self.wx[i]), float(self.wy[i])) for i in np.nonzero(self.pareto)[0]),
-                     key=lambda p: (-p[0], -p[1]))
-        out: list[list[float]] = []
-        best_y = -np.inf
-        for x, y in pts:                     # sweeping right to left, keep each new record for min-surplus
-            if y > best_y:
-                out.append([round(x, 4), round(y, 4)])
-                best_y = y
-        return out[::-1]
+        sel = self.pareto if mask is None else mask
+        return staircase(self.wx, self.wy, sel)
 
     # ------------------------------------------------------------------- payload --
     def to_json(self) -> dict:
@@ -286,11 +349,16 @@ class GameGeometry:
                 "xn": [[round(float(v), 4) for v in row] for row in self.Xn],
                 "pareto": [int(v) for v in self.pareto],
                 "ir": [int(v) for v in self.ir],
+                # The mask the chart styles the frontier from. Shipped rather than re-derived in JS so the browser
+                # and the analysis can never disagree about which deals are drawn as reachable-efficient.
+                "pareto_ir": [int(v) for v in self.pareto_ir],
                 "feasible": [int(v) for v in self.feasible],
                 "d_frontier": [round(float(v), 4) for v in self._d_frontier],
             },
             "envelope": self.envelope(),
-            "solutions": {name: dict(point, label=CONCEPT_LABELS.get(name, name))
+            "envelope_ir": self.envelope(self.pareto_ir),
+            "solutions": {name: dict(point, label=("nEGAL" if name == "normalized_egalitarian"
+                                                    else CONCEPT_LABELS.get(name, name)))
                           for name, point in self.solutions.items()},
             "solutions_source": self.solutions_source,
             "party_best": [{"party": i, "agent": self.parties[i], "index": int(idx),
