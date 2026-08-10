@@ -243,6 +243,38 @@ class GameSpec:
             ok &= np.fromiter((predicate(d) for d in self.space.enumerate()), dtype=bool, count=self.space.size)
         return ok
 
+    def normalized_geometry(self) -> dict:
+        """The game's scale-invariant surplus geometry, and the deal that attains its ceiling.
+
+        Each party is normalized by its own **capacity** ``c_i = max_d x_i(d)`` (its best surplus over the whole
+        deal space), giving ``z_i = x_i / c_i``. The **ceiling** is ``max`` over the FEASIBLE set (whatever
+        :meth:`feasible_mask` admits) of ``sum_i z_i``, and the **ceiling deal** is the argmax — ties broken by
+        the smallest enumeration index, so it is deterministic.
+
+        Returns ``{"feasible", "capacities", "normalized_ceiling", "raw_ceiling", "ceiling_index",
+        "ceiling_deal"}``; ``ceiling_index``/``ceiling_deal`` are ``None`` when the game admits no feasible deal
+        or some party has zero capacity (a degenerate sheet), which is also when ``normalized_ceiling`` is 0.
+
+        This is the single definition of "the best deal on the table": ``normalized_ceiling`` is the denominator
+        of the scenario's ``primary`` score (so score 1.0 *is* the ceiling deal), and ``ceiling_deal`` is what an
+        experiment seeds when it wants the optimum already tabled.
+        """
+        x = self.surplus_matrix()
+        mask = self.feasible_mask()
+        capacities = x.max(axis=0)
+        valid = bool(mask.any()) and bool(np.all(capacities > 1e-9))
+        out = {"feasible": bool(mask.any()), "capacities": capacities,
+               "normalized_ceiling": 0.0, "ceiling_index": None, "ceiling_deal": None,
+               "raw_ceiling": float(x[mask].sum(axis=1).max()) if mask.any() else 0.0}
+        if not valid:
+            return out
+        z_sum = np.where(mask, (x / capacities[None, :]).sum(axis=1), -np.inf)
+        index = int(np.argmax(z_sum))
+        out["normalized_ceiling"] = float(z_sum[index])
+        out["ceiling_index"] = index
+        out["ceiling_deal"] = tuple(int(o) for o in self.space.deal_at(index))
+        return out
+
     def constraint_fn(self) -> "Callable[[Deal], bool] | None":
         """This game's structural deal predicate, resolved from the ``constraint`` NAME via
         :data:`CONSTRAINTS`, or ``None`` when it declares none. Raises ``KeyError`` for an unregistered name."""

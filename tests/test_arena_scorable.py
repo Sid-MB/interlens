@@ -450,3 +450,23 @@ def test_unseeded_game_is_untouched():
 	st = scen.make_state(inst, "moves_chat", seed=0, cfg={"seeded_offer": None})
 	assert st["registry"].standing() == [] and st["events"] == [] and st["seeded_offer"] is None
 	assert st["final_offer"] is None and st["final_vote_includes_opener"] is False
+
+
+def test_ceiling_deal_is_exactly_the_deal_the_scorer_calls_one():
+	# GameSpec.normalized_geometry owns both the ceiling VALUE (the scorer's denominator) and the deal that
+	# attains it, which is what makes "seed the optimum" well defined: seeding ceiling_deal must score 1.0, and
+	# no other feasible deal may beat it.
+	game = make_game()
+	geom = game.normalized_geometry()
+	scen, inst = ScorableNegotiation(), make_instance(game)
+	st = scen.make_state(inst, "moves_chat", seed=0)
+	assert geom["ceiling_deal"] is not None
+	assert scen._deal_primary(st, geom["ceiling_deal"], set()) == pytest.approx(1.0)
+	mask = game.feasible_mask()
+	for k, deal in enumerate(game.space.enumerate()):
+		if mask[k]:
+			assert scen._deal_primary(st, tuple(deal), set()) <= 1.0 + 1e-9
+	# and it is what the ceiling-seeded protocol actually tables
+	seeded = scen.make_state(inst, "moves_chat", seed=0,
+	                         cfg={"seeded_offer": {"deal": list(geom["ceiling_deal"]), "kind": "ceiling"}})
+	assert tuple(seeded["seeded_offer"]["deal"]) == geom["ceiling_deal"]

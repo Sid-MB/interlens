@@ -828,18 +828,9 @@ class ScorableNegotiation(Scenario):
 		"""Raw and per-seat-normalized surplus geometry, cached because it is fixed for an episode."""
 		if "_score_geometry" in st:
 			return st["_score_geometry"]
-		spec = st["spec"]
-		x = spec.surplus_matrix()
-		mask = spec.feasible_mask()
-		capacities = x.max(axis=0)
-		valid = bool(mask.any()) and bool(np.all(capacities > 1e-9))
-		z = x / capacities[None, :] if valid else np.zeros_like(x)
-		geometry = {
-			"feasible": bool(mask.any()),
-			"capacities": capacities,
-			"normalized_ceiling": float(z[mask].sum(axis=1).max()) if valid else 0.0,
-			"raw_ceiling": float(x[mask].sum(axis=1).max()) if mask.any() else 0.0,
-		}
+		# One owner: GameSpec.normalized_geometry defines the capacities, the ceiling, AND the deal attaining it,
+		# so the deal an experiment seeds as "the optimum" is by construction the deal this scorer calls 1.0.
+		geometry = st["spec"].normalized_geometry()
 		st["_score_geometry"] = geometry
 		return geometry
 
