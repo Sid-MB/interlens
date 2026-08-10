@@ -53,6 +53,7 @@ from typing import Iterable, Iterator, TYPE_CHECKING
 
 import torch
 
+from ..loading.devices import input_device
 from .activation_cache import CaptureSpec, Site
 from .capture import capture_activations
 from .grad import GradCaptureSpec, forward_with_grad
@@ -265,7 +266,7 @@ def span_pooled_residuals(
 	spans = message_token_spans(tokenizer, view)
 	rendered = tokenizer.apply_chat_template(view, tokenize=False)
 	ids = tokenizer(rendered, add_special_tokens=False, return_tensors="pt").input_ids
-	ids = ids.to(next(model.parameters()).device)
+	ids = ids.to(input_device(model))
 
 	n_layers = len(model.model.layers) if hasattr(model, "model") else model.config.num_hidden_layers
 	want = tuple(range(n_layers)) if layers is None else ((layers,) if isinstance(layers, int) else tuple(layers))

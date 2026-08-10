@@ -13,12 +13,16 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+from .devices import device_map_kind, input_device, is_sharded
 from .model_cache import free
 from .load import load_model, load_tokenizer, derive_chat_flags
 
 __all__ = [
 	"derive_chat_flags",
+	"device_map_kind",
 	"free",
+	"input_device",
+	"is_sharded",
 	"load_model",
 	"load_tokenizer",
 ]

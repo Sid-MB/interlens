@@ -232,6 +232,18 @@ class ModelParticipant(Functional, Participant):
 			self._ensure_loaded()
 		return self._tokenizer
 
+	@property
+	def input_device(self) -> "torch.device":
+		"""Where this participant's ``input_ids`` must land — the loaded model's **input-embedding** device.
+
+		Identical to ``self.device`` for the ordinary single-device load, and different only when the model was
+		placed by ``device_map=`` across several GPUs: then ``self.device`` is just the participant's identity
+		label (it also keys the weight cache) while the tensor has to meet the embedding shard. Every tokenize →
+		``.to(...)`` site in this class goes through here so the two cases share one code path. Forces the lazy
+		load, because there is no embedding to ask before the weights exist."""
+		from ...loading import input_device  # lazy: loading imports this module
+		return input_device(self.model)
+
 	def _bind(self, device) -> "ModelParticipant":
 		"""Bind the device the lazy load will target (the runner calls this per worker/GPU before stepping). Returns
 		self for chaining. Only meaningful before the first load."""
@@ -476,7 +488,7 @@ class ModelParticipant(Functional, Participant):
 		# reuse). Only valid when sampling (identical greedy rows would be identical, so batching is pointless).
 		shared_prefill = do_sample and len(views) > 1 and len(set(prompts)) == 1
 		if shared_prefill:
-			enc = self.tokenizer(prompts[0], return_tensors="pt", add_special_tokens=False).to(self.device)
+			enc = self.tokenizer(prompts[0], return_tensors="pt", add_special_tokens=False).to(self.input_device)
 			prompt_len = enc["input_ids"].shape[1]
 			with torch.inference_mode():
 				out = self.model.generate(**enc, num_return_sequences=len(views), **gen)
@@ -486,7 +498,7 @@ class ModelParticipant(Functional, Participant):
 			self.tokenizer.padding_side = "left"
 			try:
 				enc = self.tokenizer(prompts, return_tensors="pt", padding=True,
-				                     add_special_tokens=False).to(self.device)
+				                     add_special_tokens=False).to(self.input_device)
 			finally:
 				self.tokenizer.padding_side = prev_side
 			prompt_len = enc["input_ids"].shape[1]
@@ -525,7 +537,7 @@ class ModelParticipant(Functional, Participant):
 			self.repair_view(messages), tokenize=False, add_generation_prompt=True, tools=schemas,
 			**template_kwargs
 		)
-		enc = self.tokenizer(rendered, return_tensors="pt", add_special_tokens=False).to(self.device)
+		enc = self.tokenizer(rendered, return_tensors="pt", add_special_tokens=False).to(self.input_device)
 		prompt_len = enc["input_ids"].shape[1]
 
 		do_sample = bool(self.temperature and self.temperature > 0)
@@ -659,7 +671,7 @@ class ModelParticipant(Functional, Participant):
 		else:
 			phases["answer"] = (prompt_len, seq_len)
 
-		input_ids = full_ids.unsqueeze(0).to(self.device)
+		input_ids = full_ids.unsqueeze(0).to(self.input_device)
 		# Build all records first, then offload their tensors in ONE batched pinned transfer (add_batch) instead of
 		# a per-record GPU->CPU copy.
 		records = [

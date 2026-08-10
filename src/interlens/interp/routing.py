@@ -36,6 +36,7 @@ import torch
 if TYPE_CHECKING:
 	from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from ..loading.devices import input_device
 from .layers import decoder_layers
 
 
@@ -99,7 +100,7 @@ def capture_router_logits(model: "PreTrainedModel", input_ids: torch.Tensor, lay
 	k = moe_topk(model)
 
 	with torch.inference_mode():
-		out = model(input_ids.to(model.device), output_router_logits=True, use_cache=False)
+		out = model(input_ids.to(input_device(model)), output_router_logits=True, use_cache=False)
 	if getattr(out, "router_logits", None) is None:
 		raise ValueError(f"{type(model).__name__} did not return router_logits — not an MoE forward?")
 

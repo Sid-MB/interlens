@@ -20,6 +20,7 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
+from .devices import device_map_kind
 from .model_cache import cached_model, cached_tokenizer
 
 
@@ -72,10 +73,20 @@ def derive_chat_flags(tokenizer) -> tuple[bool, bool]:
 	return supports_system_role, requires_alternating_roles
 
 
-def _load_model_weights(hf_id, device, dtype, attn, quant, revision):
+def _load_model_weights(hf_id, device, dtype, attn, quant, revision, max_memory=None):
 	"""Load weights, trying flash-attn first and gracefully falling back. Records nothing here; the caller/
-	participant records the *resolved* backend in config metadata."""
+	participant records the *resolved* backend in config metadata.
+
+	``device`` is either an ordinary placement (``"cuda"``, ``"cuda:1"``, a ``torch.device``) — loaded then
+	``.to()``'d, the historical path — or a sharding strategy (``"auto"`` and friends, or an explicit map), in
+	which case it is passed straight through as ``device_map=`` and the ``.to()`` is skipped, because moving a
+	sharded model would undo the placement accelerate just computed."""
+	device_map = device_map_kind(device)
 	kwargs = dict(dtype=dtype, revision=revision)
+	if device_map is not None:
+		kwargs["device_map"] = device_map
+	if max_memory is not None:
+		kwargs["max_memory"] = dict(max_memory)
 	if quant is not None:
 		# Quantization is opt-in (perturbs activations/logits → interp fidelity). cuda-only in practice.
 		from transformers import BitsAndBytesConfig
@@ -94,7 +105,7 @@ def _load_model_weights(hf_id, device, dtype, attn, quant, revision):
 			model = auto_cls.from_pretrained(hf_id, attn_implementation=backend, **kwargs)
 			model.eval()
 			model._resolved_attn = backend  # traceable in saved metadata
-			if quant is None:
+			if quant is None and device_map is None:
 				model = model.to(device)
 			return model
 		except Exception as exc:  # unsupported backend / missing package → fall back
@@ -110,16 +121,59 @@ def load_model(
 	attn: str = "flash_attention_2",
 	quant: str | None = None,
 	revision: str | None = None,
+	max_memory: dict | None = None,
 ):
 	"""Load a causal LM + tokenizer, sharing through the process-local caches.
 
 	``id_or_path`` is the HF id or a local path to load directly (a ``Path`` is normalized to ``str`` so it shares
-	the same cache slot as its string form). Identical (hf_id, device, dtype, attn, quant) pairings share the one
-	model object, and the tokenizer is cached by hf_id. Flash-attention is the default with automatic fallback to
-	sdpa/eager; quantization is opt-in.
+	the same cache slot as its string form). Identical (hf_id, device, dtype, attn, quant, revision, max_memory)
+	pairings share the one model object, and the tokenizer is cached by hf_id. Flash-attention is the default with
+	automatic fallback to sdpa/eager; quantization is opt-in.
+
+	Parameters:
+		id_or_path: HF hub id or a local directory of weights.
+		device: either a single placement (``"cuda"``, ``"cuda:1"``, ``"cpu"``, a ``torch.device`` — the default,
+			loaded then moved) or a **sharding strategy** handed to ``device_map=``: ``"auto"`` (fill each
+			visible GPU in turn, then cpu/disk), ``"balanced"`` (even split over GPUs), ``"balanced_low_0"``
+			(leave headroom on GPU 0 for generation buffers), ``"sequential"``, or an explicit
+			``{module_name: device}`` map. Use a strategy when the weights do not fit one card — e.g. a 32B
+			policy on two 80 GB GPUs; use the single-device default whenever they do, since sharding adds
+			cross-device transfers to every forward.
+		dtype: parameter dtype; ``bfloat16`` is the default and what every evaluation in this library assumes.
+		attn: preferred attention backend, tried first and then degraded through ``sdpa`` and ``eager``, so
+			``flash_attention_2`` is safe to leave on hardware/builds that lack it.
+		quant: ``None`` (full precision — required for faithful interpretability, since quantization perturbs
+			the very activations a probe reads), ``"4bit"`` or ``"8bit"`` via BitsAndBytes when memory forces it.
+			Quantized loads place themselves and are never ``.to()``'d.
+		revision: pin a specific hub commit/branch/tag; ``None`` takes the default branch.
+		max_memory: per-device budget for a ``device_map`` strategy, e.g. ``{0: "70GiB", 1: "70GiB",
+			"cpu": "0GiB"}``. Use it to reserve headroom for KV cache and activations, which the automatic map
+			does not know about, or to forbid cpu offload (an ``"0GiB"`` cpu entry turns a silent 100x slowdown
+			into an out-of-memory error you can act on). Ignored without a strategy.
+
+	Returns:
+		``(model, tokenizer)``. On a sharded load, place inputs with
+		:func:`~interlens.loading.devices.input_device` rather than ``model.device``.
+
+	Example:
+		>>> model, tok = load_model("Qwen/Qwen3-8B")                       # single GPU, bf16, flash-attn
+		>>> model, tok = load_model("Qwen/Qwen3-32B", device="balanced",   # two cards, KV headroom reserved
+		...                         max_memory={0: "70GiB", 1: "70GiB", "cpu": "0GiB"})
 	"""
 	hf_id = str(id_or_path)
 	tokenizer = cached_tokenizer(hf_id, lambda: load_tokenizer(hf_id, revision=revision))
-	weight_key = (hf_id, str(device), str(dtype), attn, quant, revision)
-	model = cached_model(weight_key, lambda: _load_model_weights(hf_id, device, dtype, attn, quant, revision))
+	# max_memory is a dict (unhashable) and device may be one too, so both are normalized to sorted string
+	# tuples: two callers asking for the same budget in a different key order must share one model object, and
+	# two asking for DIFFERENT budgets must not.
+	weight_key = (hf_id, _hashable(device), str(dtype), attn, quant, revision, _hashable(max_memory))
+	model = cached_model(weight_key, lambda: _load_model_weights(hf_id, device, dtype, attn, quant, revision,
+	                                                             max_memory))
 	return model, tokenizer
+
+
+def _hashable(value) -> str | tuple:
+	"""Normalize a cache-key component that may be a dict (``device_map`` / ``max_memory``) into a stable,
+	order-insensitive hashable form; anything else stringifies as before."""
+	if isinstance(value, dict):
+		return tuple(sorted((str(k), str(v)) for k, v in value.items()))
+	return str(value)

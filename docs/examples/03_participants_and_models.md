@@ -34,7 +34,30 @@ from interlens.loading import load_model
 model, tok = load_model("Qwen/Qwen3-8B", device="cuda", dtype=torch.bfloat16, attn="flash_attention_2")
 ```
 
-`load_model` shares a process-local cache: identical `(hf_id, device, dtype, attn, quant, revision)` returns the same model object; each HF id caches its own tokenizer. Flash-attention is the default with automatic fallback to sdpa/eager; `quant="4bit"`/`"8bit"` is opt-in (perturbs activations → interp fidelity).
+`load_model` shares a process-local cache: identical `(hf_id, device, dtype, attn, quant, revision, max_memory)` returns the same model object; each HF id caches its own tokenizer. Flash-attention is the default with automatic fallback to sdpa/eager; `quant="4bit"`/`"8bit"` is opt-in (perturbs activations → interp fidelity).
+
+### Models too big for one GPU
+
+Pass a **sharding strategy** as `device` and it is routed to `device_map=` (the `.to(device)` is skipped, since moving a sharded model would undo the placement). `max_memory` reserves per-device headroom — worth setting whenever you shard, because the automatic map sizes for *weights* while your peak is usually KV cache and activations.
+
+```python
+model, tok = load_model(
+    "Qwen/Qwen3-32B",
+    device="balanced",                                        # or "auto" / "balanced_low_0" / "sequential" / a {module: device} dict
+    max_memory={0: "70GiB", 1: "70GiB", "cpu": "0GiB"},        # "cpu": "0GiB" forbids offload → an actionable OOM instead of a silent 100x slowdown
+)
+```
+
+Once a model is sharded, `model.device` is **not** where inputs go — the input embedding's device is. Use `input_device`; it returns the single device unchanged for an ordinary load, so the same code covers both:
+
+```python
+from interlens.loading import input_device, is_sharded
+
+ids = tok("hello", return_tensors="pt").input_ids.to(input_device(model))
+is_sharded(model)      # True only when device_map spread it over more than one device
+```
+
+`ModelParticipant` does this for you (`p.input_device`), as do `capture_router_logits` and `span_pooled_residuals`.
 
 ## `ModelParticipant` knobs
 
