@@ -364,8 +364,8 @@ def test_seeded_offer_is_registered_and_announced_before_any_seat_speaks():
 	assert st["events"] and st["events"][0]["seat"] == "Facilitator"
 	assert "P1" in st["events"][0]["content"] and "casts no vote" in st["events"][0]["content"]
 	# and it is visible in the machine-readable state block every seat reads
-	block = json.loads(re.search(r"```json\n(.*?)\n```", scen._state_block_json(st, 0), re.S).group(1))
-	state = block["negotiation_state"]
+	from interlens.arena.negotiation.strategies import parse_negotiation_state
+	state = parse_negotiation_state(scen._state_block_json(st, 0))
 	assert state["offers"]["P1"] == [0, 2] and state["standing"] == "P1"
 	assert state["offer_proposers"]["P1"] == -1           # no seat proposed it
 	assert state["offer_accepts"]["P1"] == []
@@ -470,3 +470,22 @@ def test_ceiling_deal_is_exactly_the_deal_the_scorer_calls_one():
 	seeded = scen.make_state(inst, "moves_chat", seed=0,
 	                         cfg={"seeded_offer": {"deal": list(geom["ceiling_deal"]), "kind": "ceiling"}})
 	assert tuple(seeded["seeded_offer"]["deal"]) == geom["ceiling_deal"]
+
+
+def test_single_shot_state_block_reports_the_terminal_round():
+	# The forced final is the LAST decision point, and a policy that plans against the clock reads its horizon
+	# off the state block. Under single_shot the regular rounds never run, so the state's own counter is still
+	# 1 — the block must report the round of the PHASE being requested (deadline+1), or an expectimax seat
+	# values a terminal vote against rounds of continuation that do not exist.
+	scen, inst = ScorableNegotiation(), make_instance(make_game(rounds=4))
+	cfg = {**SEED_CFG, "single_shot": True}
+	st = scen.make_state(inst, "moves_chat", seed=0, cfg=cfg)
+	req = scen.next_requests(st)[0]
+	assert req.phase == "final_vote" and req.round == 5
+	from interlens.arena.negotiation.strategies import parse_negotiation_state
+	state = parse_negotiation_state(req.view[-1]["content"])
+	assert (state["round"], state["deadline"], state["must_vote"]) == (5, 4, True)
+	# the ordinary game already advanced its own counter, so its forced final is unchanged
+	plain = drive_state(scen, make_instance(make_game(rounds=1)), "moves_chat",
+	                    lambda seat, view: {"action": "propose", "deal": SEEDED_DEAL})
+	assert plain["round"] == 2

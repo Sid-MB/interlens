@@ -354,7 +354,7 @@ class ScorableNegotiation(Scenario):
 			info_note=sc.info_condition_note(info=spec.info), full_info_sheets=full_sheets,
 			seat_index=si)
 
-	def _state_block_json(self, st, si: int, *, must_vote: bool = False) -> str:
+	def _state_block_json(self, st, si: int, *, must_vote: bool = False, round_no: int | None = None) -> str:
 		"""The authoritative, machine-readable ``negotiation_state`` block a ``PolicyParticipant`` reads directly
 		(``parse_negotiation_state`` / ``NegotiationState.from_block``) instead of re-deriving the ledger from the
 		merged public transcript — which is lossy/mis-numbered once several opponents speak between a seat's turns
@@ -382,7 +382,8 @@ class ScorableNegotiation(Scenario):
 		if must_vote and st.get("final_offer"):
 			standing = st["final_offer"]  # the specific offer under the up/down vote
 		block = {"negotiation_state": {
-			"seat": si, "round": st["round"], "deadline": st["rounds"],
+			"seat": si, "round": int(round_no if round_no is not None else st["round"]),
+			"deadline": st["rounds"],
 			"min_accept": st["spec"].min_accept, "veto_seats": st["spec"].veto_seats,
 			"offers": {o.offer_id: list(o.deal) for o in standing_offers},
 			# a facilitator-tabled offer has no seat behind it: it serializes as FACILITATOR_SEAT (-1), which a
@@ -402,11 +403,13 @@ class ScorableNegotiation(Scenario):
 		}}
 		return "```json\n" + _json(block) + "\n```"
 
-	def _seat_view(self, st, si: int, phase_prompt: str, *, must_vote: bool = False) -> list[dict]:
+	def _seat_view(self, st, si: int, phase_prompt: str, *, must_vote: bool = False,
+	               round_no: int | None = None) -> list[dict]:
 		window = st["history_window"]
 		events = st["events"][-window:] if window else st["events"]
 		if st.get("state_block", True) and st["arm"] != "solo":
-			phase_prompt = phase_prompt + "\n" + self._state_block_json(st, si, must_vote=must_vote)
+			phase_prompt = phase_prompt + "\n" + self._state_block_json(
+				st, si, must_vote=must_vote, round_no=round_no)
 		return build_view(st["seat_names"][si], self._system_prompt(st, si), events, phase_prompt)
 
 	# ------------------------------------------------------------ stepping --
@@ -437,8 +440,8 @@ class ScorableNegotiation(Scenario):
 		if st["final_offer"] is None:
 			seat = st["seat_names"][opener]
 			prompt = self.scaffold.final_prompt(seat=seat, offers_block=self._live_offers_block(st, opener))
-			return [SeatRequest("", seat, self._seat_view(st, opener, prompt), "final_proposal",
-			                    rounds + 1, max_tokens=2560, meta={"si": opener})]
+			return [SeatRequest("", seat, self._seat_view(st, opener, prompt, round_no=rounds + 1),
+			                    "final_proposal", rounds + 1, max_tokens=2560, meta={"si": opener})]
 		for si in self._final_voters(st, order):
 			if st["seat_names"][si] not in st["final_votes"]:
 				seat = st["seat_names"][si]
@@ -446,7 +449,8 @@ class ScorableNegotiation(Scenario):
 					seat=seat, round_no=rounds + 1, rounds=rounds, is_opener=False,
 					offers_block=self._live_offers_block(st, si) + f"\nThis is the FINAL up/down vote on {st['final_offer']}.",
 					chat_enabled=self._chat_enabled(st), seat_index=si)
-				return [SeatRequest("", seat, self._seat_view(st, si, prompt, must_vote=True), "final_vote",
+				return [SeatRequest("", seat, self._seat_view(st, si, prompt, must_vote=True,
+				                                              round_no=rounds + 1), "final_vote",
 				                    rounds + 1, meta={"si": si})]
 		return []  # all votes in; apply() has resolved closure and set done
 
