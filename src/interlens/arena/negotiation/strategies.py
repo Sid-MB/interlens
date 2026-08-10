@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ...parsing import last_json_with_key
+from ..actions import FACILITATOR_SEAT
 from . import fairness
 from .oracle_context import Accept, Deal, GameTables, Pass, Propose, Reject, Walk, deal_list
 from .acceptance import AcceptanceOracle
@@ -879,7 +880,11 @@ class BayesianRationalPolicy(Policy):
             return None
         idx = tables.index[tuple(int(x) for x in deal)]
         proposer = state.offer_proposers.get(oid)
-        if proposer is None:
+        if proposer == FACILITATOR_SEAT:
+            # Tabled by the protocol's neutral facilitator: no seat implicitly supports it, so every party's
+            # vote (including this one's) is priced on its own merits.
+            proposer = None
+        elif proposer is None:
             # Legacy state blocks did not carry offer provenance. Proposer identity does not affect unanimity;
             # for an old numeric-quorum block, fall back deterministically rather than silently crashing.
             proposer = next(iter(state.opponents), state.seat)

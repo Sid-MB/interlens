@@ -100,6 +100,22 @@ def test_quorum_passage_probability_and_veto_are_exact():
     assert passage_probability(ap, 0, min_accept=3, veto_seats=(4,))[0] == 0.4375
 
 
+def test_facilitator_offer_has_no_implicit_supporter():
+    # [implement: rational_agents orig (results review)--optimal on the table] 2026-08-10
+    # A package tabled by the neutral facilitator (proposer=None) is supported by nobody, so every seat counts
+    # as a genuine voter and the offer is strictly harder to pass than the same deal proposed by a seat.
+    flat = np.full((1, 5), 0.5)
+    assert passage_probability(flat, None, min_accept=None)[0] == 0.5 ** 5
+    assert passage_probability(flat, 0, min_accept=None)[0] == 0.5 ** 4
+    assert passage_probability(flat, None, min_accept=4)[0] == 0.5 ** 5 * 5 + 0.5 ** 5
+    # a veto seat is no longer satisfied for free by being the proposer
+    assert passage_probability(flat, None, min_accept=5, veto_seats=(4,))[0] == 0.5 ** 5
+    # the yes/no vote valuation accepts the same "no proposer" sentinel
+    yes, no, q_yes, q_no = conditional_vote_values(flat, None, 0, 0, 1.0, 0.0, min_accept=None)
+    assert q_yes == 0.5 ** 4 and q_no == 0.0
+    assert yes == 0.5 ** 4 and no == 0.0
+
+
 def test_best_response_and_bayesian_dp_use_game_quorum():
     quorum_game = _game(min_accept=4)
     unanimous_game = _game(min_accept=None)

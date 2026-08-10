@@ -336,3 +336,117 @@ def test_view_recording_can_be_disabled():
 	ep = asyncio.run(pool.run_episode(scen, inst, "moves_chat",
 	                                  JsonSeat(coop({"Site": "North", "Fund": "High"})), seed=0))
 	assert ep.turns and all(t.view is None for t in ep.turns)    # lean mode: no views stored
+
+
+# --- seeded opening offer ------------------------------------------------------------------------------------
+# [implement: rational_agents orig (results review)--optimal on the table] 2026-08-10 — the `seeded_offer`
+# protocol knob: one standing package tabled by a neutral non-voting facilitator before round 1.
+
+SEEDED_DEAL = {"Site": "North", "Fund": "High"}          # clears all three thresholds
+SEED_CFG = {"seeded_offer": {"deal": SEEDED_DEAL, "kind": "ceiling", "source": "unit-test"}}
+
+
+def _accept_seeded(seat, view):
+	"""Accept the facilitator's offer (always P1) on every turn, in whatever phase."""
+	return {"message": "P1 works for me.", "action": "accept", "offer_id": "P1"}
+
+
+def test_seeded_offer_is_registered_and_announced_before_any_seat_speaks():
+	scen, inst = ScorableNegotiation(), make_instance(make_game())
+	st = scen.make_state(inst, "moves_chat", seed=0, cfg=SEED_CFG)
+	offers = st["registry"].standing()
+	assert len(offers) == 1 and offers[0].offer_id == "P1"
+	assert offers[0].deal == (0, 2)                        # North, High
+	assert offers[0].proposer == "Facilitator"
+	assert offers[0].accepts == set()                      # the facilitator casts NO implicit vote
+	assert st["seeded_offer"]["kind"] == "ceiling" and st["seeded_offer"]["offer_id"] == "P1"
+	# announced publicly, before any turn, and attributed to the non-seat facilitator
+	assert st["events"] and st["events"][0]["seat"] == "Facilitator"
+	assert "P1" in st["events"][0]["content"] and "casts no vote" in st["events"][0]["content"]
+	# and it is visible in the machine-readable state block every seat reads
+	block = json.loads(re.search(r"```json\n(.*?)\n```", scen._state_block_json(st, 0), re.S).group(1))
+	state = block["negotiation_state"]
+	assert state["offers"]["P1"] == [0, 2] and state["standing"] == "P1"
+	assert state["offer_proposers"]["P1"] == -1           # no seat proposed it
+	assert state["offer_accepts"]["P1"] == []
+	# a facilitator package reveals nothing about any party, so it never enters the opponent-modelling inputs
+	assert state["received"] == [] and state["received_by_opponent"] == {}
+
+
+def test_seeded_offer_needs_every_seat_and_the_facilitator_never_counts():
+	# Two of three seats accept; the facilitator's registration must not supply the third vote.
+	scen, inst = ScorableNegotiation(), make_instance(make_game(rounds=1))
+
+	def decide(seat, view):
+		if seat == PERSONAS[2]:
+			return {"message": "Not yet.", "action": "reject", "offer_id": "P1"}
+		return _accept_seeded(seat, view)
+
+	st = drive_state(scen, inst, "moves_chat", decide, cfg=SEED_CFG)
+	out = scen.score(st)
+	assert out["deal"] is False
+	assert sorted(st["registry"].get("P1").accepts) == sorted(PERSONAS[:2])
+
+
+def test_seeded_offer_closes_on_unanimous_acceptance():
+	scen, inst = ScorableNegotiation(), make_instance(make_game())
+	ep = run(scen, inst, "moves_chat", JsonSeat(_accept_seeded), cfg=SEED_CFG)
+	out = ep.outcome
+	assert out["deal"] is True and out["closing_offer"] == "P1"
+	assert out["deal_named"] == SEEDED_DEAL
+	assert out["seeded_offer"]["final_is_seeded"] is True
+	assert out["seeded_offer"]["kind"] == "ceiling"
+	assert sorted(out["seeded_offer"]["accepts"]) == sorted(PERSONAS[:3])
+
+
+def test_seeded_single_shot_is_one_forced_vote_by_every_seat():
+	# V-vote: the seeded offer IS the final offer, so no seat proposes and EVERY seat casts an up/down vote.
+	scen, inst = ScorableNegotiation(), make_instance(make_game())
+	cfg = {**SEED_CFG, "single_shot": True}
+	st = drive_state(scen, inst, "moves_chat", _accept_seeded, cfg=cfg)
+	out = scen.score(st)
+	assert out["deal"] is True and out["closing_offer"] == "P1"
+	assert sorted(st["final_votes"]) == sorted(PERSONAS[:3])     # all three voted, including the opener
+	assert st["turn_count"] == 3                                 # exactly one turn per seat
+	assert all(o.proposer == "Facilitator" for o in st["registry"].standing())
+
+
+def test_seeded_single_shot_one_refusal_kills_the_deal():
+	scen, inst = ScorableNegotiation(), make_instance(make_game())
+	cfg = {**SEED_CFG, "single_shot": True}
+
+	def decide(seat, view):
+		if seat == PERSONAS[1]:
+			return {"message": "No.", "action": "reject", "offer_id": "P1"}
+		return _accept_seeded(seat, view)
+
+	st = drive_state(scen, inst, "moves_chat", decide, cfg=cfg)
+	out = scen.score(st)
+	assert out["deal"] is False and out["finalized_by"] == "no_deal"
+	assert out["seeded_offer"]["final_is_seeded"] is False
+	assert PERSONAS[1] in out["seeded_offer"]["rejects"]
+
+
+@pytest.mark.parametrize("single_shot", [False, True])
+def test_seeded_episode_replays_exactly(single_shot):
+	# G1: the seed lives in cfg (hence in the stored cell_cfg) and is applied in make_state, so replaying the
+	# stored action sequence reconstructs the same state and rescores identically.
+	scen, inst = ScorableNegotiation(), make_instance(make_game())
+	cfg = {**SEED_CFG, "single_shot": single_shot}
+	ep = run(scen, inst, "moves_chat", JsonSeat(_accept_seeded), cfg=cfg)
+	report = rescore(ScorableNegotiation(), inst, ep.to_json())
+	assert report["match"], report
+
+
+def test_seeded_offer_rejects_a_malformed_deal():
+	scen, inst = ScorableNegotiation(), make_instance(make_game())
+	for bad in ({"Site": "North"}, {"Site": "Nowhere", "Fund": "High"}, [0, 9], [0]):
+		with pytest.raises(ValueError):
+			scen.make_state(inst, "moves_chat", seed=0, cfg={"seeded_offer": {"deal": bad}})
+
+
+def test_unseeded_game_is_untouched():
+	scen, inst = ScorableNegotiation(), make_instance(make_game())
+	st = scen.make_state(inst, "moves_chat", seed=0, cfg={"seeded_offer": None})
+	assert st["registry"].standing() == [] and st["events"] == [] and st["seeded_offer"] is None
+	assert st["final_offer"] is None and st["final_vote_includes_opener"] is False

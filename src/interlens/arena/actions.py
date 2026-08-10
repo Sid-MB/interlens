@@ -53,6 +53,16 @@ OfferId = str
 SYNTAX = "syntax"        # no well-formed action could be parsed (bad/absent JSON, unknown kind, missing field)
 LEGALITY = "legality"    # well-formed but economically illegal (dead offer id, infeasible/malformed deal)
 
+#: Proposer id for an offer tabled by the protocol itself rather than by a seat — a neutral mediator/scheduling
+#: office whose package is on the table before anyone speaks (``ScorableNegotiation``'s ``seeded_offer`` knob).
+#: It is deliberately NOT a seat name: it holds no sheet, casts no vote, and counts toward no quorum, so every
+#: ACCEPT on such an offer is a real party's decision. Consumers that map a proposer to a seat index use
+#: :data:`FACILITATOR_SEAT`.
+FACILITATOR = "Facilitator"
+#: The seat index a facilitator proposer serializes to in a ``negotiation_state`` block: ``-1``, i.e. "no seat".
+#: A reader must translate it back to "no implicit supporter" rather than indexing a seat array with it.
+FACILITATOR_SEAT = -1
+
 
 # ----------------------------------------------------------------- actions ---
 
@@ -191,12 +201,18 @@ class OfferRegistry:
 		self.offers: dict[OfferId, Offer] = {}
 		self._counter = 0
 
-	def register(self, deal: Deal, proposer: str, *, round: int = 0) -> OfferId:
-		"""Mint a new live offer for ``deal`` by ``proposer`` and return its id. The proposer implicitly accepts."""
+	def register(self, deal: Deal, proposer: str, *, round: int = 0, implicit_accept: bool = True) -> OfferId:
+		"""Mint a new live offer for ``deal`` by ``proposer`` and return its id. The proposer implicitly accepts.
+
+		``implicit_accept=False`` registers the offer with an EMPTY accept set — the explicit no-vote path for a
+		proposer that is not a party to the deal (:data:`FACILITATOR`). Without it a mediator's own id would sit
+		in ``accepts`` and any closure rule that counts the accept set (or renders "accepted by: ...") would
+		report a vote nobody cast."""
 		self._counter += 1
 		offer_id = f"{self.prefix}{self._counter}"
 		offer = Offer(offer_id=offer_id, deal=tuple(deal), proposer=proposer, round=round)
-		offer.accepts.add(proposer)
+		if implicit_accept:
+			offer.accepts.add(proposer)
 		self.offers[offer_id] = offer
 		return offer_id
 

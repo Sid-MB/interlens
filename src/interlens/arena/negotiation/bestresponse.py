@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..actions import action_key
+from ..actions import FACILITATOR, FACILITATOR_SEAT, action_key
 from .oracle_context import (Accept, GameTables, Oracle, Propose, Reject, Walk, current_round,
                              effective_discount, game_tables, make_verdict, n_agents, offer_registry,
                              proposer_sequence, rounds_left, seat_index)
@@ -64,7 +64,7 @@ def _quorum(n: int, min_accept: int | None) -> int:
     return need
 
 
-def passage_probability(accept_prob: np.ndarray, proposer: int, *, min_accept: int | None = None,
+def passage_probability(accept_prob: np.ndarray, proposer: int | None, *, min_accept: int | None = None,
                         veto_seats=()) -> np.ndarray:
     """Probability each deal passes under independent responder votes.
 
@@ -72,22 +72,27 @@ def passage_probability(accept_prob: np.ndarray, proposer: int, *, min_accept: i
     a fixed count out of the original ``n`` seats, and every veto seat must support.  ``None`` preserves the
     historical unanimity rule.  A small Poisson-binomial DP computes ``P(# yes >= quorum)`` exactly, rather
     than multiplying every opponent probability (which silently turns every quorum into unanimity).
+
+    ``proposer=None`` means the offer has NO implicit supporter — a package tabled by the protocol's neutral
+    facilitator (:data:`~interlens.arena.actions.FACILITATOR`), which holds no sheet and casts no vote. Every
+    seat then votes on its own merits: the quorum must be met out of the responders alone, and each veto seat's
+    probability enters the product rather than being satisfied for free by proposing.
     """
     ap = np.asarray(accept_prob, dtype=float)
     if ap.ndim != 2:
         raise ValueError(f"accept_prob must have shape (deals, seats), got {ap.shape}")
     D, n = ap.shape
-    p = int(proposer)
-    if not 0 <= p < n:
+    p = None if proposer is None else int(proposer)
+    if p is not None and not 0 <= p < n:
         raise ValueError(f"proposer {p} out of range for {n} seats")
     need = _quorum(n, min_accept)
     veto = {int(v) for v in veto_seats}
     if any(v < 0 or v >= n for v in veto):
         raise ValueError(f"veto seat out of range for {n} seats: {sorted(veto)}")
 
-    required = sorted(veto - {p})
+    required = sorted(veto - ({p} if p is not None else set()))
     base = np.prod(ap[:, required], axis=1) if required else np.ones(D, dtype=float)
-    yes_required = 1 + len(required)  # proposer + required veto responders
+    yes_required = (1 if p is not None else 0) + len(required)  # proposer + required veto responders
     remaining = [i for i in range(n) if i != p and i not in veto]
     extra = max(need - yes_required, 0)
     if extra <= 0:
@@ -119,7 +124,7 @@ def _full_info_pass_mask(S: np.ndarray, proposer: int, cont: np.ndarray, *,
                                veto_seats=veto_seats) >= 1.0 - 1e-12
 
 
-def conditional_vote_values(accept_prob: np.ndarray, proposer: int, agent: int, deal_index: int,
+def conditional_vote_values(accept_prob: np.ndarray, proposer: int | None, agent: int, deal_index: int,
                             deal_surplus: float, continuation: float, *, min_accept: int | None = None,
                             veto_seats=(), forced_yes=(), forced_no=()) -> tuple[float, float, float, float]:
     """Value this seat's yes/no vote after conditioning on votes already cast.
@@ -129,6 +134,9 @@ def conditional_vote_values(accept_prob: np.ndarray, proposer: int, agent: int, 
     and walkers are forced through ``forced_yes``/``forced_no``; all uncast votes retain their deterministic
     full-information or posterior probability. Agreement pays ``deal_surplus`` and failure pays
     ``continuation``.
+
+    ``proposer=None`` values a vote on a facilitator-tabled offer, which no seat implicitly supports (see
+    :func:`passage_probability`).
     """
     row = np.array(np.asarray(accept_prob, dtype=float)[int(deal_index):int(deal_index) + 1], copy=True)
     for seat in forced_yes:
@@ -137,10 +145,9 @@ def conditional_vote_values(accept_prob: np.ndarray, proposer: int, agent: int, 
         row[0, int(seat)] = 0.0
     yes, no = np.array(row, copy=True), np.array(row, copy=True)
     yes[0, int(agent)], no[0, int(agent)] = 1.0, 0.0
-    q_yes = float(passage_probability(
-        yes, int(proposer), min_accept=min_accept, veto_seats=veto_seats)[0])
-    q_no = float(passage_probability(
-        no, int(proposer), min_accept=min_accept, veto_seats=veto_seats)[0])
+    p = None if proposer is None else int(proposer)
+    q_yes = float(passage_probability(yes, p, min_accept=min_accept, veto_seats=veto_seats)[0])
+    q_no = float(passage_probability(no, p, min_accept=min_accept, veto_seats=veto_seats)[0])
     s, c = float(deal_surplus), float(continuation)
     return q_yes * s + (1.0 - q_yes) * c, q_no * s + (1.0 - q_no) * c, q_yes, q_no
 
@@ -176,10 +183,15 @@ def _offer_vote_records(game, history) -> dict[str, dict]:
         if oid is None:
             continue
         get = offer.get if isinstance(offer, dict) else lambda key, default=None: getattr(offer, key, default)
-        proposer = resolve(get("proposer"))
+        raw_proposer = get("proposer")
+        proposer = resolve(raw_proposer)
         accepts = {s for value in (get("accepts", ()) or ()) if (s := resolve(value)) is not None}
         rejects = {s for value in (get("rejects", ()) or ()) if (s := resolve(value)) is not None}
-        out[str(oid)] = {"proposer": proposer, "accepts": accepts, "rejects": rejects}
+        # A facilitator-tabled offer resolves to no seat, and that is a FACT about it rather than missing
+        # metadata: flagging it keeps the caller from falling back to "some seat must have proposed this" and
+        # crediting a vote nobody cast.
+        out[str(oid)] = {"proposer": proposer, "accepts": accepts, "rejects": rejects,
+                         "facilitator": raw_proposer in (FACILITATOR, FACILITATOR_SEAT)}
     return out
 
 
@@ -400,7 +412,7 @@ class BestResponseOracle(Oracle):
                 idx = tables.index[offers[a.offer_id]]
                 record = offer_votes.get(a.offer_id, {})
                 proposer = record.get("proposer")
-                if proposer is None:
+                if proposer is None and not record.get("facilitator"):
                     supporters = sorted(record.get("accepts", ()))
                     proposer = supporters[0] if supporters else int(seq[(max(t, 1) - 1) % len(seq)])
                 yes_v, no_v, q_yes, q_no = conditional_vote_values(

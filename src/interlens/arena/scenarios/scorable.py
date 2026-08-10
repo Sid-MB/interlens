@@ -31,7 +31,9 @@ restated each turn, one canonical prompt scaffold with variants behind flags
 retry-with-specific-feedback then a pass; an economic (below-own-threshold) move is MEASURED, never blocked.
 
 Arms ``moves_chat`` / ``moves_only`` / ``team`` / ``solo`` cross the game's FULL/PRIVATE info; ultimatum-style
-single-shot / fixed-proposer / majority variants ride on cfg knobs. Each seat's surplus is normalized by its
+single-shot / fixed-proposer / majority variants ride on cfg knobs, as does ``seeded_offer`` — one standing
+package tabled by a neutral non-voting facilitator before round 1, which deletes the search problem and leaves
+the table nothing to do but judge a known deal (:meth:`ScorableNegotiation._seed_offer`). Each seat's surplus is normalized by its
 own maximum available surplus before aggregation, so ``primary`` is invariant to positive affine rescaling of
 any party's utility. Raw surplus welfare remains in explicitly named audit fields. Per-turn normative regret
 comes from the pluggable ``oracles=`` (each turn ->
@@ -42,8 +44,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..actions import (Accept, Action, LEGALITY, OfferRegistry, ParseResult, Propose, Reject, SYNTAX, Walk,
-                       parse_action)
+from ..actions import (Accept, Action, FACILITATOR, FACILITATOR_SEAT, LEGALITY, OfferRegistry, ParseResult,
+                       Propose, Reject, SYNTAX, Walk, parse_action)
 from ..negotiation.sheets import GameSpec
 from ..negotiation.solutions import egalitarian_welfare, gini, welfare
 from ..oracles import Oracle, annotate as annotate_oracles
@@ -118,7 +120,7 @@ class ScorableNegotiation(Scenario):
 		personas = cfg.get("personas")
 		if isinstance(personas, str):
 			personas = [personas] * n
-		return {
+		state = {
 			"inst": instance, "spec": spec, "arm": arm, "seed": seed, "seat_names": names,
 			# ``moved`` = names that have taken their turn in the current round (walk-robust: a seat that walks
 			# is in ``moved`` so it is not rescheduled this round, and drops out of the rotation next round).
@@ -133,6 +135,8 @@ class ScorableNegotiation(Scenario):
 			# final (the take-it-or-leave-it ultimatum shape -- one proposal, then the responders vote, done).
 			# fixed_proposer: the proposer seat does NOT rotate (and is not seed-counterbalanced), so the same
 			# seat opens every proposal round -- the "fixed proposer / responder-only vote" of the ultimatum.
+			# seeded_offer: table one standing offer from a neutral non-voting facilitator before round 1, so the
+			# table's only remaining job is to judge it (see _seed_offer). None = the ordinary game.
 			"single_shot": cfg.get("single_shot", False),
 			"fixed_proposer": cfg.get("fixed_proposer", False),
 			# rotating proposer: base start counterbalanced across seeds, advanced each round -- unless a
@@ -156,7 +160,74 @@ class ScorableNegotiation(Scenario):
 			"_r": set(), "provisional_done": [],
 			# solo (base Scenario solo scaffold uses these)
 			"solo_msgs": [], "_forced_final": False,
+			# seeded opening offer (see _seed_offer): the record of what the facilitator tabled, or None
+			"seeded_offer": None,
+			# whether the forced-final up/down vote includes the round's opener (only when the offer under vote
+			# was tabled by the facilitator, so nobody has voted on it yet)
+			"final_vote_includes_opener": False,
 		}
+		self._seed_offer(state, cfg.get("seeded_offer"))
+		return state
+
+	# ------------------------------------------------------------ seeded offer --
+	def _seed_offer(self, st, seeded: dict | None) -> None:
+		"""Table one standing offer from a neutral FACILITATOR before round 1 (the ``seeded_offer`` cfg knob).
+
+		``seeded`` is ``{"deal": <deal>, ...}`` where the deal is either an option-index sequence or a
+		``{issue: option}`` object; any other keys (``kind``, ``source``, hashes) are provenance and ride along
+		into the episode record untouched. ``None`` (the default) leaves the protocol exactly as it was.
+
+		Three properties make this a clean judgment probe rather than a sixth player:
+
+		- **No vote.** The offer is registered with ``implicit_accept=False`` under the non-seat proposer
+		  :data:`~interlens.arena.actions.FACILITATOR`, so it starts with an empty accept set and closure — which
+		  counts ACCEPTs by seat name — can never count the facilitator toward unanimity. Attribution is neutral,
+		  so no seat burns a proposal turn and no messenger-credibility effect is introduced.
+		- **Exact replay.** The seed lives in ``cfg`` (hence in the stored ``cell_cfg``) and is applied here, in
+		  ``make_state``, before any turn — so replaying the stored action sequence reconstructs it identically.
+		- **Both protocol shapes.** In the normal game it is simply a live offer standing from turn 0. Under
+		  ``single_shot`` it becomes the offer under the forced final up/down vote directly, with EVERY seat
+		  voting (nobody has voted on it yet), which is the pure "here is the deal, yes or no" probe.
+
+		Raises ``ValueError`` for a malformed/incomplete deal: a mis-specified seed would otherwise quietly play
+		a different game than the one the manifest names.
+		"""
+		if not seeded:
+			return
+		spec = st["spec"]
+		raw = seeded.get("deal")
+		deal = self._resolve_deal(spec, raw) if isinstance(raw, dict) else None
+		if deal is None and isinstance(raw, (list, tuple)):
+			try:
+				deal = tuple(int(x) for x in raw)
+				spec.space.index_of(deal)   # raises on a wrong length / out-of-range option
+			except (TypeError, ValueError):
+				deal = None
+		if deal is None:
+			raise ValueError(f"seeded_offer does not name a complete valid deal for this game: {raw!r}")
+		offer_id = st["registry"].register(deal, FACILITATOR, round=0, implicit_accept=False)
+		st["seeded_offer"] = {**{k: v for k, v in seeded.items() if k != "deal"},
+		                      "offer_id": offer_id, "deal": list(deal),
+		                      "deal_named": spec.space.named(deal), "proposer": FACILITATOR}
+		named = ", ".join(f"{k}={v}" for k, v in spec.space.named(deal).items())
+		st["events"].append({"seat": FACILITATOR, "content":
+			"The scheduling office has tabled an opening package for your consideration. It is a complete "
+			f"proposal on every issue and it stands on the table as {offer_id}: {named}. The office is not a "
+			"party to this negotiation, holds no score sheet, and casts no vote — this package passes only if "
+			"the parties themselves accept it.\n"
+			+ "```json\n" + _json({"action": "propose", "deal": spec.space.named(deal)}) + "\n```"})
+		if st["single_shot"]:
+			# the ultimatum shape with a seeded offer IS the vote: no seat tables anything first, so the forced
+			# final opens directly on this offer and every seat casts an up/down vote on it.
+			st["final_offer"] = offer_id
+			st["final_vote_includes_opener"] = True
+
+	def _final_voters(self, st, order: list[int]) -> list[int]:
+		"""Which seats cast the forced-final up/down vote, in speaking order.
+
+		Normally the round's opener is excluded: it already committed by tabling (or accepting) the offer under
+		vote. When the offer was seeded by the facilitator no seat has voted on it, so everyone votes."""
+		return list(order) if st.get("final_vote_includes_opener") else list(order[1:])
 
 	def seat_specs(self, st) -> list[dict]:
 		if st["arm"] == "solo":
@@ -295,22 +366,33 @@ class ScorableNegotiation(Scenario):
 		reg = st["registry"]
 		seat = st["seat_names"][si]
 		standing_offers = reg.standing()
-		opponents = [o for o in standing_offers if o.proposer != seat]
 		seat_index = {name: i for i, name in enumerate(st["seat_names"])}
+		# Two different sets, deliberately. ``respondable`` = every live offer this seat did not table, which is
+		# what "the offer I am being asked about" is drawn from (a facilitator's seeded package included).
+		# ``opponents`` = offers tabled by another SEAT, which is what feeds opponent modelling: a facilitator
+		# package reveals nothing about anybody's private sheet, so letting it into the belief inputs would
+		# attribute the mediator's package to a party (and index a seat array with the -1 non-seat).
+		respondable = [o for o in standing_offers if o.proposer != seat]
+		opponents = [o for o in respondable if o.proposer in seat_index]
 		received_by_opponent: dict[str, list[list[int]]] = {}
 		for offer in opponents:
 			key = str(seat_index[offer.proposer])
 			received_by_opponent.setdefault(key, []).append(list(offer.deal))
-		standing = opponents[-1].offer_id if opponents else None
+		standing = respondable[-1].offer_id if respondable else None
 		if must_vote and st.get("final_offer"):
 			standing = st["final_offer"]  # the specific offer under the up/down vote
 		block = {"negotiation_state": {
 			"seat": si, "round": st["round"], "deadline": st["rounds"],
 			"min_accept": st["spec"].min_accept, "veto_seats": st["spec"].veto_seats,
 			"offers": {o.offer_id: list(o.deal) for o in standing_offers},
-			"offer_proposers": {o.offer_id: seat_index[o.proposer] for o in standing_offers},
-			"offer_accepts": {o.offer_id: [seat_index[n] for n in o.accepts] for o in standing_offers},
-			"offer_rejects": {o.offer_id: [seat_index[n] for n in o.rejects] for o in standing_offers},
+			# a facilitator-tabled offer has no seat behind it: it serializes as FACILITATOR_SEAT (-1), which a
+			# reader translates back to "no implicit supporter" rather than indexing a seat array with it
+			"offer_proposers": {o.offer_id: seat_index.get(o.proposer, FACILITATOR_SEAT)
+			                    for o in standing_offers},
+			"offer_accepts": {o.offer_id: [seat_index[n] for n in o.accepts if n in seat_index]
+			                  for o in standing_offers},
+			"offer_rejects": {o.offer_id: [seat_index[n] for n in o.rejects if n in seat_index]
+			                  for o in standing_offers},
 			"walked_seats": [seat_index[n] for n in st["walked"]],
 			"standing": standing,
 			"received": [list(o.deal) for o in opponents],
@@ -357,7 +439,7 @@ class ScorableNegotiation(Scenario):
 			prompt = self.scaffold.final_prompt(seat=seat, offers_block=self._live_offers_block(st, opener))
 			return [SeatRequest("", seat, self._seat_view(st, opener, prompt), "final_proposal",
 			                    rounds + 1, max_tokens=2560, meta={"si": opener})]
-		for si in order[1:]:
+		for si in self._final_voters(st, order):
 			if st["seat_names"][si] not in st["final_votes"]:
 				seat = st["seat_names"][si]
 				prompt = self.scaffold.turn_prompt(
@@ -601,7 +683,7 @@ class ScorableNegotiation(Scenario):
 			st["done"] = True
 			return
 		order = self._active_order(st, st["rounds"] + 1)
-		voters = [st["seat_names"][i] for i in order[1:]]
+		voters = [st["seat_names"][i] for i in self._final_voters(st, order)]
 		if all(nm in st["final_votes"] or nm in st["walked"] for nm in voters):
 			st["final_deal"] = None
 			st["finalized_by"] = "no_deal"
@@ -840,6 +922,19 @@ class ScorableNegotiation(Scenario):
 			out["closing_offer"] = st.get("closing_offer")
 		if deal is not None:
 			out["deal_named"] = spec.space.named(deal)
+		seeded = st.get("seeded_offer")
+		if seeded is not None:
+			# Carried into the outcome so the analysis layer reads what was tabled, and whether the table signed
+			# exactly it, off the episode record rather than re-deriving it from a sidecar manifest.
+			out["seeded_offer"] = {**seeded,
+			                       "per_party_surplus": [round(spec.sheets[i].surplus(tuple(seeded["deal"])), 4)
+			                                             for i in range(n)],
+			                       "final_is_seeded": bool(deal is not None
+			                                               and tuple(deal) == tuple(seeded["deal"])),
+			                       "accepts": sorted((reg.get(seeded["offer_id"]).accepts
+			                                          if reg.get(seeded["offer_id"]) else set())),
+			                       "rejects": sorted((reg.get(seeded["offer_id"]).rejects
+			                                          if reg.get(seeded["offer_id"]) else set()))}
 		return out
 
 	def rounds_used(self, st) -> int:
