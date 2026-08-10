@@ -25,6 +25,7 @@ import json
 
 import pytest
 
+from interlens.arena.engine import EMPTY_TURN_PLACEHOLDER
 from interlens.arena.negotiation.sheets import GameSpec, ScoreSheet
 from interlens.arena.negotiation.space import DealSpace, Issue
 from interlens.arena.rollouts import (MANIFEST_NAME, RolloutConfigMismatch, RolloutSet,
@@ -193,9 +194,117 @@ def test_summary_reports_counts_scores_and_a_clean_fabrication_audit(tmp_path, i
 	assert "fabricated turns: 0" in rs.summary_text()
 
 
+# --------------------------------------------------------------------- the placeholder budget (note 0041) --
+def burned_turn(idx: int, rnd: int) -> dict:
+	"""A turn where the model spent its whole 2,048-token cap inside an unterminated `<think>` and emitted no
+	visible action. Note the two naive screens it passes: parse_ok True, content non-empty."""
+	return {"idx": idx, "round": rnd, "phase": "turn", "seat": "Avery", "content": EMPTY_TURN_PLACEHOLDER,
+	        "parsed_action": {"atype": "none"}, "parse_ok": True, "n_tokens_out": 2048, "cap": 2048,
+	        "raw": "<think>\nOkay, let me work through this as Avery. The offers on the table are",
+	        "stop_reason": None, "gen_failed": False}
+
+
+def healthy_turn(idx: int, rnd: int) -> dict:
+	return {"idx": idx, "round": rnd, "phase": "turn", "seat": "Blake", "content": '```json\n{"action": "pass"}\n```',
+	        "parsed_action": {"atype": "pass"}, "parse_ok": True, "n_tokens_out": 96, "cap": 2048,
+	        "raw": None, "stop_reason": None, "gen_failed": False}
+
+
+def episode_with(turns: list[dict], instance_id: str = "inst-a", seed: int = 0) -> dict:
+	return {"episode_id": new_id("ep"), "scenario": "s", "arm": "moves_chat", "model": "m", "level": 0,
+	        "instance_id": instance_id, "seed": seed, "seats": [], "cell": "base", "cell_cfg": {},
+	        "turns": turns, "round_checkpoints": [], "outcome": {"success": True, "primary": 1.0},
+	        "status": "done", "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "schema_version": "v1.2"}
+
+
+def test_burned_cap_turns_are_caught_though_every_standard_gate_reads_clean(tmp_path):
+	"""The note-0041 failure: a quarter of turns say nothing while fabrication, parse_ok and empty-content all
+	report perfect health. The placeholder budget is the only gate that sees it."""
+	rs = RolloutSet(tmp_path / "silent", config=CONFIG)
+	turns = [healthy_turn(0, 1), healthy_turn(1, 1), burned_turn(2, 2), burned_turn(3, 3)]
+	rs.append([episode_with(turns)], config=CONFIG)
+	s = rs.summary()
+
+	assert s["fabricated_turns"] == 0                       # the engine did its job — correctly clean
+	assert all(t["parse_ok"] for t in turns)                # and parse_ok is no help either
+	assert s["placeholder_rate"] == 0.5
+	assert s["turn_signature_rates"]["empty_gen"] == 0.5    # burned cap, not engine failure
+	assert s["turn_signature_rates"]["gen_failed"] == 0.0
+	assert s["turn_signature_rates"]["truncated"] == 0.5    # local seats have no stop_reason; cap hit carries it
+	assert s["placeholder_budget_exceeded"] is True
+	assert s["episodes_with_placeholder_turns"] == 1
+
+	text = rs.summary_text()
+	assert "PLACEHOLDER BUDGET EXCEEDED" in text and "burned cap" in text
+
+
+def test_the_two_placeholder_causes_are_separated(tmp_path):
+	"""Same placeholder string, different remedies: raising the cap cannot fix an engine fabrication."""
+	rs = RolloutSet(tmp_path / "mixed", config=CONFIG)
+	fabricated = {**burned_turn(0, 1), "n_tokens_out": 0, "raw": None, "gen_failed": True,
+	              "gen_failure": "CUDA OOM"}
+	rs.append([episode_with([fabricated, burned_turn(1, 2)])], config=CONFIG)
+	s = rs.summary()
+	assert s["placeholder_rate"] == 1.0
+	assert s["turn_signature_rates"]["gen_failed"] == 0.5
+	assert s["turn_signature_rates"]["empty_gen"] == 0.5
+	assert s["fabricated_turns"] == 1
+
+
+def test_placeholder_rate_is_broken_down_by_round(tmp_path):
+	"""Budget exhaustion grows with transcript length, so a pooled figure hides it and a short read misses it
+	entirely — round 1 is clean here while round 3 is fully silent."""
+	rs = RolloutSet(tmp_path / "byround", config=CONFIG)
+	rs.append([episode_with([healthy_turn(0, 1), healthy_turn(1, 1),
+	                         healthy_turn(2, 2), burned_turn(3, 2),
+	                         burned_turn(4, 3), burned_turn(5, 3)])], config=CONFIG)
+	s = rs.summary()
+	assert s["placeholder_rate_by_round"] == {1: 0.0, 2: 0.5, 3: 1.0}
+	assert s["worst_round_placeholder_rate"] == 1.0
+
+
+def test_a_late_round_over_budget_is_flagged_even_when_pooled_is_clean(tmp_path):
+	"""The under-detection shape: 1 silent turn in 60 pools to 1.7% (under a 2% budget) but round 3 is at 25%."""
+	rs = RolloutSet(tmp_path / "late", config=CONFIG)
+	turns = [healthy_turn(i, 1 + i // 20) for i in range(59)] + [burned_turn(59, 3)]
+	rs.append([episode_with(turns)], config=CONFIG)
+	s = rs.summary()
+	assert s["placeholder_budget_exceeded"] is False
+	assert s["worst_round_placeholder_rate"] > s["placeholder_budget"]
+	assert "this failure grows with transcript length" in rs.summary_text()
+
+
+def test_the_budget_is_configurable_and_never_raises(tmp_path):
+	rs = RolloutSet(tmp_path / "silent", config=CONFIG)
+	rs.append([episode_with([healthy_turn(0, 1), burned_turn(1, 2)])], config=CONFIG)
+	assert rs.summary(placeholder_budget=0.9)["placeholder_budget_exceeded"] is False
+	assert rs.summary(placeholder_budget=0.0)["placeholder_budget_exceeded"] is True
+
+
+def test_the_health_verdict_is_stamped_into_the_manifest(tmp_path):
+	"""A gate that only prints is a gate nobody finds later, so the verdict is durable on the manifest."""
+	rs = RolloutSet(tmp_path / "silent", config=CONFIG)
+	rs.append([episode_with([healthy_turn(0, 1), burned_turn(1, 2)])], config=CONFIG)
+	health = json.loads((tmp_path / "silent" / MANIFEST_NAME).read_text())["turn_health"]
+	assert health["placeholder_budget_exceeded"] is True
+	assert health["placeholder_rate"] == 0.5
+	assert health["turn_signature_counts"]["empty_gen"] == 1
+
+
+def test_a_clean_real_run_reports_both_gates_clean(tmp_path, instances):
+	rs = run(tmp_path / "pilot", instances, seeds=[0])
+	s = rs.summary()
+	assert s["n_turns"] > 0
+	assert s["placeholder_rate"] == 0.0 and s["placeholder_budget_exceeded"] is False
+	assert s["turn_signature_rates"]["empty_gen"] == 0.0
+	assert "placeholder turns: 0/" in rs.summary_text()
+
+
 def test_summary_on_an_empty_set_is_well_defined(tmp_path):
 	s = RolloutSet(tmp_path / "empty", config=CONFIG).summary()
 	assert s["n_episodes"] == 0 and s["success_rate"] is None and s["mean_primary"] is None
+	assert s["n_turns"] == 0 and s["placeholder_rate"] == 0.0
+	assert s["placeholder_budget_exceeded"] is False and s["placeholder_rate_by_round"] == {}
 
 
 def test_engine_batched_refuses_a_per_episode_factory(tmp_path, instances):

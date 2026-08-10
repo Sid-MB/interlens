@@ -25,8 +25,9 @@ Library vs experiment — the boundary this module commits to
 -----------------------------------------------------------
 **In the library** (here): the identity and safety of a *set of episodes on disk*. Open-or-create a directory,
 a manifest describing what produced it (model, scenario, config fingerprint, seeds completed, invocations,
-artifact links), a dedupe/resume key, and an append that REFUSES to mix protocols. Also a deliberately minimal
-:meth:`RolloutSet.summary` — counts, statuses, success rate, mean primary, the generation-failure audit, spend.
+artifact links), a dedupe/resume key, an append that REFUSES to mix protocols, and two contamination gates
+(fabricated turns, and the placeholder budget below). Also a deliberately minimal
+:meth:`RolloutSet.summary` — counts, statuses, success rate, mean primary, spend.
 All of it is scenario-agnostic: it reads only fields the arena's own :mod:`~interlens.arena.schema` defines.
 
 **In the experiment**: everything protocol-specific. Which scaffold, framing, oracle stack, instance bank, seat
@@ -34,6 +35,26 @@ lineup and arms constitute a cell; how a model id resolves to a participant; and
 normalized surplus, among-deals baskets, instance-clustered intervals, paired tables). Those live with the
 analyzers that own their definitions — ``summary()`` here is a health check, not a results table, and it stays
 that way so the library never grows a dependency on one experiment's notion of a good deal.
+
+Two gates, because each is blind to the other
+---------------------------------------------
+A rollout set can be 100% ``status="done"``, 100% ``parse_ok``, 0% empty content, ``fabrication 0.000`` — and
+still be a quarter silent. Those are two different failures wearing the same
+:data:`~interlens.arena.engine.EMPTY_TURN_PLACEHOLDER` string:
+
+- the ENGINE fabricated the turn (generation failed outright) — the fabrication budget owns this one;
+- the MODEL burned its entire per-turn budget inside an unterminated ``<think>`` block and emitted no visible
+  action. The engine did its job, so ``fabrication`` correctly reads 0.000; the placeholder it substitutes is
+  non-empty and parses into a well-formed no-op, so ``parse_ok`` reads 1.000 too. Measured at **24.4% of turns**
+  on a thinking-on Qwen3-32B cell at a 2,048-token cap, against 0.0% with thinking off — and on that cell
+  ``parse_ok`` was *anti*-correlated with quality (1.000 silent vs 0.958 healthy).
+
+So :meth:`RolloutSet.summary` reports a **placeholder budget** beside the fabrication audit, split by cause,
+and broken down BY ROUND — the failure is late-episode by construction (context grows with the transcript:
+5.8% at round 1, ~35% by rounds 2-4), so a short smoke run or a peek at an episode's opening turns reads ~0%
+and under-detects it. Exceeding the budget flags the set loudly and stamps ``manifest["turn_health"]``; it
+never raises, because the episodes are real evidence and the right response is to record the rate. Raising the
+per-turn cap changes the protocol string, so the remediated cells do not pair with the old ones.
 
 Why the append refusal is loud
 ------------------------------
@@ -72,6 +93,7 @@ Worked example::
     #   mean primary: 0.7143 over 6 scored episodes
     #   usage: 0 in / 0 out tokens, $0.00
     #   fabricated turns: 0 (in 0 episodes)
+    #   placeholder turns: 0/94 = 0.0% (engine 0.0%, burned cap 0.0%) | at cap 0.0% | no-op 19.5%
 
     # later — two more seeds into the SAME set; the first two are skipped, not replayed
     rollout(scenario=ScorableNegotiation(), instances=instances, participant=seat_lineup,
@@ -88,11 +110,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from ..usage import UsageMeter
-from .engine import BatchedEpisodePool, EpisodePool, gen_failures
+from .engine import BatchedEpisodePool, EpisodePool, TURN_SIGNATURES, gen_failures, turn_signatures
 from .scenario import Scenario
 from .schema import Episode, EpisodeStore, Instance
 
-__all__ = ["MANIFEST_NAME", "RolloutConfigMismatch", "RolloutKey", "RolloutSet",
+__all__ = ["MANIFEST_NAME", "PLACEHOLDER_BUDGET", "RolloutConfigMismatch", "RolloutKey", "RolloutSet",
            "ParticipantFactory", "ScenarioFactory", "config_fingerprint", "rollout"]
 
 # The set's manifest filename. Deliberately NOT ``manifest.json``: an experiment's own run manifests already use
@@ -100,6 +122,14 @@ __all__ = ["MANIFEST_NAME", "RolloutConfigMismatch", "RolloutKey", "RolloutSet",
 MANIFEST_NAME = "rollout_manifest.json"
 
 MANIFEST_SCHEMA = "interlens-rollout-set-v1"
+
+# Default ceiling on the fraction of a set's turns that may be PLACEHOLDERS — turns that said nothing, whether
+# the engine fabricated them or the model burned its whole cap inside an unterminated <think> block. A healthy
+# set is 0.0 (measured: 0.0% across a thinking-off cell's 2,683 turns), so 2% is already generous; the same
+# protocol with thinking on measured 24.4%. Exceeding it does not stop a run — the episodes are real evidence
+# and the documented response is to record the rate, not to discard them — but it is stamped in the manifest
+# and shouted in the summary, because the standard gates cannot see this failure at all.
+PLACEHOLDER_BUDGET = 0.02
 
 #: One episode's identity within a set: ``(instance_id, seed, arm)``. This is the resume/dedupe key — two
 #: episodes sharing it are the same planned rollout, so the second is skipped. It deliberately does NOT include
@@ -302,6 +332,16 @@ class RolloutSet:
 			 "added": len(added), "skipped": skipped, "mismatch": mismatch})
 		if artifacts:
 			self.manifest["artifacts"].update(artifacts)
+		# Stamp the contamination gates into the manifest on every append, so the verdict is a durable fact
+		# about the set rather than a line that scrolled past in one run's stdout. Recomputed from the episodes
+		# each time, so it is never stale with respect to what is actually on disk.
+		health = self.summary()
+		self.manifest["turn_health"] = {
+			k: health[k] for k in ("n_turns", "turn_signature_counts", "turn_signature_rates",
+			                       "placeholder_rate", "placeholder_rate_by_round",
+			                       "worst_round_placeholder_rate", "episodes_with_placeholder_turns",
+			                       "placeholder_budget", "placeholder_budget_exceeded",
+			                       "fabricated_turns", "episodes_with_fabricated_turns")}
 		self._write()
 		return {"added": len(added), "skipped": skipped, "keys": added, "mismatch": mismatch}
 
@@ -316,15 +356,36 @@ class RolloutSet:
 		tmp.replace(self.manifest_path)
 
 	# ------------------------------------------------------------------ summary --
-	def summary(self) -> dict:
+	def summary(self, *, placeholder_budget: float = PLACEHOLDER_BUDGET) -> dict:
 		"""A HEALTH summary of the set, computed from the stored episode records alone.
 
 		Deliberately minimal and scenario-agnostic — counts, ``status`` breakdown, arm/model breakdown, the
-		fraction of closed/successful episodes, the mean of ``outcome['primary']``, the engine-fabrication audit
-		(:func:`~interlens.arena.engine.gen_failures`, which also screens pre-stamp episodes), and token/dollar
-		usage. Rich, protocol-defined baskets (normalized surplus, among-deals statistics, clustered intervals)
-		belong to the experiment's analyzers, which own those definitions; this exists to answer "did the
-		rollouts run, and is any of this text not model behaviour?" before anyone analyses anything."""
+		fraction of closed/successful episodes, the mean of ``outcome['primary']``, token/dollar usage, and
+		TWO independent contamination gates. Rich, protocol-defined baskets (normalized surplus, among-deals
+		statistics, clustered intervals) belong to the experiment's analyzers, which own those definitions;
+		this exists to answer "did the rollouts run, and is any of this text real?" before anyone analyses it.
+
+		The two gates are separate because each is blind to the other's failure:
+
+		- **fabrication** (:func:`~interlens.arena.engine.gen_failures`) — turns no model ever produced.
+		- **placeholder budget** (:func:`~interlens.arena.engine.turn_signatures`) — turns that SAID nothing.
+		  A model can burn its entire per-turn budget inside an unterminated ``<think>`` block, and the
+		  placeholder it gets substituted is a non-empty string that parses into a well-formed no-op. So
+		  ``fabrication`` reads a correct 0.000, ``parse_ok`` reads 1.000, an empty-content check reads 0.0%,
+		  and a quarter of the turns are silent anyway (measured 24.4% on a thinking-on Qwen3-32B cell).
+
+		``placeholder_rate_by_round`` is reported because this failure is **late-episode by construction** —
+		context grows with the transcript, so the budget is exhausted in later rounds (measured 5.8% at round 1
+		rising to ~35% by round 2-4). A short smoke run, or a preview of an episode's opening turns, reads near
+		0% and under-detects it; :meth:`summary_text` therefore prints the worst round alongside the pooled rate.
+
+		Parameters
+		----------
+		placeholder_budget : float
+			Fraction of turns that may be placeholders before ``placeholder_budget_exceeded`` is set (default
+			:data:`PLACEHOLDER_BUDGET`). It is a flag, never a raise: the episodes are real evidence, and the
+			documented response to a silent cell is to record the rate — and to treat it as a NEW protocol,
+			since raising the cap changes the protocol string and breaks pairing with the old cells."""
 		eps = self.episodes()
 		statuses: dict[str, int] = {}
 		by_arm: dict[str, int] = {}
@@ -333,6 +394,10 @@ class RolloutSet:
 		n_success = n_fab_turns = n_fab_eps = 0
 		tokens_in = tokens_out = 0
 		usd = 0.0
+		n_turns = 0
+		signature_counts: dict[str, int] = {sig: 0 for sig in TURN_SIGNATURES}
+		by_round: dict[int, list[int]] = {}       # round -> [n_placeholder, n_turns]
+		n_placeholder_eps = 0
 		for ep in eps:
 			statuses[ep.get("status", "missing")] = statuses.get(ep.get("status", "missing"), 0) + 1
 			by_arm[ep.get("arm", "?")] = by_arm.get(ep.get("arm", "?"), 0) + 1
@@ -344,6 +409,21 @@ class RolloutSet:
 			fails = gen_failures(ep)
 			n_fab_turns += len(fails)
 			n_fab_eps += bool(fails)
+			# gen_failures is the AUTHORITY on whether the engine fabricated a turn (it reads the v1.2 stamp),
+			# so its verdict is threaded in rather than letting the per-turn value signature guess again.
+			fabricated_idx = {f["idx"] for f in fails}
+			ep_has_placeholder = False
+			for turn in ep.get("turns") or []:
+				n_turns += 1
+				tags = turn_signatures(turn, engine_fabricated=turn.get("idx") in fabricated_idx)
+				for tag in tags:
+					signature_counts[tag] = signature_counts.get(tag, 0) + 1
+				slot = by_round.setdefault(int(turn.get("round") or 0), [0, 0])
+				slot[1] += 1
+				if "placeholder" in tags:
+					slot[0] += 1
+					ep_has_placeholder = True
+			n_placeholder_eps += ep_has_placeholder
 			tokens_in += ep.get("tokens_in", 0)
 			tokens_out += ep.get("tokens_out", 0)
 			usd += ep.get("cost_usd", 0.0)
@@ -365,13 +445,30 @@ class RolloutSet:
 			# only in the run log, because a set is appended to and read long after the run that made it.
 			"fabricated_turns": n_fab_turns,
 			"episodes_with_fabricated_turns": n_fab_eps,
+			# The second, independent gate: turns that said nothing regardless of who is at fault. `empty_gen`
+			# is the half the fabrication gate cannot see (the model burned its cap inside <think>), and
+			# by-round is what stops a short or early-turn read from under-detecting it.
+			"n_turns": n_turns,
+			"turn_signature_rates": {sig: round(signature_counts.get(sig, 0) / n_turns, 6) if n_turns else 0.0
+			                         for sig in TURN_SIGNATURES},
+			"turn_signature_counts": {sig: signature_counts.get(sig, 0) for sig in TURN_SIGNATURES},
+			"placeholder_rate": round(signature_counts["placeholder"] / n_turns, 6) if n_turns else 0.0,
+			"placeholder_rate_by_round": {r: round(p / t, 6) for r, (p, t) in sorted(by_round.items()) if t},
+			"worst_round_placeholder_rate": (max((p / t for p, t in by_round.values() if t), default=0.0)),
+			"episodes_with_placeholder_turns": n_placeholder_eps,
+			"placeholder_budget": placeholder_budget,
+			"placeholder_budget_exceeded": bool(
+				n_turns and signature_counts["placeholder"] / n_turns > placeholder_budget),
 			"tokens_in": tokens_in, "tokens_out": tokens_out, "cost_usd": round(usd, 6),
 			"n_mismatched_appends": len(self.manifest.get("mismatched_appends", [])),
 		}
 
-	def summary_text(self) -> str:
-		"""One-line-per-fact rendering of :meth:`summary` for a driver script's stdout."""
-		s = self.summary()
+	def summary_text(self, *, placeholder_budget: float = PLACEHOLDER_BUDGET) -> str:
+		"""One-line-per-fact rendering of :meth:`summary` for a driver script's stdout.
+
+		Both contamination gates always print, including when they are clean — a gate you only see when it
+		fires is a gate nobody knows to look for."""
+		s = self.summary(placeholder_budget=placeholder_budget)
 		lines = [f"RolloutSet {s['root']}",
 		         f"  model={s['model']} scenario={s['scenario']} cfg={s['config_fingerprint'][:12]}",
 		         f"  episodes: {s['n_episodes']} ({s['n_keys']} distinct keys) statuses={s['status_counts']}",
@@ -384,6 +481,26 @@ class RolloutSet:
 		flag = "" if not s["fabricated_turns"] else "  <-- NOT model behaviour; exclude before analysing"
 		lines.append(f"  fabricated turns: {s['fabricated_turns']} "
 		             f"(in {s['episodes_with_fabricated_turns']} episodes){flag}")
+		rates = s["turn_signature_rates"]
+		lines.append(
+			f"  placeholder turns: {s['turn_signature_counts']['placeholder']}/{s['n_turns']} = "
+			f"{s['placeholder_rate']:.1%} (engine {rates['gen_failed']:.1%}, burned cap "
+			f"{rates['empty_gen']:.1%}) | at cap {rates['truncated']:.1%} | no-op {rates['noop_action']:.1%}")
+		if s["placeholder_budget_exceeded"]:
+			worst = max(s["placeholder_rate_by_round"], key=s["placeholder_rate_by_round"].get, default=None)
+			lines += [
+				f"  !! PLACEHOLDER BUDGET EXCEEDED: {s['placeholder_rate']:.1%} of turns said nothing "
+				f"(budget {s['placeholder_budget']:.1%}), in {s['episodes_with_placeholder_turns']} episodes.",
+				f"     worst round {worst} at {s['worst_round_placeholder_rate']:.1%}; by round: "
+				f"{ {r: f'{v:.1%}' for r, v in s['placeholder_rate_by_round'].items()} }",
+				"     parse_ok and the fabrication gate CANNOT see this. If 'burned cap' dominates, the model "
+				"spent its budget inside <think>: raise the per-turn cap or disable thinking — and note that "
+				"changing the cap changes the protocol, so the new cells do not pair with the old ones."]
+		elif s["placeholder_rate"] and s["worst_round_placeholder_rate"] > placeholder_budget:
+			# pooled is clean but a late round is not — the shape that a short run reads as 0%
+			lines.append(f"     (note: pooled is under budget but round "
+			             f"{max(s['placeholder_rate_by_round'], key=s['placeholder_rate_by_round'].get)} is at "
+			             f"{s['worst_round_placeholder_rate']:.1%}; this failure grows with transcript length)")
 		if s["n_mismatched_appends"]:
 			lines.append(f"  MIXED: {s['n_mismatched_appends']} append(s) accepted under allow_mismatch")
 		return "\n".join(lines)

@@ -125,6 +125,7 @@ RolloutSet runs/pilot
   mean primary: 0.7143 over 6 scored episodes
   usage: 0 in / 0 out tokens, $0.00
   fabricated turns: 0 (in 0 episodes)
+  placeholder turns: 0/94 = 0.0% (engine 0.0%, burned cap 0.0%) | at cap 0.0% | no-op 19.5%
 ```
 
 Re-run with `seeds=[0, 1, 2, 3]` and only the two new seeds cost anything: resume is unconditional and keyed on `(instance_id, seed, arm)`, read from the episodes on disk rather than the manifest, so a crash between the two writes still resumes correctly. Reuse the set's own bank with `rs.load_instances()` — instance ids are uuid-based, so regenerating "the same" instances mints new ids and matches nothing.
@@ -133,7 +134,34 @@ Re-run with `seeds=[0, 1, 2, 3]` and only the two new seeds cost anything: resum
 
 Put in `config` anything that changes what an episode *means* (model, scaffold, information condition, arms, bank identity) and nothing that merely changes how it was scheduled (concurrency, output path), or a wider resume will refuse itself.
 
-`summary()` is deliberately a **health check**, not a results table — counts, statuses, success rate, mean `outcome["primary"]`, spend, and the engine-fabrication audit (`gen_failures`), which is surfaced here because a set is read long after the run log that made it. Metrics defined by your protocol belong in your own analyzers.
+`summary()` is deliberately a **health check**, not a results table — counts, statuses, success rate, mean `outcome["primary"]`, spend, and two contamination gates. Metrics defined by your protocol belong in your own analyzers.
+
+### Two gates, because each is blind to the other's failure
+
+A set can be 100% `done`, 100% `parse_ok`, 0% empty content, `fabrication 0.000` — and still be a quarter silent. Two different failures wear the same `EMPTY_TURN_PLACEHOLDER` string:
+
+| cause | signature | remedy |
+|---|---|---|
+| the **engine** fabricated the turn (generation failed outright) | `gen_failed` | fix the generation failure; a larger cap cannot help |
+| the **model** burned its whole per-turn budget inside an unterminated `<think>` and emitted no action | `empty_gen` | raise the per-turn cap, or disable thinking |
+
+The second is the one nothing else catches. The engine did its job, so `fabrication` correctly reads 0.000; the placeholder it substitutes is non-empty and parses into a well-formed no-op, so `parse_ok` reads 1.000 too. Measured at **24.4% of turns** on a thinking-on Qwen3-32B cell at a 2,048-token cap against 0.0% with thinking off — and on that cell `parse_ok` was *anti*-correlated with quality (1.000 on the silent arm vs 0.958 on the healthy one, because placeholders parse flawlessly and real prose sometimes does not).
+
+So `summary()` reports a **placeholder budget** beside the fabrication audit, split by cause and broken down by round:
+
+```
+  fabricated turns: 0 (in 0 episodes)
+  placeholder turns: 3/6 = 50.0% (engine 0.0%, burned cap 50.0%) | at cap 50.0% | no-op 50.0%
+  !! PLACEHOLDER BUDGET EXCEEDED: 50.0% of turns said nothing (budget 2.0%), in 1 episodes.
+     worst round 3 at 100.0%; by round: {1: '0.0%', 2: '50.0%', 3: '100.0%'}
+     parse_ok and the fabrication gate CANNOT see this. If 'burned cap' dominates, the model spent its
+     budget inside <think>: raise the per-turn cap or disable thinking — and note that changing the cap
+     changes the protocol, so the new cells do not pair with the old ones.
+```
+
+The by-round breakdown is load-bearing: budget exhaustion is **late-episode by construction**, since context grows with the transcript (5.8% at round 1 rising to ~35% by rounds 2–4). A short smoke run, or a peek at an episode's opening turns, reads ~0% and under-detects it — so a late round over budget is called out even when the pooled rate is clean.
+
+Exceeding the budget flags the set and stamps `manifest["turn_health"]`; it never raises, because the episodes are real evidence and the right response is to record the rate. Tune it with `summary(placeholder_budget=...)`; the per-turn primitive is `interlens.arena.turn_signatures(turn)`, which returns the signature set for one stored turn.
 
 ## Replay and re-scoring
 

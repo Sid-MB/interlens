@@ -46,7 +46,7 @@ from .actions import (Accept, Action, Deal, LEGALITY, Offer, OfferId, OfferRegis
                       Pass, Propose, Reject, SYNTAX, Walk, action_from_json, parse_action)
 from .oracles import Oracle, OracleRecord, OracleVerdict, annotate
 from .engine import (BatchedEpisodePool, EMPTY_TURN_PLACEHOLDER, EpisodePool, EpisodeRun,
-                     GenerationFailureBudgetExceeded, gen_failures)
+                     GenerationFailureBudgetExceeded, TURN_SIGNATURES, gen_failures, turn_signatures)
 from .ratchet import DifficultyRatchet, found_level
 from .rollouts import RolloutConfigMismatch, RolloutSet, config_fingerprint, rollout
 from .replay import ReplayError, replay_episode, rescore
@@ -92,6 +92,10 @@ __all__ = [
 	"EMPTY_TURN_PLACEHOLDER",
 	"gen_failures",
 	"GenerationFailureBudgetExceeded",
+	# the wider per-turn screen: the placeholder's OTHER cause (a model burning its cap inside <think>) is
+	# invisible to the fabrication gate, parse_ok, and an empty-content check alike
+	"turn_signatures",
+	"TURN_SIGNATURES",
 	"DifficultyRatchet",
 	"found_level",
 	# rollout-set management: a directory of episodes + the manifest that says what produced them
