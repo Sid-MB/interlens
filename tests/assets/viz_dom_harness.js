@@ -14,7 +14,8 @@
 // A step may also HOVER a chart mark (`{"hover": 3}` = the mark at that index or the one whose accessible name
 // starts with that string, `{"hover": "cloud"}` = a pointer move over the deal cloud, `{"hover": "out"}` = leave
 // the chart) and pin it (`{"click": ...}`), which is how the rich hover card is tested. `{"card": {mark}}` opens
-// a card for a mark the fixture does not draw, through the page's own controller.
+// a card for a mark the fixture does not draw, through the page's own controller. `{"open": "raw"}` opens every
+// lazy panel of one kind, which is how the deferred prompt and scratchpad bodies are tested.
 //
 // Usage:  node viz_dom_harness.js PAGE.html '[{"turns":[5,6]},{"turns":[9]},{"hover":0}]'
 // Output: one JSON object on stdout — {ok, steps:[...], errors:[...]}.  Exit code 1 on any thrown error.
@@ -236,6 +237,47 @@ function snapshot(label, hovered) {
     rational_package_links: all("[data-counterfactual]").length,
     reasoning_text: (reasoning || {}).textContent || "",
     reasoning_html: (reasoning || {}).innerHTML || "",
+    // --- the four-type decision-reference grid, the census strip, the ballot tally, and silent turns --------
+    // Reported as structure rather than as text because the claims under test are relational: which reference
+    // landed in which cell of the 2x2, and whether each number is accompanied by ITS OWN unit string. A text
+    // blob would let a grid that prints four numbers under one unit label pass.
+    reference_grid: all("#turnlist .refgrid").slice(0, 1).flatMap(grid =>
+      Array.from(grid.querySelectorAll("table.refs tbody tr")).map(tr => ({
+        objective: (tr.querySelector("th.objhd") || {}).textContent || "",
+        cells: Array.from(tr.querySelectorAll("td.refcell")).map(td => ({
+          name: (td.querySelector(".rname") || {}).textContent || "",
+          objective_class: (td.getAttribute("class") || "").replace("refcell ", ""),
+          action: (td.querySelector(".act") || {}).textContent || "",
+          unit: (td.querySelector(".ru") || {}).textContent || "",
+          value: (td.querySelector(".rv b") || {}).textContent || "",
+          subs: Array.from(td.querySelectorAll(".rsub")).map(n => n.textContent),
+          empty: (td.getAttribute("class") || "").includes("empty"),
+        })),
+      }))),
+    reference_grid_columns: all("#turnlist .refgrid table.refs thead th").map(n => n.textContent),
+    reference_unit_notes: all("#turnlist .refgrid .unitwarn li").map(n => n.textContent),
+    census_cells: all(".census .censuscell").map(n => ({
+      k: (n.querySelector(".k") || {}).textContent || "", v: (n.querySelector(".v") || {}).textContent || "",
+      note: (n.querySelector(".n") || {}).textContent || "",
+      bad: (n.getAttribute("class") || "").includes("bad"),
+      title: n.getAttribute("title") || "" })),
+    census_head: (q(".census .censushd") || {}).textContent || "",
+    ballot_rows: all("#ballots tbody tr").map(tr => ({
+      abstained: (tr.getAttribute("class") || "").includes("abstained"),
+      cells: Array.from(tr.children).map(td => td.textContent) })),
+    ballot_pills: all("#ballots .pills .pill").map(n => n.textContent),
+    vintage_banner: (q(".warn.vintage") || {}).textContent || "",
+    vintage_quick: (q(".quick .vintagequick") || {}).textContent || "",
+    budget_quick: (q(".quick .budgetbadge") || {}).textContent || "",
+    budget_note: (q(".warn.budgetnote") || {}).textContent || "",
+    silent_turns: all("#turnlist .turn.silent").map(n => n.id),
+    silent_badges: all("#turnlist .badge.silent").length,
+    at_cap_badges: all("#turnlist .badge.atcap").length,
+    silent_notes: all("#turnlist .silentnote").map(n => n.textContent),
+    silent_chips: all(".scrub .chip.silent").length,
+    // The raw unterminated scratchpad is a LAZY panel, so the summary is what exists before it is opened.
+    raw_panel_summaries: all('#turnlist details[data-lazy="raw"] summary').map(n => n.textContent),
+    raw_panel_bodies: all('#turnlist details[data-lazy="raw"] .lazybody').map(n => n.textContent.length),
     reasoning_before_message: Boolean(reasoning && message &&
       Array.from(reasoning.parentElement.children).indexOf(reasoning) < Array.from(message.parentElement.children).indexOf(message)),
   };
@@ -258,6 +300,16 @@ try {
     if (step.info) {
       const info = q("#turnlist .infobtn");
       if (info) info.dispatchEvent(new window.Event("click", { bubbles: true }));
+    }
+    // `{"open": "raw"}` opens every lazy panel of that kind the way a reader does. The page fills those bodies
+    // from a delegated `toggle` listener, so setting `.open` is not enough — the event has to be dispatched, and
+    // linkedom does not fire it for a property assignment.
+    if (step.open) {
+      all(`details[data-lazy="${step.open}"]`).forEach(d => {
+        d.open = true;
+        d.setAttribute("open", "");
+        d.dispatchEvent(new window.Event("toggle", { bubbles: true }));
+      });
     }
     if (step.counterfactual) {
       const link = all("[data-counterfactual]")[Number(step.counterfactual.index || 0)];

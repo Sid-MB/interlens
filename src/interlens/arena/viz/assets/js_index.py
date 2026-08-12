@@ -69,7 +69,12 @@ function applyFilter() {
     const hay = (r.dataset.hay || r.textContent).toLowerCase();
     const ok = (!q || hay.includes(q))
       && (!outcomeFilter || r.dataset.deal === outcomeFilter)
-      && (!flagFilter || (flagFilter === "fabricated" && Number(r.dataset.fabricated || 0) > 0));
+      && (!flagFilter
+          || (flagFilter === "fabricated" && Number(r.dataset.fabricated || 0) > 0)
+          /* Wider than `fabricated`, and deliberately a separate control: a spoiled vintage, a non-default token
+             budget, and a silent episode are all reasons a row's numbers do not pair with another row's, and
+             none of them makes the engine fabricate a turn. */
+          || (flagFilter === "hazards" && Number(r.dataset.hazards || 0) > 0));
     r.hidden = !ok;
     if (ok) shown++;
   });

@@ -346,6 +346,12 @@ def _payload_with_shared_geometry(run: RunDir, path: Path, geometry_from: RunDir
     if run.annotation_paths.get(episode.get("episode_id")):
         paths["annotation"] = str(run.annotation_paths[episode["episode_id"]])
     annotation = run.annotations.get(episode.get("episode_id"))
+    # The run-level hazard and re-derivation sidecars come from THIS side's own run directory, never the
+    # geometry donor's: whether one half of a pair carries a spoiled vintage is exactly the question a comparison
+    # exists to answer, and inheriting the left run's answer would hide the mismatch it was built to show.
+    if run.vintage:
+        paths["vintage"] = run.vintage["path"]
     return episode_payload(episode, instance, annotation,
                            manifest=run.manifest, geometry=geo, reconstruct=reconstruct, paths=paths,
-                           annotations_source=(run.annotations_dirname if annotation is not None else None))
+                           annotations_source=(run.annotations_dirname if annotation is not None else None),
+                           vintage=run.vintage, derivation=run.derivation)

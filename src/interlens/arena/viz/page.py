@@ -39,8 +39,11 @@ from pathlib import Path
 from markdown_it import MarkdownIt
 
 from .assets import CSS, JS, JS_COMPARE, JS_EPISODE, JS_INDEX_PAGE
+from .ballots import ballot_table
+from .census import census_strip
 from .chrome import (_e, _num, distance_to_nbs, help_overlay, nav_group, quick_stats, slim_payload,
                      summary_strip, topbar)
+from .hazards import budget_badge, budget_note, vintage_badge, vintage_banner, vintage_pairing
 
 __all__ = ["nav_group", "render_compare_html", "render_episode_html", "render_index_html"]
 
@@ -159,6 +162,22 @@ def _contamination_banner(payload: dict, label: str = "") -> str:
             "well-formed no-op, which is why this is called out here rather than left to the reader to notice. "
             f"Detected by {_e(', '.join(gen.get('detected_by') or []))}. Exclude these turns from any behavioural "
             "measurement of this episode.</div>")
+
+
+def _vintage_banners(*sides: dict) -> str:
+    """Each DISTINCT vintage hazard among these episodes, once.
+
+    Two episodes of the same spoiled run share one hazard file and must not produce two identical banners; two
+    episodes of different spoiled runs must produce two, because on a comparison page WHICH side is spoiled is
+    the finding rather than a detail."""
+    seen: set = set()
+    out = []
+    for side in sides:
+        vintage = (side or {}).get("vintage")
+        if vintage and vintage.get("path") not in seen:
+            seen.add(vintage.get("path"))
+            out.append(vintage_banner(vintage))
+    return "".join(out)
 
 
 def _reference_table(game: dict) -> str:
@@ -348,8 +367,13 @@ def _chat_bubbles(payload: dict) -> str:
             body.append(f"<div class='chipline'>{chip}</div>")
         if t.get("gen_failed"):
             body.append("<div class='fabtag'>NOT GENERATED — engine placeholder</div>")
+        elif t.get("silent"):
+            # The conversation view is what the other seats saw, and what they saw here was a party that said
+            # nothing. Tagging it keeps the bubble honest without inventing content for it.
+            body.append("<div class='fabtag'>SAID NOTHING — the seat published no answer this turn</div>")
         bubbles.append(
-            f"<div class='bubble{' fab' if t.get('gen_failed') else ''}' id='bub-{_e(t.get('idx'))}' "
+            f"<div class='bubble{' fab' if t.get('gen_failed') else (' silent' if t.get('silent') else '')}' "
+            f"id='bub-{_e(t.get('idx'))}' "
             f"data-turnidx='{_e(t.get('idx'))}' data-seat='{_e(seat)}' data-party='{_e(party)}'>"
             f"{''.join(body)}</div>")
     return f"<div class='chatlog' id='chatlog'>{''.join(bubbles)}</div>"
@@ -640,8 +664,11 @@ def render_episode_html(payload: dict) -> str:
  <div class='bar'>{selector}</div><div id='regret'></div></section>""" if oracles else "")
     body = f"""<h1>{_e(ep.get('scenario'))} — <code>{_e(ep.get('episode_id'))}</code></h1>
 {_meta_pills(payload)}{_source_links(payload)}
+{vintage_banner(payload.get('vintage'))}
 {_preference_visibility_banner(payload)}
-{summary_strip(payload)}{_contamination_banner(payload)}{no_cf}
+{summary_strip(payload)}{census_strip(payload.get('census'))}
+{_contamination_banner(payload)}{budget_note(payload.get('budget'))}{no_cf}
+{ballot_table(payload.get('ballots'))}
 <div class='layout'><div>
 {chart}{regret}
 {_system_prompt_audit(payload)}
@@ -656,7 +683,8 @@ def render_episode_html(payload: dict) -> str:
 </div>{_sidebar(payload)}</div>"""
     return _document(f"{ep.get('episode_id')} — episode",
                      topbar(_e(ep.get("cell") or ep.get("scenario") or "run"), "index.html",
-                            quick_stats(payload) + _preference_visibility_quick(payload),
+                            quick_stats(payload) + _preference_visibility_quick(payload)
+                            + vintage_badge(payload.get("vintage")) + budget_badge(payload.get("budget")),
                             brand_title="back to the run index"),
                      body, payload, JS + "\n" + JS_EPISODE)
 
@@ -754,6 +782,7 @@ def render_compare_html(payload: dict) -> str:
 <div class='sub'>{_e(labels['left'])} <code>{_e(le.get('episode_id'))}</code> ({_e(le.get('model'))})
  vs {_e(labels['right'])} <code>{_e(re_.get('episode_id'))}</code> ({_e(re_.get('model'))})</div>
 {_verdict_strip(payload)}
+{vintage_pairing(L, R, labels)}{_vintage_banners(L, R)}
 {_preference_visibility_banner(L)}
 {''.join(banner)}
 {_contamination_banner(L, labels['left'])}{_contamination_banner(R, labels['right'])}
@@ -793,6 +822,7 @@ INDEX_COLUMNS = [("page", "label", "link"), ("model", "model", "text"), ("arm", 
                  ("outcome", "deal", "deal"),
                  ("primary", "primary", "bar"), ("dist NBS", "dist_nbs", "num"), ("USW", "usw", "num"),
                  ("worst-off", "esw", "num"), ("fabricated", "fabricated_pct", "pct"),
+                 ("hazards", "hazards", "hazards"),
                  ("score Δ", "score_diff", "bar"), ("total regret", "regret", "num")]
 
 
@@ -808,6 +838,14 @@ def _index_cell(row: dict, key: str, kind: str, scale: float) -> str:
     if kind == "visibility":
         label = str(v or "PRIVATE").upper()
         return f"<td data-sort='{_e(label)}'><span class='visibility'>{_e(label)}</span></td>"
+    if kind == "hazards":
+        # Every reason this row's numbers may not pair with another row's, as one badge each. Sorted on the
+        # COUNT so a click brings the compromised episodes to the top, which is the only ordering a reader
+        # scanning an index for trouble actually wants.
+        flags = [f.strip() for f in str(v or "").split("·") if f.strip()]
+        rendered = " ".join(f"<span class='badge hazard'>{_e(f)}</span>" for f in flags)
+        return (f"<td data-sort='{len(flags)}' title='{_e(row.get('hazard_detail') or '')}'>"
+                f"{rendered or '<span class=muted>none</span>'}</td>")
     if kind == "tags":
         values = [tag.strip() for tag in str(v or "").split(",") if tag.strip()]
         rendered = " ".join(f"<span class='badge parameter-tag'>{_e(tag)}</span>" for tag in values)
@@ -875,7 +913,8 @@ def render_index_html(rows: list[dict], title: str, note: str = "", readme_markd
     for r in rows:
         hay = " ".join(str(r.get(k) or "") for _, k, _ in INDEX_COLUMNS)
         body.append(f"<tr data-hay=\"{_e(hay)}\" data-deal='{1 if r.get('deal') else 0}' "
-                    f"data-fabricated='{r.get('fabricated_pct') or 0}'>"
+                    f"data-fabricated='{r.get('fabricated_pct') or 0}' "
+                    f"data-hazards='{len([f for f in str(r.get('hazards') or '').split('·') if f.strip()])}'>"
                     + "".join(_index_cell(r, k, kind, scale) for _, k, kind in INDEX_COLUMNS) + "</tr>")
     table = (f"<section class='card'>{_difficulty_correlation(rows)}<div class='filterbar'>"
              "<input type='search' id='idx-search' placeholder='Filter by episode, model, arm, instance…' "
@@ -883,6 +922,7 @@ def render_index_html(rows: list[dict], title: str, note: str = "", readme_markd
              "<button data-filter='outcome:1' aria-pressed='false'>deal only</button>"
              "<button data-filter='outcome:0' aria-pressed='false'>no-deal only</button>"
              "<button data-filter='flag:fabricated' aria-pressed='false'>has fabricated turns</button>"
+             "<button data-filter='flag:hazards' aria-pressed='false'>has hazards</button>"
              "<span class='count' id='idx-count'></span></div>"
              f"<div class='tablewrap'><table class='sortable'><thead><tr>{head}</tr></thead>"
              f"<tbody>{''.join(body)}</tbody></table></div>"

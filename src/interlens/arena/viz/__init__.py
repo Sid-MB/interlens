@@ -59,6 +59,9 @@ See :func:`~interlens.arena.viz.serve.serve_directory` to do the same from Pytho
 """
 from __future__ import annotations
 
+from . import references
+from .ballots import DERIVATION_SIDECAR, ballot_table, final_ballots, vote_derivation
+from .census import census_strip, turn_census
 from .chrome import (NAV_MARKER, distance_to_nbs, inject_nav, nav_group, slim_payload, summary_strip,
                      unslim_payload)
 from .compare import (DEFAULT_PAIR_KEY, SELECTIONS, align, compare_payload, focal_seats, pair_key,
@@ -66,15 +69,20 @@ from .compare import (DEFAULT_PAIR_KEY, SELECTIONS, align, compare_payload, foca
 from .episode import RETRY_SOURCE, RunDir, episode_payload, public_ledger, reconstruct_views, seat_kinds
 from .export import export_comparison, export_episode, export_run, render_compare, render_episode
 from .geometry import DealGeometry, GameGeometry, staircase
+from .hazards import FROZEN_TURN_CAPS, generation_budget, vintage_provenance
 from .page import SIDEBAR_TABS, render_compare_html, render_episode_html, render_index_html
 from .serve import DEFAULT_HOST, make_server, serve_banner, serve_directory
 
 __all__ = [
-    "DEFAULT_HOST", "DEFAULT_PAIR_KEY", "DealGeometry", "GameGeometry", "NAV_MARKER", "RETRY_SOURCE", "RunDir",
-    "SELECTIONS", "SIDEBAR_TABS", "align", "compare_payload", "distance_to_nbs", "episode_payload",
-    "export_comparison",
-    "export_episode", "export_run", "focal_seats", "inject_nav", "make_server", "nav_group", "pair_key",
-    "pair_runs", "public_ledger", "reconstruct_views", "render_compare", "render_compare_html", "render_episode",
+    "DEFAULT_HOST", "DEFAULT_PAIR_KEY", "DERIVATION_SIDECAR", "DealGeometry", "FROZEN_TURN_CAPS", "GameGeometry",
+    "NAV_MARKER", "RETRY_SOURCE", "RunDir",
+    "SELECTIONS", "SIDEBAR_TABS", "align", "ballot_table", "census_strip", "compare_payload", "distance_to_nbs",
+    "episode_payload", "export_comparison",
+    "export_episode", "export_run", "final_ballots", "focal_seats", "generation_budget", "inject_nav",
+    "make_server", "nav_group", "pair_key",
+    "pair_runs", "public_ledger", "reconstruct_views", "references", "render_compare", "render_compare_html",
+    "render_episode",
     "render_episode_html", "render_index_html", "score_table", "seat_kinds", "serve_banner", "serve_directory",
-    "slim_payload", "staircase", "summary_strip", "unslim_payload",
+    "slim_payload", "staircase", "summary_strip", "turn_census", "unslim_payload", "vintage_provenance",
+    "vote_derivation",
 ]

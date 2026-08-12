@@ -1991,3 +1991,587 @@ def test_every_page_kind_emits_syntactically_valid_javascript(payload, two_runs,
         f.write_text(script)
         done = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
         assert done.returncode == 0, f"{kind} page script does not parse:\n{done.stderr[:600]}"
+
+
+# --------------------------------------- four-type references, hazards, census, and the ballot tally --
+# [rational_agents: viz-upgrades] 2026-08-12
+#
+# Each of these covers a bug that reached a results note because the page could not show it: four decision
+# references whose values are in two incompatible units, a run whose agents carried a since-fixed defect, two
+# arms that "shared a protocol" at an 8x token-budget difference, an episode that was a quarter silent while
+# passing every gate, and ~99% spoiled final ballots. The assertions are therefore about what a reader can SEE,
+# not only about what the payload holds.
+def _reference_row(*, action: dict, deal_index: int, deal: list, value: float, information: str,
+                   table_optimum: float | None = None, own_surplus: float | None = None) -> dict:
+    """One stored ``counterfactuals`` entry, in the shape the campaign's annotator writes."""
+    row = {"action": action, "deal_index": deal_index, "deal": deal, "value": value, "information": information}
+    if table_optimum is not None:
+        row["table_optimum"] = table_optimum
+        row["own_surplus"] = own_surplus
+    return row
+
+
+def _four_type_annotation(episode: dict, instance: dict, *, fairness: bool = True) -> dict:
+    """An annotation store carrying the current four decision references on every turn of ``episode``.
+
+    Built to the real ``five-seat-triple-counterfactuals-v1`` shape rather than a simplification, because the
+    unit hazard is IN that shape: the two self-interest rows carry only ``value`` (the acting seat's own points),
+    while the two fairness rows additionally carry ``table_optimum`` and ``own_surplus`` — and their ``value`` is
+    the table objective, which is a smaller number on a completely different scale. The private and omniscient
+    references are given DIFFERENT deals so a test can tell which cell of the grid it is looking at.
+    """
+    geo = viz.GameGeometry.from_instance(instance)
+    private_index, oracle_index = 0, min(1, geo.n_deals - 1)
+    rows = []
+    for t in episode.get("turns") or []:
+        cf = {
+            "rational_private": _reference_row(
+                action={"action": "propose", "deal": list(geo.at(private_index).named.values())},
+                deal_index=private_index, deal=list(geo.at(private_index).named.values()),
+                value=4.25, information="own_private_sheet+public_actions_only"),
+            "oracle_omniscient": _reference_row(
+                action={"action": "propose", "deal": list(geo.at(oracle_index).named.values())},
+                deal_index=oracle_index, deal=list(geo.at(oracle_index).named.values()),
+                value=37.0, information="all_private_sheets+public_actions"),
+        }
+        if fairness:
+            cf["fairness_private"] = _reference_row(
+                action={"action": "propose", "deal": list(geo.at(private_index).named.values())},
+                deal_index=private_index, deal=list(geo.at(private_index).named.values()),
+                value=0.8795, information="own_private_sheet+public_actions_only",
+                table_optimum=1.1409, own_surplus=63.0)
+            cf["fairness_oracle"] = _reference_row(
+                action={"action": "propose", "deal": list(geo.at(oracle_index).named.values())},
+                deal_index=oracle_index, deal=list(geo.at(oracle_index).named.values()),
+                value=1.1409, information="all_private_sheets+public_actions",
+                table_optimum=1.1409, own_surplus=37.0)
+        rows.append({"turn_idx": t["idx"], "counterfactuals": cf})
+    return {"episode_id": episode["episode_id"], "summary": {"episode_id": episode["episode_id"]}, "turns": rows}
+
+
+@pytest.fixture(scope="module")
+def four_type_payload(episode):
+    """A payload carrying all four current decision references on every turn."""
+    ep, inst = episode
+    return viz.episode_payload(ep, inst, _four_type_annotation(ep, inst))
+
+
+def test_the_payload_prices_every_reference_in_its_own_unit_and_forms_only_the_gap_it_supports(four_type_payload):
+    """Four references, two objectives, two units — and exactly one derived gap per objective.
+
+    The unit string travels WITH the value, per reference, because that is the only arrangement in which a
+    consumer cannot pick up a number without its unit. A fairness row additionally carries the only regret its
+    objective supports (``table_optimum - value``, in table units) and its own-surplus consequence as a
+    SEPARATE field; a self-interest row carries neither, because it has no table optimum to fall short of."""
+    refs = four_type_payload["turns"][0]["oracles"]
+    assert set(viz.references.REFERENCE_ORDER) - {"bestresponse"} <= set(refs)
+    assert [refs[n]["objective"] for n in ("rational_private", "oracle_omniscient")] == ["own_surplus"] * 2
+    assert [refs[n]["objective"] for n in ("fairness_private", "fairness_oracle")] == ["table_fairness"] * 2
+    assert [refs[n]["information_axis"] for n in ("rational_private", "fairness_private")] == ["private"] * 2
+    assert [refs[n]["information_axis"] for n in ("oracle_omniscient", "fairness_oracle")] == ["omniscient"] * 2
+    # the two objectives never share a unit string, which is what makes the two rows unmixable by construction
+    units = {refs[n]["unit"] for n in refs if refs[n].get("unit")}
+    assert len(units) == 2
+    assert "OWN surplus" in refs["rational_private"]["unit"]
+    assert "TABLE objective" in refs["fairness_private"]["unit"] and "not points" in refs["fairness_private"]["unit"]
+    # the fairness gap is in table units and is the only one the record supports
+    assert refs["fairness_private"]["shortfall"] == pytest.approx(1.1409 - 0.8795, abs=1e-6)
+    assert refs["fairness_oracle"]["shortfall"] == pytest.approx(0.0, abs=1e-9)
+    assert refs["fairness_private"]["own_surplus"] == 63.0
+    for name in ("rational_private", "oracle_omniscient"):
+        assert refs[name]["shortfall"] is None and refs[name]["table_optimum"] is None
+        assert refs[name]["own_surplus"] is None
+
+
+def test_the_two_self_interest_values_are_marked_as_not_subtractable_from_each_other(four_type_payload):
+    """The subtler half of the unit hazard: the private and omniscient SELF-INTEREST values share a unit and are
+    still not the same quantity — one is an expectation under the seat's posterior, the other is exact on the
+    true tables. The fairness pair is the opposite: both priced on the same true objective, so their difference
+    is a real measurement. The payload states which is which rather than leaving a reader to infer it."""
+    refs = four_type_payload["turns"][0]["oracles"]
+    assert refs["rational_private"]["comparable_across_information"] is False
+    assert refs["fairness_private"]["comparable_across_information"] is True
+    assert "posterior" in refs["rational_private"]["value_basis"]
+    assert "exact" in refs["oracle_omniscient"]["value_basis"]
+    # a fairness row's value needs no basis caveat, so it carries none rather than a misleading one
+    assert refs["fairness_private"]["value_basis"] is None
+
+
+def test_all_four_references_render_grouped_on_both_axes_each_carrying_its_own_unit(four_type_payload, tmp_path):
+    """In a DOM: one row per objective, one column per information set, and every cell's number accompanied by
+    the unit of ITS row — never one unit label over four numbers."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    report = _run_harness(viz.render_episode_html(four_type_payload), [], tmp_path)
+    assert report["ok"] and not report["errors"]
+    grid = report["steps"][0]["reference_grid"]
+    assert len(grid) == 2, "one row per objective on the current four-reference schema"
+    assert "self-interest" in grid[0]["objective"] and "table fairness" in grid[1]["objective"]
+    columns = " ".join(report["steps"][0]["reference_grid_columns"])
+    assert "private" in columns and "omniscient" in columns
+    assert "implementable by the acting seat" in columns and "hindsight ceiling" in columns
+    for row in grid:
+        assert len(row["cells"]) == 2 and not any(c["empty"] for c in row["cells"])
+        assert all(c["unit"] for c in row["cells"]), "every cell states its own unit"
+    self_interest, fairness = grid
+    assert all("OWN surplus" in c["unit"] for c in self_interest["cells"])
+    assert all("TABLE objective" in c["unit"] for c in fairness["cells"])
+    # the fairness cells are also visually separated as a different objective, not only textually
+    assert all("obj-table_fairness" in c["objective_class"] for c in fairness["cells"])
+    # the private column holds the private references and the omniscient column the omniscient ones
+    assert "private-information rational agent" in self_interest["cells"][0]["name"]
+    assert "omniscient oracle" in self_interest["cells"][1]["name"]
+    assert "private-information fairness agent" in fairness["cells"][0]["name"]
+    assert "omniscient fairness oracle" in fairness["cells"][1]["name"]
+
+
+def test_a_fairness_cell_separates_the_table_objective_from_the_seats_own_points(four_type_payload, tmp_path):
+    """The exact confusion two readers hit by hand: a fairness reference's headline number is the table's, and
+    the acting seat's points at the same deal are a different quantity. The cell prints both, says which is
+    which, and says in words that the second is not a gain measured by the first."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    report = _run_harness(viz.render_episode_html(four_type_payload), [], tmp_path)
+    fairness = report["steps"][0]["reference_grid"][1]["cells"][0]
+    assert fairness["value"] == "0.879", "the headline value is the TABLE objective"
+    subs = " ".join(fairness["subs"])
+    assert "best any deal could score" in subs and "1.141" in subs
+    assert "shortfall" in subs and "same table units" in subs
+    assert "this seat's own points at that deal" in subs and "63.0" in subs
+    assert "separate quantity, not the score above" in subs
+    notes = " ".join(report["steps"][0]["reference_unit_notes"])
+    assert "not a surplus" in notes, "the grid says outright that the fairness number is not a surplus"
+    assert "different questions in the same unit" in notes, "and that the two self-interest values are not one"
+
+
+def test_a_dual_schema_episode_renders_one_row_and_says_the_other_is_absent(episode, tmp_path):
+    """Graceful degradation on the older annotation vintage: two references, one objective row, and an explicit
+    statement that the fairness references are missing rather than an empty half-grid a reader must interpret."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    ep, inst = episode
+    payload = viz.episode_payload(ep, inst, _four_type_annotation(ep, inst, fairness=False))
+    report = _run_harness(viz.render_episode_html(payload), [], tmp_path)
+    assert report["ok"] and not report["errors"]
+    grid = report["steps"][0]["reference_grid"]
+    assert len(grid) == 1 and "self-interest" in grid[0]["objective"]
+    assert "added by a later schema and are absent here" in viz.render_episode_html(payload)
+
+
+def test_an_episode_with_no_decision_references_renders_no_grid_at_all(payload, tmp_path):
+    """A run scored only with generic oracles has no 2x2 to draw. The page must not invent an empty one — and
+    must not claim an objective for ``threshold`` or ``acceptance``, which optimize neither of these things."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    generic = {**payload, "turns": [{**t, "oracles": {k: v for k, v in (t["oracles"] or {}).items()
+                                                     if k == "threshold"}} for t in payload["turns"]]}
+    report = _run_harness(viz.render_episode_html(generic), [], tmp_path)
+    assert report["ok"] and not report["errors"]
+    assert report["steps"][0]["reference_grid"] == []
+    assert all((t["oracles"].get("threshold") or {}).get("objective") is None for t in generic["turns"])
+
+
+# ------------------------------------------------------------------------------------ hazard badges --
+_VINTAGE_FILE = """<!-- [test] -->
+# THIS ARM IS THE SPOILED-BALLOT VINTAGE — DO NOT POOL IT WITH A REPAIRED RUN
+
+Ninety-eight of ninety-nine forced-final turns are spoiled ballots.
+
+## The repaired counterpart
+`infomotive_primary_v1__one_oracle__ballotfix`
+"""
+
+
+def test_a_spoiled_vintage_is_the_loudest_thing_on_the_page_and_survives_scrolling(two_runs, tmp_path):
+    """A run carrying a ``VINTAGE_PROVENANCE.md`` gets an alert banner quoting the file's own headline, a sticky
+    top-bar badge (so the hazard outlives the banner scrolling away), and a link to the file itself — the page is
+    the messenger, the file is the authority on what is wrong."""
+    lrun, _ = two_runs
+    (lrun / "VINTAGE_PROVENANCE.md").write_text(_VINTAGE_FILE)
+    try:
+        run = viz.RunDir(lrun)
+        assert run.vintage and "SPOILED-BALLOT VINTAGE" in run.vintage["headline"]
+        assert "Ninety-eight" in run.vintage["summary"]
+        page = viz.render_episode_html(run.payload(run.episode_files()[0]))
+        assert not _missing(page, "SPOILED VINTAGE", "DO NOT POOL IT WITH A REPAIRED RUN",
+                            "MUST NOT be pooled", "VINTAGE_PROVENANCE.md", "role='alert'",
+                            "vintagequick")
+    finally:
+        (lrun / "VINTAGE_PROVENANCE.md").unlink()
+
+
+def test_a_clean_run_says_nothing_about_vintage(two_runs):
+    """The badge is worth nothing if it is not exceptional, so a run with no hazard file must be silent."""
+    lrun, _ = two_runs
+    run = viz.RunDir(lrun)
+    assert run.vintage is None
+    assert "SPOILED VINTAGE" not in viz.render_episode_html(run.payload(run.episode_files()[0]))
+
+
+def test_the_vintage_summary_is_a_whole_paragraph_in_plain_text(tmp_path):
+    """The banner escapes everything it prints, so markdown left in the summary reaches the reader as literal
+    asterisks and backticks — and quoting only the FIRST line of a hard-wrapped source file cuts the verdict off
+    mid-sentence. Both were visible in the first render against the real hazard file."""
+    (tmp_path / "VINTAGE_PROVENANCE.md").write_text(
+        "<!-- [stamp] -->\n# SPOILED VINTAGE\n\n**Arm:** `one_oracle` rendered at `sha 2c0869e`, which is\n"
+        "**before** the ballot fix `ca20157`.\n\n## What is wrong with it\n\nthe audit trail, not the verdict\n")
+    record = viz.vintage_provenance(tmp_path)
+    assert record["headline"] == "SPOILED VINTAGE"
+    assert record["summary"] == ("Arm: one_oracle rendered at sha 2c0869e, which is before the ballot fix "
+                                 "ca20157.")
+    assert "*" not in record["summary"] and "`" not in record["summary"]
+    assert "audit trail" not in record["summary"], "a second heading ends the verdict paragraph"
+
+
+def test_a_very_long_vintage_paragraph_is_cut_at_a_word_with_the_file_one_click_away(tmp_path):
+    """Past a few sentences the paragraph is audit trail rather than verdict, and the banner is not the place for
+    it — so it is truncated on a word boundary, never mid-word, and the link to the file carries the rest."""
+    (tmp_path / "VINTAGE_PROVENANCE.md").write_text("# SPOILED\n\n" + "defect " * 200)
+    summary = viz.vintage_provenance(tmp_path)["summary"]
+    assert len(summary) <= viz.hazards.VINTAGE_SUMMARY_CHARS + 1 and summary.endswith("defect\u2026")
+
+
+def test_the_vintage_reader_still_arms_the_hazard_on_a_malformed_file(tmp_path):
+    """A hazard file with no heading is a malformed hazard file, not an absent hazard: the reader falls back to
+    its first line rather than returning ``None`` and silently disarming the banner."""
+    (tmp_path / "VINTAGE_PROVENANCE.md").write_text("<!-- stamp -->\nthis cell ran the broken oracle\n")
+    record = viz.vintage_provenance(tmp_path)
+    assert record and record["headline"] == "this cell ran the broken oracle"
+    assert viz.vintage_provenance(tmp_path / "nowhere") is None
+
+
+def test_the_frozen_generation_budget_stays_quiet_and_a_raised_one_is_named(payload):
+    """The frozen caps are stamped on every request and a raised cap only where it was raised, so the DEFAULT is
+    invisible by design. The badge therefore reads the caps the turns actually carry, says nothing on a default
+    run, and on a raised run names the number, the protocol option that set it, and what it no longer pairs
+    with."""
+    assert viz.generation_budget(payload)["default"] is True
+    # asserted on the emitted BADGE, not on the phrase: the stylesheet always ships the rule that styles it
+    assert "class='budgetbadge'" not in viz.render_episode_html(payload)
+    ep = payload["episode"]
+    raised = {**payload,
+              "episode": {**ep, "cell_cfg": {**(ep.get("cell_cfg") or {}), "turn_max_tokens": 32768}},
+              "turns": [{**t, "cap": 32768} for t in payload["turns"]]}
+    budget = viz.generation_budget(raised)
+    assert budget["caps"] == [32768] and budget["default"] is False and budget["effective"] == 32768
+    page = viz.render_episode_html({**raised, "budget": budget})
+    assert not _missing(page, "token budget", "per-turn cap 32768", "vs frozen 2048/2560",
+                        "did not run at the frozen generation budget", "turn_max_tokens")
+
+
+def test_an_api_turn_token_floor_counts_as_a_raised_budget_even_though_the_caps_look_frozen(payload):
+    """The term that made two arms look matched when they were not. An API participant applies its floor as
+    ``max(cap, floor)``, so a cell whose requests all say 2048 can still have been generating at 16384 — which
+    is invisible in the caps and has to come from the manifest."""
+    floored = {**payload, "manifest": {**(payload.get("manifest") or {}),
+                                       "api_request_config": {"anthropic:claude-opus-5": {"turn_token_floor": 16384}}}}
+    budget = viz.generation_budget(floored)
+    assert budget["caps"] == [2048, 2560], "the request caps themselves are the frozen pair"
+    assert budget["default"] is False and budget["effective"] == 16384
+    assert budget["raised_floors"] == {"anthropic:claude-opus-5": 16384}
+    page = viz.render_episode_html({**floored, "budget": budget})
+    assert not _missing(page, "API floor anthropic:claude-opus-5=16384", "applied a per-turn floor")
+
+
+# ------------------------------------------------------------------- silent turns and the census --
+def _silence(episode: dict, indices: tuple[int, ...], *, engine_failed: bool = False) -> dict:
+    """A copy of ``episode`` whose turns at ``indices`` published nothing.
+
+    Two producers of the same placeholder, and the difference is the whole point of the distinction: with
+    ``engine_failed`` the engine's own stamp is set and its fabrication gate owns the turn; without it, generation
+    SUCCEEDED and spent the whole cap (``raw`` holds the unterminated scratchpad it produced), which no
+    fabrication screen can see."""
+    from interlens.arena.engine import EMPTY_TURN_PLACEHOLDER
+    turns = []
+    for t in episode["turns"]:
+        if t["idx"] not in indices:
+            turns.append(t)
+            continue
+        quiet = {**t, "content": EMPTY_TURN_PLACEHOLDER,
+                 "parsed_action": {**(t.get("parsed_action") or {}), "atype": "none", "deal_named": None,
+                                   "offer": None}}
+        if engine_failed:
+            quiet.update({"gen_failed": True, "gen_failure": "TimeoutError", "n_tokens_out": 0, "raw": None})
+        else:
+            quiet.update({"gen_failed": False, "n_tokens_out": t.get("cap") or 2048,
+                          "raw": "<think>\nI need to weigh Anvil Ridge against Weir Flats and never finish\n"})
+        turns.append(quiet)
+    return {**episode, "turns": turns}
+
+
+def test_a_silent_turn_is_marked_as_a_non_event_with_its_raw_scratchpad_reachable(episode, tmp_path):
+    """A turn whose text is the engine placeholder but whose generation SUCCEEDED renders as a hazard, not as a
+    party choosing to pass — and the text the model did produce is one click away rather than summarized, because
+    the only honest thing to say about an unterminated scratchpad is what it literally is."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    ep, inst = episode
+    payload = viz.episode_payload(_silence(ep, (0, 1)), inst)
+    assert [t["idx"] for t in payload["turns"] if t.get("silent")] == [0, 1]
+    assert payload["turns"][0]["raw"].startswith("<think>")
+    report = _run_harness(viz.render_episode_html(payload), [{"open": "raw"}], tmp_path)
+    assert report["ok"] and not report["errors"]
+    loaded, opened = report["steps"]
+    assert loaded["silent_turns"] == ["turn-0", "turn-1"]
+    assert loaded["silent_badges"] == 2 and loaded["silent_chips"] == 2
+    notes = " ".join(loaded["silent_notes"])
+    assert "This turn published nothing" in notes and "generation did not fail" in notes
+    assert "It parses as a well-formed pass; it is not one" in notes
+    assert len(loaded["raw_panel_summaries"]) == 2
+    assert "unterminated scratchpad" in loaded["raw_panel_summaries"][0]
+    # the panel body is deferred until it is opened, then holds the real generated text
+    assert loaded["raw_panel_bodies"] == [0, 0]
+    assert all(n > 20 for n in opened["raw_panel_bodies"])
+    assert "never finish" in viz.render_episode_html(payload)
+
+
+def test_the_raw_scratchpad_is_carried_for_silent_turns_only(episode):
+    """``raw`` runs to kilobytes and on a healthy local turn merely repeats ``content``, so carrying it on every
+    turn would cost the page a lot to say nothing. It is the diagnostic only where the turn said nothing."""
+    ep, inst = episode
+    loud = {**ep, "turns": [{**t, "raw": "a healthy completion"} for t in ep["turns"]]}
+    payload = viz.episode_payload(_silence(loud, (2,)), inst)
+    assert [t["idx"] for t in payload["turns"] if "raw" in t] == [2]
+
+
+def test_a_silent_turn_and_an_engine_failure_are_counted_apart(episode):
+    """They look identical in the transcript and need different fixes, so the census splits them — and the
+    fabrication banner stays silent about the budget-burned half, which is exactly how a quarter-silent cell
+    passed every gate. That silence is correct behaviour and is asserted here so nobody "fixes" it."""
+    ep, inst = episode
+    payload = viz.episode_payload(_silence(_silence(ep, (0,)), (1,), engine_failed=True), inst)
+    census = payload["census"]
+    assert census["placeholder"] == 2
+    assert census["placeholder_budget_burned"] == 1 and census["placeholder_engine_failure"] == 1
+    assert payload["generation"]["fabricated"] == 1, "the engine screen sees its own half and no more"
+    page = viz.render_episode_html(payload)
+    assert "1 of 23 turns" in page and "were NOT GENERATED" in page
+    assert "This turn published nothing" in page, "and the other half is called out on its own card"
+
+
+def test_the_census_strip_counts_every_way_a_turn_carried_nothing_by_round(episode, tmp_path):
+    """Non-action, placeholder, and at-cap counts in the page header, each with its per-round breakdown, because
+    "a quarter of this episode is silent" and "and all of it is in the last two rounds" are different findings."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    ep, inst = episode
+    payload = viz.episode_payload(_silence(ep, (0, 1)), inst)
+    census = payload["census"]
+    assert census["placeholder"] == 2 and census["at_cap"] == 2, "a burned budget is also at the cap"
+    assert census["non_action"] == 8 and census["clean"] is False
+    per_round = {r["round"]: r for r in census["by_round"]}
+    assert per_round[1]["placeholder"] == 2 and per_round[5]["placeholder"] == 0
+    report = _run_harness(viz.render_episode_html(payload), [], tmp_path)
+    cells = {c["k"]: c for c in report["steps"][0]["census_cells"]}
+    assert set(cells) == {"non-action turns", "placeholder turns", "at the token cap"}
+    assert cells["placeholder turns"]["v"] == "2/23" and cells["placeholder turns"]["bad"] is True
+    assert "burned the budget" in cells["placeholder turns"]["note"]
+    assert "r1: 2/4" in cells["placeholder turns"]["title"] and "r5: 0/7" in cells["placeholder turns"]["title"]
+    assert cells["at the token cap"]["title"].startswith("Output within 2 tokens")
+
+
+def test_the_census_strip_is_present_on_a_clean_episode_and_says_so(episode, tmp_path):
+    """An absent strip cannot make the claim a reader needs, which is that this episode has no silent turns. So
+    the strip is unconditional and the healthy case gets its own affirmative heading."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    ep, inst = episode
+    # only the final-vote passes are non-actions in the fixture; drop them to get a fully clean census
+    clean = {**ep, "turns": [t for t in ep["turns"] if t.get("phase") != "final_vote"]}
+    payload = viz.episode_payload(clean, inst)
+    assert payload["census"]["clean"] is True
+    report = _run_harness(viz.render_episode_html(payload), [], tmp_path)
+    step = report["steps"][0]
+    assert "every turn of this episode carried a move" in step["census_head"]
+    assert [c["bad"] for c in step["census_cells"]] == [False, False, False]
+    assert step["silent_turns"] == [] and step["silent_chips"] == 0
+
+
+def test_at_cap_turns_are_badged_from_the_cap_the_request_actually_carried(episode, tmp_path):
+    """There is no ``stop_reason`` on the local path, so "ran out of room" is inferred from output length against
+    the stamped cap — the same slack the campaign's own cell report uses, so a page and a report cannot
+    disagree about which turns were cut off."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    ep, inst = episode
+    pressed = {**ep, "turns": [{**t, "n_tokens_out": (t["cap"] - 2 if t["idx"] == 0 else
+                                                      (t["cap"] - 3 if t["idx"] == 1 else 0))}
+                               for t in ep["turns"]]}
+    payload = viz.episode_payload(pressed, inst)
+    assert payload["census"]["at_cap"] == 1, "the slack is 2 tokens, not 3"
+    report = _run_harness(viz.render_episode_html(payload), [], tmp_path)
+    assert report["steps"][0]["at_cap_badges"] == 1
+
+
+# --------------------------------------------------------------------------- the final-vote tally --
+def test_the_final_vote_tally_names_every_seat_and_shouts_an_abstention(payload, tmp_path):
+    """The widget the spoiled-ballot bug needed. Every seat asked to vote gets a row whether or not it produced a
+    ballot, a missing ballot is called an abstention in the loudest style the page has, and the parser's own
+    complaint is printed beside it — that string was in the record the whole time and is the entire diagnosis."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    tally = payload["ballots"]
+    assert tally["offer"] == "P17", "the tally names the package under the vote, from the offer ledger"
+    assert tally["n_abstentions"] == 3 and tally["n_ballots"] == 0
+    assert tally["n_retries"] == 3, "a seat asked twice is counted even when the retry also failed"
+    report = _run_harness(viz.render_episode_html(payload), [], tmp_path)
+    assert report["ok"] and not report["errors"]
+    step = report["steps"][0]
+    assert len(step["ballot_rows"]) == 3 and all(r["abstained"] for r in step["ballot_rows"])
+    joined = " ".join(" ".join(r["cells"]) for r in step["ballot_rows"])
+    assert "NO BALLOT — abstained" in joined
+    assert "is not allowed on this turn" in joined, "the protocol's own rejection is shown, not paraphrased"
+    assert "3 seat(s) cast no ballot" in " ".join(step["ballot_pills"])
+    assert "3 retried attempt(s)" in " ".join(step["ballot_pills"])
+
+
+def test_a_ballot_cast_on_the_wrong_package_is_distinguished_from_no_ballot(payload):
+    """The two failures are different and only the comparison against the package under vote separates them: a
+    seat that voted ACCEPT on a stale offer did answer, just not the question it was asked."""
+    wrong = {**payload,
+             "turns": [{**t, "action": {**t["action"], "atype": "accept", "offer": "P3"}}
+                       if t.get("phase") == "final_vote" else t for t in payload["turns"]]}
+    tally = viz.final_ballots(wrong)
+    assert tally["n_ballots"] == 3 and tally["n_abstentions"] == 0
+    assert all(r["off_ballot"] for r in tally["rows"])
+    assert "voted on <b>P3</b>, but the vote is on <b>P17</b>" in viz.ballot_table(tally)
+
+
+def test_the_tally_shows_a_derived_ballot_and_flags_a_recorded_vs_derived_mismatch(payload):
+    """Where a computable policy held the seat its vote has an offline answer, and re-deriving it in the renderer
+    would be a second opinion with no authority — so the column comes from the gate's own sidecar. A record that
+    disagrees with the policy is named a harness bug in the row itself."""
+    episode_id = payload["episode"]["episode_id"]
+    sidecar = {"episodes": {episode_id: {"18": {"expected": {"action": "accept", "offer_id": "P17"},
+                                                "recorded": {"action": "none"}, "match": False},
+                                         "20": {"expected": {"action": "reject", "offer_id": "P17"},
+                                                "recorded": {"action": "reject", "offer_id": "P17"},
+                                                "match": True}}}}
+    tally = viz.final_ballots(payload, sidecar)
+    assert tally["derived"] is True and tally["n_mismatch"] == 1
+    by_turn = {r["turn_idx"]: r for r in tally["rows"]}
+    assert by_turn[18]["derived_matches"] is False and by_turn[20]["derived_matches"] is True
+    assert by_turn[22]["derived_matches"] is None, "a turn the gate did not cover is unknown, not agreeing"
+    html = viz.ballot_table(tally)
+    assert not _missing(html, "the seat's own policy re-derives", "harness bug",
+                        "1 recorded-vs-derived mismatch(es)", "&quot;offer_id&quot;: &quot;P17&quot;")
+    # without a sidecar the column is absent rather than empty, and the page says how to fill it
+    plain = viz.ballot_table(viz.final_ballots(payload))
+    assert "the seat's own policy re-derives" not in plain and "gate G3" in plain
+
+
+def test_the_tally_is_absent_from_a_protocol_with_no_final_vote(payload):
+    """Most protocols close on an accept and never hold a forced final, so there is nothing to tabulate. An empty
+    table would read as a vote that nobody answered."""
+    no_vote = {**payload, "turns": [t for t in payload["turns"] if t.get("phase") != "final_vote"]}
+    tally = viz.final_ballots(no_vote)
+    assert tally["rows"] == [] and viz.ballot_table(tally) == ""
+
+
+def test_a_malformed_derivation_sidecar_costs_one_column_not_the_render(tmp_path):
+    """A hazard-adjacent file that cannot be parsed must degrade to absent. Losing an optional column is a far
+    better outcome than losing the page."""
+    (tmp_path / viz.DERIVATION_SIDECAR).write_text("{not json")
+    assert viz.vote_derivation(tmp_path) is None
+    (tmp_path / viz.DERIVATION_SIDECAR).write_text('["a list, not the expected object"]')
+    assert viz.vote_derivation(tmp_path) is None
+
+
+def test_the_run_dir_reads_both_optional_sidecars_once_and_links_them_from_every_page(two_runs):
+    """Both are properties of the RUN, so they are read once per directory rather than per episode, and each
+    appears in the page's source-record trail — the reproduction trail has to include the files that decide
+    whether the numbers may be used."""
+    lrun, _ = two_runs
+    (lrun / "VINTAGE_PROVENANCE.md").write_text(_VINTAGE_FILE)
+    (lrun / viz.DERIVATION_SIDECAR).write_text(json.dumps({"episodes": {}}))
+    try:
+        run = viz.RunDir(lrun)
+        assert run.vintage is not None and run.derivation == {"episodes": {}}
+        paths = run.payload(run.episode_files()[0])["paths"]
+        assert paths["vintage"].endswith("VINTAGE_PROVENANCE.md")
+        assert paths["vote_derivation"].endswith(viz.DERIVATION_SIDECAR)
+        assert "vote_derivation" in viz.render_episode_html(run.payload(run.episode_files()[0]))
+    finally:
+        (lrun / "VINTAGE_PROVENANCE.md").unlink()
+        (lrun / viz.DERIVATION_SIDECAR).unlink()
+
+
+# ---------------------------------------------------------------------------- the index hazard column --
+def test_the_index_tags_every_reason_a_row_may_not_pair_and_can_filter_on_it(two_runs, tmp_path):
+    """A reader scanning an index for trouble wants the compromised rows, and ``fabricated`` only ever caught one
+    of the reasons. The hazard column carries one badge per reason, sorts on their count, and has its own filter
+    — an episode can be perfectly clean of fabrication and still not be poolable."""
+    lrun, _ = two_runs
+    (lrun / "VINTAGE_PROVENANCE.md").write_text(_VINTAGE_FILE)
+    try:
+        out = tmp_path / "pages"
+        viz.export_run(lrun, out)
+        index = (out / "index.html").read_text()
+        assert not _missing(index, "hazards", "badge hazard", "SPOILED VINTAGE",
+                            "data-filter='flag:hazards'", "has hazards")
+        # the abstained final ballots of this fixture are a hazard the fabrication column cannot see
+        assert "no-ballot" in index and "data-fabricated='0'" in index
+        assert "data-hazards='2'" in index, "vintage and no-ballot, counted for sorting"
+    finally:
+        (lrun / "VINTAGE_PROVENANCE.md").unlink()
+
+
+def test_a_comparison_row_inherits_the_worse_half_of_both_sides_hazards(two_runs, tmp_path):
+    """A pair is only as poolable as its worse episode, so the comparison index unions both sides' flags instead
+    of reporting the left one's."""
+    lrun, rrun = two_runs
+    (rrun / "VINTAGE_PROVENANCE.md").write_text(_VINTAGE_FILE)
+    try:
+        out = tmp_path / "cmp"
+        viz.export_comparison(lrun, rrun, out)
+        assert "SPOILED VINTAGE" in (out / "index.html").read_text()
+    finally:
+        (rrun / "VINTAGE_PROVENANCE.md").unlink()
+
+
+def test_a_spoiled_vs_repaired_pairing_is_named_as_a_repair_effect_not_a_manipulation(two_runs, tmp_path):
+    """The most valuable comparison this program can draw — a spoiled run against its repaired counterpart — is
+    also the one whose deltas are easiest to misreport. So the page says outright that they measure the fix, and
+    names which side is spoiled."""
+    lrun, rrun = two_runs
+    (lrun / "VINTAGE_PROVENANCE.md").write_text(_VINTAGE_FILE)
+    try:
+        page = viz.render_compare_html(viz.pair_runs(lrun, rrun)[0][0])
+        assert not _missing(page, "Vintage contrast, not a behavioural comparison",
+                            "carries a vintage hazard", "effect of REPAIRING the agent",
+                            "must not be reported as one")
+        # and exactly one hazard banner is drawn, from the side that carries the file (the headline also
+        # appears in the page's embedded payload, so the banner is counted by its own markup, not by its text)
+        assert page.count("warn danger vintage") == 1
+    finally:
+        (lrun / "VINTAGE_PROVENANCE.md").unlink()
+
+
+def test_two_episodes_of_the_same_spoiled_run_are_called_vintage_matched(episode, tmp_path):
+    """Spoiled-vs-spoiled from one run holds the defect fixed, which is the one contrast a spoiled arm may be
+    read in — and the shared hazard file is quoted once rather than twice."""
+    ep, inst = episode
+    left = viz.episode_payload(ep, inst, vintage={"path": "/runs/x/VINTAGE_PROVENANCE.md",
+                                                 "headline": "SPOILED", "summary": "s"})
+    page = viz.render_compare_html(viz.compare_payload(left, left))
+    assert "Vintage-matched pair" in page and "like-for-like" in page
+    assert page.count("warn danger vintage") == 1, "one shared hazard file, one banner"
+
+
+def test_two_different_spoiled_vintages_are_attributed_to_neither(episode):
+    """Two defects, one delta: the page refuses the reading rather than letting a reader pick a side."""
+    ep, inst = episode
+    left = viz.episode_payload(ep, inst, vintage={"path": "/runs/a/VINTAGE_PROVENANCE.md",
+                                                 "headline": "A", "summary": ""})
+    right = viz.episode_payload(ep, inst, vintage={"path": "/runs/b/VINTAGE_PROVENANCE.md",
+                                                  "headline": "B", "summary": ""})
+    page = viz.render_compare_html(viz.compare_payload(left, right))
+    assert not _missing(page, "Two different spoiled vintages", "attributable to", "Repair both")
+
+
+def test_a_clean_pair_says_nothing_about_vintage(two_runs):
+    """The pairing note only exists to head off a misreading, so a pair with no hazard must not carry one."""
+    page = viz.render_compare_html(viz.pair_runs(*two_runs)[0][0])
+    # asserted on the rendered elements: the stylesheet always ships the rules that would style them
+    assert "warn danger vintage" not in page and "Vintage-matched" not in page
+    assert "Vintage contrast" not in page and "class='vintagequick'" not in page

@@ -2,6 +2,7 @@
 <!-- [rational_agents: viz-ux] 2026-08-03 — UI/UX overhaul: shell, navigation, keyboard, sortable index, page diet -->
 <!-- [rational_agents: viz-sidebar] 2026-08-03 — the tabbed, scroll-synced sidebar -->
 <!-- [rational_agents: viz-hovers] 2026-08-03 — rich hover cards on every chart point, with the solution-concept definitions -->
+<!-- [rational_agents: viz-upgrades] 2026-08-12 — four-type decision references with per-type units, run hazard badges, the silent-turn census, the final-vote tally -->
 
 # `interlens.arena.viz` — interactive episode visualizer
 
@@ -79,6 +80,8 @@ viz.serve_directory(out_dir, port=0)                         # serve rendered pa
 | `annotations/` | post-hoc oracles, above all `bestresponse` | the counterfactual column says so instead of being blank |
 | `manifest.json` | which seats were LLMs vs computable policies | inferred from output-token accounting, and labelled as inferred |
 | `README.md` | optional run description above the index table | omitted; the index starts with the table |
+| `VINTAGE_PROVENANCE.md` | the hazard banner and index tag marking a run whose agents carry a known defect | no hazard is claimed, which is the healthy case |
+| `vote_derivation.json` | the final-vote tally's *derived ballot* column (written by gate G3 with `--viz-sidecar`) | the recorded ballots are tabulated alone, and the page says how to fill the column |
 
 The run README is rendered as CommonMark with embedded HTML disabled, so rollout documentation can explain the
 campaign and its caveats without becoming executable page content. It is included by `--run`; a `--compare`
@@ -157,28 +160,114 @@ An unrecognized token renders as itself, so a future provenance value is never d
 
 The per-turn post-hoc oracle counterfactual (and its improvement gap, traditionally called regret) is read from a run's annotation store. For a model action `a_t` and the oracle's best scored legal action `a*_t`, the gap is `V_t(a*_t) - V_t(a_t) >= 0`. The standard `bestresponse` annotation uses the full game table. In PRIVATE games it therefore sees every party's hidden sheet and threshold: the gap is omniscient hindsight regret, not regret against a policy available to the acting seat. The model's oracle-scored value is shown with **The model acted**; the best value and positive **value improvement available** stay with the oracle's counterfactual. `--annotations-dir NAME` selects WHICH annotation set is used: the default `annotations` is the original scoring pass, and a re-annotated set such as `annotations_v1` (written by the oracle seat-binding fix) carries the corrected best-response values. The Python API takes the same knob as `annotations_dirname=` on `RunDir`, `export_run`, `export_comparison`, `render_episode`, and `render_compare`. The chosen vintage is stated in a provenance line above the transcript, so a reader always knows which counterfactual they are auditing; a name that does not exist simply yields no counterfactual (reported as missing) rather than an error.
 
-Current campaign annotations may additionally store two direct decision references on each `TurnAnnotation`:
+## Decision references: four of them, on two axes, in two units
+
+Current campaign annotations store direct decision references on each `TurnAnnotation`. The
+`five-seat-triple-counterfactuals-v1` schema stores **four**, which is one point in a 2x2 — *information* across
+(what the reference could see) and *objective* down (what it was maximizing):
+
+|  | private | omniscient |
+|---|---|---|
+| **self-interest** | `rational_private` | `oracle_omniscient` |
+| **table fairness** | `fairness_private` | `fairness_oracle` |
 
 ```json
 {
   "turn_idx": 4,
   "counterfactuals": {
-    "rational_private": {
-      "action": "propose", "deal_index": 17, "value": 0.61,
-      "information": "acting_seat_private"
-    },
-    "oracle_omniscient": {
-      "action": "propose", "deal_index": 23, "value": 0.84,
-      "information": "all_private_information"
-    }
+    "rational_private":  {"action": {"action": "propose"}, "deal_index": 17, "value": 4.27,
+                          "information": "own_private_sheet+public_actions_only"},
+    "oracle_omniscient": {"action": {"action": "propose"}, "deal_index": 53, "value": 37.0,
+                          "information": "all_private_sheets+public_actions"},
+    "fairness_private":  {"action": {"action": "propose"}, "deal_index": 165, "value": 0.8795,
+                          "table_optimum": 1.1409, "own_surplus": 63.0,
+                          "information": "own_private_sheet+public_actions_only"},
+    "fairness_oracle":   {"action": {"action": "propose"}, "deal_index": 53, "value": 1.1409,
+                          "table_optimum": 1.1409, "own_surplus": 37.0,
+                          "information": "all_private_sheets+public_actions"}
   }
 }
 ```
 
+**`value` does not mean the same thing on the two rows, and this is the page's central labelling job.** A
+self-interest row's `value` is in the acting seat's own score-sheet points. A fairness row's `value` is the
+*table* objective — a smoothed log-Nash score over normalized surplus, belonging to the whole table and to no
+seat, on an entirely different scale, bounded by the `table_optimum` recorded beside it. The seat's own points at
+that same deal are the separate `own_surplus` field, and a fairness reference will happily give those away, which
+is the point of the reference. Two readers auditing these records by hand have already subtracted the wrong pair.
+
+So [`references.py`](references.py) owns the 2x2 and every unit string, the payload carries the unit *with* each
+value, and the page renders all four in one grid whose row headers state their units and whose footer says which
+numbers may be subtracted from which. The subtler half: the two fairness values are both priced on the same true
+full-information objective, so their difference IS a measurement (what deciding blind costs the table) — while
+the two self-interest values share a unit without being the same quantity (the private one is an expectation
+under the seat's posterior, the omniscient one is exact on the true tables), so their difference measures
+nothing. The payload says which is which as `comparable_across_information`.
+
 `deal` may replace `deal_index`; the visualizer resolves a named deal through the instance's exact deal space.
-Aliases from early campaign prototypes (`private_rational`, `omniscient_oracle`, and related short forms) are
-normalized at load time. Old annotations without `counterfactuals` deserialize with an empty mapping and retain
-their existing `bestresponse` display.
+Aliases from early campaign prototypes (`private_rational`, `omniscient_oracle`, `fairness_rational`, and related
+short forms) are normalized at load time. A dual-schema (two-reference) annotation renders one objective row and
+says the fairness row is absent; annotations with no `counterfactuals` at all retain their existing
+`bestresponse` display and draw no grid.
+
+## Run hazards: vintage and generation budget
+
+Two facts decide whether a run's numbers may be compared with another run's, both properties of the RUN rather
+than the episode, and both invisible on the pages for as long as they existed.
+
+**Vintage.** A `VINTAGE_PROVENANCE.md` at the run root marks a run whose agents carry a since-fixed defect. Such
+a run is a valid record of the agent it actually was and is worthless pooled against a repaired run. The page
+turns the file's own headline into an alert banner and a sticky top-bar badge, links the file, and tags the index
+row — the file is the authority, the page is its messenger. A comparison page additionally names what pairing the
+two sides *means*: a vintage contrast (one side spoiled — the deltas measure the repair, not any manipulation),
+vintage-matched (both from the same spoiled run — like-for-like, the one safe reading), or two different spoiled
+vintages (attributable to neither).
+
+**Generation budget.** The frozen protocol caps a request at 2048 tokens (2560 on the forced final) and stamps
+that on every request, while a *raised* cap is stamped only where it was raised — so the default is invisible by
+design and the exception was invisible by accident. Two arms described as sharing a protocol ran at an 8x per-seat
+budget difference. The badge therefore reads the caps the turns actually carry, and three sources rather than one:
+the observed `cap` values, the `turn_max_tokens` protocol option from `cell_cfg`, and `api_request_config[…]
+.turn_token_floor` from the manifest — that last one because an API participant applies its floor as
+`max(cap, floor)`, so a cell whose every request says 2048 can have been generating at 16384. Muted-informational
+rather than alarming: a raised cap is usually a deliberate choice, it is only never comparable.
+
+## What counts as play: the census strip and silent turns
+
+The contamination banner counts turns the *engine* fabricated, and is right to be loud about them. But it screens
+for one cause, and a turn can carry nothing for others: a thinking model spending its whole budget inside an
+unterminated `<think>` (generation succeeded, `gen_failed` is false), a move rejected as illegal and repeated on
+its one retry, or a seat that talked and took no formal action. All three render as an ordinary quiet turn, and a
+campaign cell reached **24% silent turns while passing every gate** because 0.000 fabricated was the honest
+answer to the only question being asked.
+
+So every episode page carries a **census strip** in its header — non-action rate, placeholder count, at-cap count,
+each with its per-round breakdown on hover — present even when every count is zero, because "no turn of this
+episode was silent" is a claim a reader needs and an absent strip cannot make it. A silent turn is marked as a
+hazard on its card, in the scrubber, and in the conversation view, with a `SAID NOTHING` badge distinct from
+`NOT GENERATED` (different cause, different fix), and the text the model *did* produce reachable in one click as
+an unterminated-scratchpad panel. `raw` is carried for silent turns only: it runs to kilobytes and on a healthy
+local turn merely repeats `content`.
+
+The at-cap heuristic is output within 2 tokens of the stamped cap — there is no `stop_reason` on the local
+generation path — which is the same slack the campaign's own cell report uses, so a page and a report cannot
+disagree about which turns were cut off.
+
+## The final-vote tally
+
+The forced final is the one turn where every seat answers the same question about the same package, so it is the
+one place a missing answer is unambiguous. It is also where a defect hid for weeks: a computable seat voted on
+whichever live offer it valued most rather than the one under the vote, the protocol rejected that as illegal, the
+seat repeated itself on its retry, and the turn was recorded as a **pass** — which parses cleanly, so ~99% of one
+arm's final ballots were silent abstentions that nothing on the page mentioned.
+
+The tally is therefore built around absence: every seat asked to vote gets a row whether or not it produced a
+ballot, a missing ballot is called an abstention in the loudest style the page has, the parser's own complaint is
+printed beside it (that string is the entire diagnosis and was in the record all along), and a ballot cast on the
+*wrong* package is distinguished from no ballot at all. Where a computable policy held the seat, its vote has an
+offline answer; re-deriving it in the renderer would be a second opinion with no authority, so the derived column
+reads gate G3's own output from `vote_derivation.json` (`gate_seeded_offer_votes.py --viz-sidecar`) and names a
+recorded-vs-derived disagreement a harness bug in the row itself.
 
 ## Seat-swap comparison
 
@@ -197,6 +286,10 @@ Where several seats were swapped at once (a `mixed` table against `all_llm` repl
 | `geometry.py` | the exact plottable geometry of one instance: frontier, solutions, party ideals, 2-D embedding |
 | `episode.py` | episode + instance + annotation + manifest → one render payload; seat kinds; view provenance; the public offer ledger |
 | `compare.py` | pairing, slot alignment, divergence, focal seats, the score table |
+| `references.py` | the four decision references' 2x2, and the unit each one's `value` is priced in |
+| `census.py` | the per-episode count of turns that carried nothing, and its header strip |
+| `hazards.py` | the vintage hazard file, the generation budget, and their badges/banners |
+| `ballots.py` | the final-vote tally and the optional re-derivation sidecar |
 | `chrome.py` | the shell shared by all three page kinds: top bar, nav slot, help overlay, summary strip, and `slim_payload` (the pooled wire form) |
 | `page.py` | pure `payload -> HTML`; renders every number server-side |
 | `assets/` | the inline stylesheet and browser layer, split by job (see below) |

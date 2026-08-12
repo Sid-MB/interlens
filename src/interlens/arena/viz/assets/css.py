@@ -106,6 +106,13 @@ kbd{border:1px solid var(--ring-2);border-radius:4px;padding:1px 5px;background:
 .quick .k{color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.04em}
 .quick .prefvisquick{border-left:2px solid var(--s1);padding-left:var(--sp-2)}
 .quick .prefvisquick b{color:var(--s1);text-transform:uppercase;letter-spacing:.04em}
+/* Two run-level hazards that must survive scrolling past their banners: a spoiled vintage is loud, a raised
+   token budget is informational — a raised cap is usually a deliberate choice, it is only never comparable. */
+.quick .vintagequick{border-left:2px solid var(--critical);padding-left:var(--sp-2)}
+.quick .vintagequick b{color:var(--critical);letter-spacing:.04em}
+.quick .budgetbadge{border-left:2px solid var(--s3);padding-left:var(--sp-2)}
+.quick .budgetbadge b{color:var(--s3)}
+.quick .budgetbadge .muted{color:var(--muted)}
 a.disabled,button:disabled{opacity:.38;pointer-events:none}
 
 /* --- controls -------------------------------------------------------------------------------------------- */
@@ -302,6 +309,44 @@ svg .infodot:hover text,svg .infodot:focus-visible text{fill:var(--s1)}
 .turn.sel{box-shadow:0 0 0 2px var(--s1)}
 .badge.fabricated{color:var(--critical);border-color:var(--critical);font-weight:700}
 .fabnote{border-color:var(--critical);color:var(--ink)}
+/* A turn that published nothing without the engine failing. Marked in the same hazard family as a fabricated
+   turn but a distinct shade, because the cause and the fix differ: this one is a real generation that produced
+   no answer, and the fabrication gate is correctly silent about it. */
+.turn.silent{border-left-color:var(--warn);border-left-style:dotted;
+ background:color-mix(in oklab,var(--warn) 7%,var(--surface-1))}
+.turn.silent.fabricated{border-left-color:var(--critical);border-left-style:solid}
+.badge.silent{color:var(--warn);border-color:var(--warn);font-weight:700}
+.badge.atcap{color:var(--s2);border-color:color-mix(in oklab,var(--s2) 45%,transparent);font-weight:600}
+.silentnote{border:1px solid var(--warn);color:var(--ink)}
+.chip.silent{outline:2px dotted var(--warn);outline-offset:-2px}
+.bubble.silent .fabtag{color:var(--warn)}
+
+/* --- the decision-reference grid (four references on two axes) ------------------------------------------- */
+/* Rows are objectives and are in DIFFERENT UNITS, so the row header carries the unit and the two objective rows
+   are visually separated rather than reading as one continuous table of comparable numbers. */
+.refgrid{margin-top:var(--sp-2)}
+.refgrid > summary{font-size:var(--t-sm);font-weight:600}
+table.refs{table-layout:fixed;width:100%}
+table.refs th{vertical-align:top;font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.04em}
+table.refs th.objhd{width:11em;text-align:left;border-right:2px solid var(--grid)}
+/* Both information columns get the same share of whatever is left, so a wider package summary on one side
+   cannot make the two references look like different kinds of thing. */
+table.refs thead th:not(:first-child){width:calc((100% - 11em) / 2)}
+table.refs tbody tr + tr td,table.refs tbody tr + tr th{border-top:2px solid var(--axis)}
+.refcell{vertical-align:top;font-size:var(--t-sm)}
+.refcell.empty{color:var(--muted);font-style:italic}
+.refcell .rname{font-size:var(--t-xs);color:var(--ink-2);font-weight:600}
+.refcell .rv{margin-top:2px;font-variant-numeric:tabular-nums}
+.refcell .rv b{font-size:var(--t-md)}
+.refcell .ru{display:block;font-size:var(--t-xs);color:var(--muted);font-variant-numeric:normal;
+ text-transform:none;letter-spacing:0}
+.refcell .rsub,table.refs th .rsub{display:block;font-size:var(--t-xs);color:var(--muted);font-weight:400;
+ text-transform:none;letter-spacing:0;margin-top:2px}
+.refcell.obj-table_fairness{background:color-mix(in oklab,var(--s3) 5%,transparent)}
+.unitwarn{margin:var(--sp-2) 0 0;padding-left:1.1em;font-size:var(--t-xs);color:var(--ink-2)}
+.unitwarn li{margin-bottom:3px}
+/* The unit phrase beside a value in the single-reference cell, on its own line so it cannot be skimmed past. */
+.col.oracle .unit{display:block;font-size:var(--t-xs);color:var(--muted);font-weight:400}
 .turnhd{display:flex;justify-content:space-between;gap:var(--sp-2);align-items:baseline;flex-wrap:wrap;
  position:sticky;top:calc(var(--topbar) + var(--scrubh) - 1px);z-index:5;background:inherit;
  margin:-10px -13px var(--sp-1);
@@ -388,6 +433,34 @@ svg .infodot:hover text,svg .infodot:focus-visible text{fill:var(--s1)}
  font-size:var(--t-md);margin-bottom:var(--sp-2)}
 .warn b{color:var(--ink)}
 .warn.danger{border-left-color:var(--critical)}
+/* The vintage banner is the one notice allowed a filled surface: it is not advice about how to read a number,
+   it is a statement that the numbers may not be pooled at all. */
+.warn.vintage{display:flex;flex-direction:column;gap:var(--sp-1);border-left-width:6px;
+ background:color-mix(in oklab,var(--critical) 9%,var(--surface-1))}
+.warn.vintage b{letter-spacing:.01em}
+.warn.budgetnote{border-left-color:var(--s3)}
+
+/* --- the per-episode census strip ------------------------------------------------------------------------ */
+/* Sits directly under the summary strip and, unlike it, is present even when every count is zero: "no turn of
+   this episode was silent" is a claim a reader needs and an absent strip cannot make it. */
+.census{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:stretch;margin:0 0 var(--sp-3);
+ padding:var(--sp-2) var(--sp-3);border:1px solid var(--ring);border-radius:var(--r-2);
+ background:var(--surface-1)}
+.census .censushd{align-self:center;font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;
+ color:var(--muted);max-width:9em;line-height:1.3}
+.census .censushd.ok{color:var(--good)}
+.censuscell{display:flex;flex-direction:column;gap:1px;padding:2px var(--sp-3);border-left:1px solid var(--grid)}
+.censuscell .k{font-size:var(--t-xs);color:var(--ink-2);text-transform:uppercase;letter-spacing:.04em}
+.censuscell .v{font-size:var(--t-lg);font-weight:650;font-variant-numeric:tabular-nums}
+.censuscell .v .of{font-size:var(--t-sm);font-weight:400;color:var(--muted)}
+.censuscell .n{font-size:var(--t-xs);color:var(--muted)}
+.censuscell.bad .v{color:var(--critical)}
+.censuscell.bad .k{color:var(--critical)}
+
+/* --- the final-vote tally -------------------------------------------------------------------------------- */
+.card.ballots.hazard{border-color:var(--critical)}
+.ballots tr.abstained{background:color-mix(in oklab,var(--critical) 7%,transparent)}
+.ballots .pill.bad{border-color:var(--critical)}
 
 /* --- index: filter row above one sortable table ---------------------------------------------------------- */
 .filterbar{display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center;margin-bottom:var(--sp-3)}
@@ -405,6 +478,8 @@ tr[hidden]{display:none}
 .inlinebar.warnfill i{background:var(--critical)}
 td .flag{color:var(--critical);font-weight:600}
 .parameter-tag{white-space:nowrap;margin:1px 2px 1px 0}
+.badge.hazard{white-space:nowrap;margin:1px 2px 1px 0;color:var(--critical);
+ border-color:color-mix(in oklab,var(--critical) 55%,transparent);font-weight:650}
 .correlation{margin-bottom:var(--sp-2);font-size:var(--t-sm)}
 
 /* --- help overlay ---------------------------------------------------------------------------------------- */

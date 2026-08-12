@@ -48,20 +48,19 @@ from pathlib import Path
 from typing import Any
 
 from ..actions import action_from_json
-from ..engine import gen_failures
+from ..engine import EMPTY_TURN_PLACEHOLDER, gen_failures
+from . import references
+from .ballots import DERIVATION_SIDECAR, final_ballots, vote_derivation
+from .census import turn_census
 from .geometry import GameGeometry
+from .hazards import generation_budget, vintage_provenance
 
-# Decision references whose records name a counterfactual action or deal rather than only a scalar value. The
-# first two are the paired references in current campaigns: an implementable policy with the acting seat's
-# information and a privileged optimum with every hidden score sheet. ``bestresponse`` is the legacy, omniscient
-# annotation and remains supported without relabelling old data.
-COUNTERFACTUAL_ORACLES = ("rational_private", "oracle_omniscient", "bestresponse")
-COUNTERFACTUAL_ALIASES = {
-    "rational": "rational_private", "private_rational": "rational_private",
-    "private_information_rational": "rational_private",
-    "oracle": "oracle_omniscient", "omniscient": "oracle_omniscient",
-    "omniscient_oracle": "oracle_omniscient",
-}
+# Decision references whose records name a counterfactual action or deal rather than only a scalar value, in
+# presentation order, and the older spellings that mean the same thing. Both come from
+# :mod:`~interlens.arena.viz.references`, which owns the 2x2 these live on (private vs omniscient information,
+# self-interest vs table-fairness objective) and the unit each one's ``value`` is priced in.
+COUNTERFACTUAL_ORACLES = references.REFERENCE_ORDER
+COUNTERFACTUAL_ALIASES = references.ALIASES
 
 # The provenance marker for a reconstructed view on a RETRY turn — a second turn in the same (round, phase, seat)
 # slot, which the engine issued after a malformed first attempt. Replay re-issues the original request, so the
@@ -249,8 +248,13 @@ def _oracle_payload(name: str, rec: dict, geo: GameGeometry | None) -> dict:
         if not isinstance(direct_index, int):
             direct_index = geo.deal_index(deal) if (geo is not None and deal is not None) else None
         value = rec.get("value")
-        role = "rational_private" if name == "rational_private" else "oracle_omniscient"
-        default_information = "private" if role == "rational_private" else "omniscient"
+        # The reference registry decides the role, the axis, and — the part a page must not improvise — the unit
+        # the stored ``value`` is priced in. An unknown direct reference falls back to the omniscient
+        # self-interest reading, which is what every pre-registry record was.
+        described = references.describe(name) or references.describe("oracle_omniscient")
+        optimum = rec.get("table_optimum")
+        shortfall = (round(float(optimum) - float(value), 6)
+                     if isinstance(optimum, (int, float)) and isinstance(value, (int, float)) else None)
         return {
             "oracle": name,
             "chosen_value": rec.get("chosen_value"),
@@ -263,8 +267,26 @@ def _oracle_payload(name: str, rec: dict, geo: GameGeometry | None) -> dict:
             "action_values": list(rec.get("action_values") or []),
             "extra": dict(rec.get("extra") or {}),
             "counterfactual": True,
-            "counterfactual_role": role,
-            "information": rec.get("information") or default_information,
+            "counterfactual_role": described["role"],
+            # ``information`` stays the record's own tag when it carries one (it is more specific than the axis
+            # name: "own_private_sheet+public_actions_only"); the axis is separately available as
+            # ``information_axis`` so a page can group by it without parsing a provenance string.
+            "information": rec.get("information") or described["information"],
+            "information_axis": described["information"],
+            "objective": described["objective"],
+            "reference_label": described["label"],
+            "reference_short": described["short"],
+            "value_label": described["value_label"],
+            "unit": described["unit"],
+            "value_basis": described["value_basis"],
+            "comparable_across_information": described["comparable_across_information"],
+            "gap_label": described["gap_label"],
+            # A table objective's own ceiling and the acting seat's surplus at the same deal, present only on a
+            # fairness record. ``shortfall`` is the ONLY regret a fairness row supports and it is in table
+            # units — never in the seat's points, which is what ``own_surplus`` alone reports.
+            "table_optimum": optimum,
+            "own_surplus": rec.get("own_surplus"),
+            "shortfall": shortfall,
         }
     verdict = rec.get("verdict") or {}
     extra = verdict.get("extra") or {}
@@ -273,6 +295,10 @@ def _oracle_payload(name: str, rec: dict, geo: GameGeometry | None) -> dict:
     if deal is None and isinstance(best, dict):
         deal = best.get("deal")
     index_of = lambda d: (geo.deal_index(d) if (geo is not None and d is not None) else None)
+    # A generic scored oracle (``threshold``, ``acceptance``, ``belief``) is not a decision reference and gets no
+    # axis or unit strings — the page keeps rendering it through its older, name-agnostic path rather than
+    # claiming an objective for it.
+    described = references.describe(name)
     return {
         "oracle": name,
         "chosen_value": rec.get("chosen_value"),
@@ -285,8 +311,20 @@ def _oracle_payload(name: str, rec: dict, geo: GameGeometry | None) -> dict:
         "action_values": _verdict_actions(verdict),
         "extra": {k: v for k, v in extra.items() if k != "surplus_loss"},
         "counterfactual": name in COUNTERFACTUAL_ORACLES,
-        "counterfactual_role": "oracle_omniscient" if name == "bestresponse" else name,
-        "information": "omniscient" if name == "bestresponse" else rec.get("information"),
+        "counterfactual_role": described.get("role", name),
+        "information": rec.get("information") or described.get("information"),
+        "information_axis": described.get("information"),
+        "objective": described.get("objective"),
+        "reference_label": described.get("label"),
+        "reference_short": described.get("short"),
+        "value_label": described.get("value_label"),
+        "unit": described.get("unit"),
+        "value_basis": described.get("value_basis"),
+        "comparable_across_information": described.get("comparable_across_information"),
+        "gap_label": described.get("gap_label"),
+        "table_optimum": None,
+        "own_surplus": None,
+        "shortfall": None,
     }
 
 
@@ -409,7 +447,8 @@ def reconstruct_views(episode: dict, instance: dict) -> dict[int, list[dict]]:
 def episode_payload(episode: dict, instance: dict | None = None, annotation: dict | None = None, *,
                     manifest: dict | None = None, geometry: GameGeometry | None = None,
                     reconstruct: bool = True, paths: dict | None = None,
-                    annotations_source: str | None = None) -> dict:
+                    annotations_source: str | None = None, vintage: dict | None = None,
+                    derivation: dict | None = None) -> dict:
     """The complete render payload for one episode.
 
     Parameters
@@ -438,6 +477,16 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         see WHICH annotation vintage the post-hoc oracle values (above all the ``bestresponse`` counterfactual)
         were read from — the v0 pass versus a re-annotated set such as the oracle seat-binding fix. ``None`` when
         the counterfactual oracles came only from the episode's own inline records, not an annotation store.
+    vintage : dict, optional
+        The run's parsed ``VINTAGE_PROVENANCE.md`` hazard record (see
+        :func:`~interlens.arena.viz.hazards.vintage_provenance`), which marks a run whose agents carry a known
+        defect. Passed in rather than read here because it is a property of the run directory and one run's file
+        serves all of its episodes. ``None`` means no hazard file, which is the healthy case.
+    derivation : dict, optional
+        The run's optional ``vote_derivation.json`` sidecar (see
+        :func:`~interlens.arena.viz.ballots.vote_derivation`), which lets the final-vote tally show what each
+        computable seat's own policy re-derives beside what the record holds. ``None`` renders the recorded
+        ballots alone.
     """
     geo = geometry if geometry is not None else GameGeometry.from_instance(instance or {})
     kinds = seat_kinds(episode, manifest)
@@ -498,7 +547,17 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
             "gen_failed": idx in fabricated,
             "gen_failure": (fabricated.get(idx) or {}).get("reason"),
             "gen_failed_detected_by": (fabricated.get(idx) or {}).get("detected_by"),
+            # A turn whose VISIBLE text is the engine's placeholder, whatever produced it. Strictly wider than
+            # ``gen_failed``: generation can succeed and still yield nothing publishable, which is what a
+            # thinking model does when it spends its whole cap inside an unterminated ``<think>``. Marked on the
+            # turn so the transcript can style it as the non-event it is instead of a party choosing to pass.
+            "silent": (t.get("content") or "") == EMPTY_TURN_PLACEHOLDER,
         }
+        if row["silent"] and t.get("raw"):
+            # The text the model DID generate before the placeholder replaced it — normally an unterminated
+            # scratchpad, and the only evidence of what the turn was trying to do. Carried for silent turns only:
+            # it runs to several kilobytes and on a healthy local turn it merely repeats ``content``.
+            row["raw"] = t.get("raw")
         if deal_index is not None and geo is not None:
             row["deal"] = geo.at(deal_index).to_json()
             row["deal_welfare"] = geo.welfare_of(deal_index)
@@ -553,12 +612,23 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         "generation": {"n_turns": len(turns), "fabricated": len(fabricated),
                        "fraction": round(len(fabricated) / len(turns), 4) if turns else 0.0,
                        "detected_by": sorted({r["detected_by"] for r in fabricated.values()}) or None},
+        # How much of this episode carried a move at all — the questions the fabrication screen does not ask.
+        "census": turn_census(rows),
         "game": geo.to_json() if geo is not None else None,
         "manifest": {k: (manifest or {}).get(k) for k in
                      ("run_name", "invocation", "table", "arms", "policies", "models", "oracles", "scaffold",
-                      "info", "provenance", "difficulty", "tags", "score_differential")} if manifest else None,
+                      "info", "provenance", "difficulty", "tags", "score_differential",
+                      "api_request_config", "turn_max_tokens")} if manifest else None,
+        # The run-level hazards: a known defect in the agents that played it, and the generation budget its
+        # seats actually ran at. Both decide whether these numbers may be compared with another run's.
+        "vintage": vintage,
         "paths": paths or {},
+        # The 2x2 the decision references live on, shipped once so the browser groups them from data and takes
+        # every unit string from one owner.
+        "reference_axes": references.axes_payload(),
     }
+    payload["budget"] = generation_budget(payload)
+    payload["ballots"] = final_ballots(payload, derivation)
     return payload
 
 
@@ -585,6 +655,11 @@ class RunDir:
         self.annotations, self.annotation_paths = _index_records(self.root / annotations_dirname, "episode_id")
         manifest = self.root / "manifest.json"
         self.manifest = json.loads(manifest.read_text()) if manifest.is_file() else None
+        # Two optional run-level sidecars, read once here because every episode of the run shares them: the
+        # vintage hazard file that says this run must not be pooled with a repaired one, and the gate's
+        # re-derivation of each computable seat's ballot. Both are ``None`` when absent.
+        self.vintage = vintage_provenance(self.root)
+        self.derivation = vote_derivation(self.root)
         self._geometry: dict[str, GameGeometry | None] = {}
 
     def episode_files(self) -> list[Path]:
@@ -611,9 +686,14 @@ class RunDir:
                            ("annotation", self.annotation_paths.get(episode.get("episode_id")))):
             if table is not None:
                 paths[key] = str(table)
+        if self.vintage:
+            paths["vintage"] = self.vintage["path"]
+        if self.derivation is not None:
+            paths["vote_derivation"] = str((self.root / DERIVATION_SIDECAR).resolve())
         return episode_payload(episode, instance, annotation, manifest=self.manifest,
                                geometry=self.geometry(instance_id), reconstruct=reconstruct, paths=paths,
-                               annotations_source=(self.annotations_dirname if annotation is not None else None))
+                               annotations_source=(self.annotations_dirname if annotation is not None else None),
+                               vintage=self.vintage, derivation=self.derivation)
 
 
 def _index_records(path: Path, key: str, require: str | None = None) -> tuple[dict[str, dict], dict[str, Path]]:

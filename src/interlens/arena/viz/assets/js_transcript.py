@@ -22,6 +22,10 @@ the seat was a computable policy rather than a model. The header is sticky, so s
 never loses track of whose turn it is, and clicking it selects the turn (which lights up the deal that turn put on
 the chart).
 
+**A hazard note comes before the turn's analysis, not after it.** "This turn is not what it looks like" — the
+engine fabricated it, or generation produced no publishable answer — has to reach a reader before the columns
+that discuss what the seat chose, because those columns are discussing a non-event.
+
 **Prompt bodies are built on first open, not on first paint.** A six-seat thirty-turn episode carries a few
 hundred kilobytes of prompt text; turning all of it into DOM nodes before the reader has asked for any of it is
 the difference between a page that appears instantly and one that hitches. The ``<details>`` ships with its
@@ -63,6 +67,7 @@ function fillLazy(details, turnsById) {
     body.innerHTML = (viewOf(t) || []).map(msg =>
       `<div class="msgrole">${E(msg.role)}</div><pre>${E(msg.content)}</pre>`).join("");
   else if (details.dataset.lazy === "content") body.innerHTML = `<pre>${E(t.content)}</pre>`;
+  else if (details.dataset.lazy === "raw") body.innerHTML = `<pre>${E(t.raw)}</pre>`;
 }
 function bindLazy(container, turns) {
   const byId = Object.fromEntries(turns.map(t => [String(t.idx), t]));
@@ -96,7 +101,11 @@ function oracleColumn(t, game, oracle, showInfoLinks) {
   const o = (t.oracles || {})[oracle];
   const privateInfo = String((((game || {}).protocol || {}).info || "")).toLowerCase().startsWith("priv");
   const role = (o || {}).counterfactual_role || "";
-  const heading = role === "rational_private" ? `private-information rational agent (${E(oracle)})`
+  /* A fairness reference names itself from the payload's registry rather than from a branch here: its heading has
+     to carry the OBJECTIVE, because "omniscient oracle" over a table-welfare number is the exact confusion the
+     unit labelling exists to prevent. The two self-interest headings keep their established wording. */
+  const heading = (o || {}).objective === "table_fairness" ? `${E(o.reference_label)} (${E(oracle)})`
+    : role === "rational_private" ? `private-information rational agent (${E(oracle)})`
     : role === "oracle_omniscient" && oracle !== "bestresponse" ? `omniscient oracle (${E(oracle)})`
     : privateInfo ? `omniscient hindsight oracle (${E(oracle)})` : `full-information oracle (${E(oracle)})`;
   const gapLabel = role === "rational_private" ? "private-policy value improvement"
@@ -115,12 +124,108 @@ function oracleColumn(t, game, oracle, showInfoLinks) {
           data-deal="${previewIndex}" aria-haspopup="dialog" aria-expanded="false"
           aria-label="Preview the decision reference package on the frontier">${E(dealSummary(game, previewIndex))}</a></div>` : ""}
     <table><tbody>
-      <tr><td>oracle's value of its best move ${infoLink("How the oracle scores moves", showInfoLinks)}</td><td>${N(o.best_value)}</td></tr>
-      <tr class="${typeof reg === "number" && reg > 0 ? "hi" : ""}"><td><b>${gapLabel}</b>
+      <tr><td>${E(o.value_label || "oracle's value of its best move")}
+        ${o.unit ? `<span class="unit">${E(o.unit)}</span>` : ""}
+        ${infoLink("How the oracle scores moves", showInfoLinks)}</td><td>${N(o.best_value)}</td></tr>
+      ${o.objective === "table_fairness"
+        ? `<tr><td><b>${E(o.gap_label)}</b><span class="unit">${E(o.unit)}</span></td>
+           <td class="${CLS(-(o.shortfall || 0))}"><b>${N(o.shortfall)}</b></td></tr>
+           <tr><td>this seat's own points at that deal <span class="unit">a SEPARATE quantity from the table
+             objective above — not a gain and not comparable with it</span></td>
+           <td>${N(o.own_surplus, 1)}</td></tr>`
+        : `<tr class="${typeof reg === "number" && reg > 0 ? "hi" : ""}"><td><b>${gapLabel}</b>
         ${infoLink("How the oracle calculates the improvement gap", showInfoLinks)}</td>
-        <td class="${CLS(reg === 0 ? 0 : -reg)}"><b>${N(reg)}</b></td></tr>
+        <td class="${CLS(reg === 0 ? 0 : -reg)}"><b>${N(reg)}</b></td></tr>`}
     </tbody></table>
     ${o.flags && o.flags.length ? `<div class="pills">${o.flags.map(f => `<span class="pill"><b class="neg">${E(f)}</b></span>`).join("")}</div>` : ""}</div>`;
+}
+
+/* ---- the four-type decision-reference grid -------------------------------------------------------------- */
+/* Every reference the turn carries, laid out on the 2x2 the payload describes: information across (what it
+   could see) and objective down (what it was maximizing). Grouping is read from `o.information_axis` /
+   `o.objective` rather than from the reference's NAME, so a new reference appears in the right cell without a
+   change here.
+
+   The grid exists because the selector shows one reference at a time and the interesting fact is usually the
+   relationship between them — and because putting four numbers side by side is exactly where the unit hazard
+   bites. So no cell prints a bare number: each carries the unit string the payload gives it, a fairness cell
+   states its table optimum and its own-surplus consequence separately, and the footer says which of these
+   numbers may be subtracted from which. Two readers have already subtracted the wrong pair.
+
+   It sits BELOW the acted/oracle pair at the card's full width rather than inside the oracle cell, which is
+   where it was first built: a three-column grid whose cells carry a package summary each is illegible at half
+   the card's width, and it wrapped every deal to one word per line. */
+const REFERENCE_INFORMATION = ["private", "omniscient"];
+const REFERENCE_OBJECTIVES = ["own_surplus", "table_fairness"];
+
+function referenceCells(t) {
+  /* {objective: {information: {name, oracle}}} over the references this turn actually carries. */
+  const grid = {};
+  Object.entries(t.oracles || {}).forEach(([name, o]) => {
+    if (!o || !o.objective || !o.information_axis) return;      // a generic scored oracle, not a reference
+    (grid[o.objective] ||= {})[o.information_axis] = { name, o };
+  });
+  return grid;
+}
+
+function referenceValue(o) {
+  if (o.objective === "table_fairness") {
+    const optimum = o.table_optimum;
+    return `<div class="rv"><b>${N(o.best_value, 3)}</b><span class="ru">${E(o.unit)}</span></div>
+      <div class="rsub">best any deal could score: <b>${N(optimum, 3)}</b>${
+        typeof o.shortfall === "number" ? ` · shortfall <b>${N(o.shortfall, 3)}</b> in the same table units` : ""}</div>
+      <div class="rsub">${typeof o.own_surplus === "number"
+        ? `this seat's own points at that deal: <b>${N(o.own_surplus, 1)}</b> — a separate quantity, not the score above`
+        : "no own-surplus recorded for this action"}</div>`;
+  }
+  return `<div class="rv"><b>${N(o.best_value, 3)}</b><span class="ru">${E(o.unit)}</span></div>
+    ${o.value_basis ? `<div class="rsub">${E(o.value_basis)}</div>` : ""}
+    ${typeof o.divergence === "number" ? `<div class="rsub">${E(o.gap_label)}: <b>${N(o.divergence, 3)}</b></div>` : ""}`;
+}
+
+function referenceCell(t, game, entry) {
+  if (!entry) return `<td class="refcell empty">no reference of this kind was recorded for this turn</td>`;
+  const o = entry.o;
+  const index = counterfactualDealIndex(t, o);
+  const deal = (index !== null && index !== undefined)
+    ? `<div class="deal"><a href="#" data-deal="${index}"
+        aria-label="show this reference's package on the frontier">${E(dealSummary(game, index))}</a></div>` : "";
+  return `<td class="refcell obj-${E(o.objective)}">
+    <div class="rname">${E(o.reference_label)} <code>${E(entry.name)}</code></div>
+    <div class="act">${E(o.best_label)}</div>${deal}${referenceValue(o)}</td>`;
+}
+
+function referenceGrid(t, game) {
+  const grid = referenceCells(t);
+  const objectives = REFERENCE_OBJECTIVES.filter(k => grid[k]);
+  if (!objectives.length) return "";
+  const axes = (PAYLOAD.reference_axes || {});
+  const head = REFERENCE_INFORMATION.map(k => {
+    const meta = ((axes.information || {})[k]) || {};
+    return `<th>${E(meta.name || k)}<span class="rsub">${E(meta.detail || "")}</span></th>`;
+  }).join("");
+  const rows = objectives.map(objective => {
+    const meta = ((axes.objective || {})[objective]) || {};
+    return `<tr><th class="objhd">${E(meta.name || objective)}<span class="rsub">${E(meta.unit || "")}</span></th>
+      ${REFERENCE_INFORMATION.map(info => referenceCell(t, game, grid[objective][info])).join("")}</tr>`;
+  }).join("");
+  /* The non-comparability statement is assembled from the same per-objective data, so it can only ever say what
+     the records support: a fairness row's two numbers ARE on one scale, a self-interest row's two are not, and
+     nothing may be compared across rows. */
+  const notes = objectives.map(objective => {
+    const meta = ((axes.objective || {})[objective]) || {};
+    return `<li><b>${E(meta.name || objective)}</b> — ${E(meta.note || "")}</li>`;
+  }).join("");
+  const missing = objectives.length < REFERENCE_OBJECTIVES.length
+    ? `<div class="rsub">This annotation vintage records only the ${E(objectives.length)} reference row(s) shown;
+       the table-fairness references were added by a later schema and are absent here.</div>` : "";
+  return `<details class="refgrid" open><summary>All ${Object.values(grid).reduce((n, r) => n + Object.keys(r).length, 0)}
+    decision references for this turn, on both axes</summary><div class="body">
+    <div class="sub">Across: what the reference could SEE. Down: what it was MAXIMIZING. The two rows are in
+    different units and must never be compared with each other.</div>
+    <div class="tablewrap"><table class="refs"><thead><tr><th></th>${head}</tr></thead>
+    <tbody>${rows}</tbody></table></div>
+    <ul class="unitwarn">${notes}</ul>${missing}</div></details>`;
 }
 
 function decisionWord(label) {
@@ -374,6 +479,23 @@ function turnCard(t, game, oracle, opts) {
        after generation failed${t.gen_failure ? ` (${E(t.gen_failure)})` : ""}. It parses as a well-formed no-op,
        so it looks like a deliberate pass — it is not. Detected by ${E(t.gen_failed_detected_by || "stamp")}.</div>`
     : "";
+  /* A SILENT turn that the engine did not fail on: generation succeeded and produced nothing publishable, which
+     is what a thinking model does when it spends its whole per-turn budget inside an unterminated <think>. The
+     fabrication banner is silent about these by construction — `gen_failed` is false — so the card has to say it
+     itself, in the same hazard style, or a quarter-silent episode reads as a quarter of deliberate passes. The
+     text that WAS generated is reachable below rather than summarized, because the only honest thing to say
+     about it is what it literally is. */
+  const silentNote = (t.silent && !t.gen_failed)
+    ? `<div class="gap silentnote"><b>This turn published nothing.</b> Its visible text is the engine's
+       placeholder, but generation did not fail — the model spent ${t.n_tokens_out || 0} of its
+       ${t.cap || "?"}-token budget and never emitted an answer${t.raw ? ", leaving the unterminated scratchpad below" : ""}.
+       It parses as a well-formed pass; it is not one. Exclude it from any measurement of what this seat chose.</div>`
+    : "";
+  const rawPanel = t.raw
+    ? `<details data-lazy="raw" data-turnidx="${t.idx}"><summary>The text the model actually generated before the
+        placeholder replaced it — ${t.raw.length} characters, normally an unterminated scratchpad</summary>
+       <div class="body"><div class="lazybody"></div></div></details>`
+    : "";
   const dealLink = a.deal_index !== null && a.deal_index !== undefined
     ? `<div class="deal"><a href="#" class="cflink" data-package-preview data-turnidx="${t.idx}"
         data-deal="${a.deal_index}" aria-haspopup="dialog" aria-expanded="false"
@@ -383,22 +505,31 @@ function turnCard(t, game, oracle, opts) {
   const oracles = Object.keys(t.oracles || {});
   const selectedOracle = (t.oracles || {})[oracle];
   const prefix = opts.idPrefix || "turn-";
-  return `<article class="turn ${k.cls} k-${E(t.kind)}${t.gen_failed ? " fabricated" : ""}" id="${prefix}${t.idx}" data-turnidx="${t.idx}">
-   <div class="turnhd" role="button" tabindex="0" aria-label="turn ${t.idx}, ${E(t.seat)}, ${E(k.word)}">
+  const atCap = Boolean(t.cap && (t.n_tokens_out || 0) >= t.cap - 2);
+  return `<article class="turn ${k.cls} k-${E(t.kind)}${t.gen_failed ? " fabricated" : ""}${
+     t.silent ? " silent" : ""}" id="${prefix}${t.idx}" data-turnidx="${t.idx}">
+   <div class="turnhd" role="button" tabindex="0" aria-label="turn ${t.idx}, ${E(t.seat)}, ${E(k.word)}${
+     t.silent ? ", published nothing" : ""}">
      <span class="who"><span class="idx">${t.idx}</span> ${E(t.seat)}
        <span class="badge ${E(t.kind)}">${E(t.kind)}</span>
        <span class="kind ${k.cls}">${k.glyph} ${E(k.word)}</span>${
-       t.gen_failed ? ` <span class="badge fabricated" title="${E(t.gen_failure || "")}">NOT GENERATED</span>` : ""}</span>
-     <span class="sub">${E(t.phase)} · round ${t.round}${t.n_tokens_out ? " · " + t.n_tokens_out + " tok out" : ""}${t.parse_ok ? "" : " · <b class='neg'>parse error</b>"}</span>
+       t.gen_failed ? ` <span class="badge fabricated" title="${E(t.gen_failure || "")}">NOT GENERATED</span>` : ""}${
+       t.silent && !t.gen_failed ? ` <span class="badge silent" title="generation succeeded but published no
+         answer — the engine's placeholder stands in for it">SAID NOTHING</span>` : ""}</span>
+     <span class="sub">${E(t.phase)} · round ${t.round}${t.n_tokens_out ? " · " + t.n_tokens_out + " tok out" : ""}${
+       atCap ? ` <span class="badge atcap" title="output reached the ${E(t.cap)}-token cap stamped on this
+         request, so the turn was cut off rather than finished">AT CAP ${E(t.cap)}</span>` : ""}${
+       t.parse_ok ? "" : " · <b class='neg'>parse error</b>"}</span>
    </div>
+   ${fabricatedNote}${silentNote}
    ${opts.showCounterfactual ? `<div class="cols">
      <div class="col acted"><div class="hd">the model acted</div><div class="act">${E(a.label || a.atype)}</div>${dealLink}
        ${w ? `<div class="pills"><span class="pill">USW <b>${N(w.usw, 1)}</b></span><span class="pill">worst-off <b class="${w.esw >= 0 ? "pos" : "neg"}">${SIGN(w.esw, 1)}</b></span>${w.n_below_threshold ? `<span class="pill"><b class="neg">${w.n_below_threshold}</b> below τ</span>` : ""}</div>` : ""}
        ${selectedOracle ? `<table><tbody><tr><td>oracle's value of the model's move
          ${infoLink("How the oracle scores the model's move", opts.infoLinks)}</td><td>${N(selectedOracle.chosen_value)}</td></tr></tbody></table>` : ""}</div>
-     ${oracleColumn(t, game, oracle, opts.infoLinks)}</div>`
+     ${oracleColumn(t, game, oracle, opts.infoLinks)}</div>
+     ${referenceGrid(t, game)}`
     : `<div class="act">${E(a.label || a.atype)}</div>${dealLink}`}
-   ${fabricatedNote}
    ${t.reasoning ? `<div class="reasoning"><div class="reasoninghd"><b>Reasoning / scratchpad [${E(reasoningLabel(t))}]</b></div>
       <div class="reasoningbody">${E(t.reasoning).replace(/\r?\n/g, "<br>")}</div></div>`
      : `<div class="sub muted">No reasoning recorded (provenance ${E(t.reasoning_provenance)}). Do not impute it.</div>`}
@@ -407,6 +538,7 @@ function turnCard(t, game, oracle, opts) {
    ${viewPanel(t)}
    ${t.content ? `<details data-lazy="content" data-turnidx="${t.idx}"><summary>Raw turn text as the table saw it</summary>
       <div class="body"><div class="lazybody"></div></div></details>` : ""}
+   ${rawPanel}
    ${oracles.length ? `<details><summary>All oracle verdicts (${oracles.length}) and every action they scored</summary><div class="body">
       ${oracles.map(name => {
         const o = t.oracles[name];
@@ -428,8 +560,9 @@ function scrubberHtml(turns, idPrefix) {
   const prefix = idPrefix || "turn-";
   return `<div class="scrub" role="navigation" aria-label="jump to a turn">` + turns.map(t => {
     const k = actKind((t.action || {}).atype);
-    return `<button class="chip ${k.cls}${t.gen_failed ? " fab" : ""}" data-goturn="${prefix}${t.idx}" data-turnidx="${t.idx}"
-      title="turn ${t.idx} · ${E(t.seat)} · ${E(k.word)}${t.gen_failed ? " · NOT GENERATED" : ""}">${t.idx}</button>`;
+    return `<button class="chip ${k.cls}${t.gen_failed ? " fab" : ""}${t.silent ? " silent" : ""}" data-goturn="${prefix}${t.idx}" data-turnidx="${t.idx}"
+      title="turn ${t.idx} · ${E(t.seat)} · ${E(k.word)}${t.gen_failed ? " · NOT GENERATED" : ""}${
+        t.silent && !t.gen_failed ? " · SAID NOTHING" : ""}">${t.idx}</button>`;
   }).join("") + `</div>`;
 }
 

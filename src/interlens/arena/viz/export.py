@@ -66,6 +66,58 @@ def _parameter_fields(payload: dict) -> dict:
     }
 
 
+def _hazard_fields(payload: dict) -> dict:
+    """The index's hazard column for one episode: every reason its numbers may not pair with another row's.
+
+    Three sources, each of which has independently invalidated a comparison in this program and none of which
+    the existing ``fabricated`` column can see: the run's vintage hazard file, a generation budget that is not
+    the frozen protocol's, and an episode that spent turns saying nothing. Rendered as ``·``-separated flags so
+    the index can turn each into its own badge, count them for sorting, and filter on "has any".
+    """
+    census, budget = payload.get("census") or {}, payload.get("budget") or {}
+    ballots = payload.get("ballots") or {}
+    flags, detail = [], []
+    if payload.get("vintage"):
+        flags.append("SPOILED VINTAGE")
+        detail.append(str((payload["vintage"] or {}).get("headline") or ""))
+    if budget and not budget.get("default"):
+        flags.append(f"budget {budget.get('effective')}")
+        detail.append(f"generation budget {budget.get('effective')} tokens vs the frozen "
+                      f"{'/'.join(str(c) for c in budget.get('frozen') or [])}")
+    if census.get("placeholder"):
+        flags.append(f"{_pct(census.get('placeholder_rate'))} silent")
+        detail.append(f"{census['placeholder']} of {census.get('n_turns')} turns published nothing")
+    if ballots.get("n_abstentions"):
+        flags.append(f"{ballots['n_abstentions']} no-ballot")
+        detail.append(f"{ballots['n_abstentions']} seat(s) cast no ballot on the final vote")
+    if ballots.get("n_mismatch"):
+        flags.append(f"{ballots['n_mismatch']} vote mismatch")
+        detail.append(f"{ballots['n_mismatch']} recorded ballot(s) disagree with the seat's own policy")
+    return {"hazards": " · ".join(flags), "hazard_detail": "; ".join(d for d in detail if d),
+            "silent_pct": _pct_value(census.get("placeholder_rate")),
+            "non_action_pct": _pct_value(census.get("non_action_rate"))}
+
+
+def _merge_hazards(left: dict, right: dict) -> dict:
+    """Union two episodes' hazard flags, keeping each flag once and the worse of each rate."""
+    flags = [f for f in (left["hazards"].split(" · ") + right["hazards"].split(" · ")) if f]
+    seen = list(dict.fromkeys(flags))
+    return {"hazards": " · ".join(seen),
+            "hazard_detail": "; ".join(d for d in (left["hazard_detail"], right["hazard_detail"]) if d),
+            "silent_pct": max(left["silent_pct"], right["silent_pct"]),
+            "non_action_pct": max(left["non_action_pct"], right["non_action_pct"])}
+
+
+def _pct_value(fraction) -> float:
+    """A recorded rate as a percentage, rounded for a table cell; ``0.0`` for an absent rate."""
+    return round(100 * (fraction or 0), 2)
+
+
+def _pct(fraction) -> str:
+    """A recorded rate as a short percentage label for a badge."""
+    return f"{_pct_value(fraction):g}%"
+
+
 def _link_pages(paths: list[Path], rows: list[dict]) -> None:
     """Give every written page its prev/next links and the picker of its siblings.
 
@@ -143,7 +195,7 @@ def export_run(run: str | Path, out_dir: str | Path, *, limit: int | None = None
                      "usw": out.get("usw"), "esw": out.get("esw"),
                      "fabricated_pct": round(100 * (gen.get("fraction") or 0), 2),
                      "regret": (payload.get("annotation_summary") or {}).get("total_regret"),
-                     **_parameter_fields(payload)})
+                     **_hazard_fields(payload), **_parameter_fields(payload)})
     _link_pages(paths, rows)
     note = (f"{len(rows)} episode(s) from <code>{run_dir.root}</code>. "
             + (f"{len(failures)} episode(s) failed to render." if failures else ""))
@@ -207,6 +259,10 @@ def export_comparison(left_run: str | Path, right_run: str | Path, out_dir: str 
                      "esw": scores.get("egalitarian ESW", {}).get("delta"),
                      "fabricated_pct": round(100 * fab, 2),
                      "regret": None,
+                     # A comparison inherits BOTH sides' hazards: a pair is only as poolable as its worse half,
+                     # so the flags are unioned rather than taken from the left episode alone.
+                     **_merge_hazards(_hazard_fields(cmp_payload["left"]),
+                                      _hazard_fields(cmp_payload["right"])),
                      **parameter_fields})
     _link_pages(paths, rows)
     note = (f"{len(rows)} of {report['n_candidate_pairs']} matched pair(s), paired on "
