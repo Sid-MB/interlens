@@ -67,7 +67,12 @@ function fillLazy(details, turnsById) {
     body.innerHTML = (viewOf(t) || []).map(msg =>
       `<div class="msgrole">${E(msg.role)}</div><pre>${E(msg.content)}</pre>`).join("");
   else if (details.dataset.lazy === "content") body.innerHTML = `<pre>${E(t.content)}</pre>`;
-  else if (details.dataset.lazy === "raw") body.innerHTML = `<pre>${E(t.raw)}</pre>`;
+  else if (details.dataset.lazy === "raw")
+    /* One line, deliberately: a newline inside a template literal is OUTPUT, so a wrapped sentence reaches the
+       reader with the source's indentation in the middle of it. */
+    body.innerHTML = (t.raw_truncated
+      ? `<div class="sub">Excerpt: the first ${t.raw.length} of ${t.raw_chars} characters. The full text is in the episode record linked at the top of this page.</div>`
+      : "") + `<pre>${E(t.raw)}</pre>`;
 }
 function bindLazy(container, turns) {
   const byId = Object.fromEntries(turns.map(t => [String(t.idx), t]));
@@ -491,9 +496,13 @@ function turnCard(t, game, oracle, opts) {
        ${t.cap || "?"}-token budget and never emitted an answer${t.raw ? ", leaving the unterminated scratchpad below" : ""}.
        It parses as a well-formed pass; it is not one. Exclude it from any measurement of what this seat chose.</div>`
     : "";
+  /* The excerpt's summary states the TRUE length (`raw_chars`) and says so when it is showing less than that, so
+     a capped panel cannot pass for the whole generation. */
   const rawPanel = t.raw
     ? `<details data-lazy="raw" data-turnidx="${t.idx}"><summary>The text the model actually generated before the
-        placeholder replaced it — ${t.raw.length} characters, normally an unterminated scratchpad</summary>
+        placeholder replaced it — ${t.raw_truncated
+          ? `first ${t.raw.length} of ${t.raw_chars} characters`
+          : `${t.raw_chars || t.raw.length} characters`}, normally an unterminated scratchpad</summary>
        <div class="body"><div class="lazybody"></div></div></details>`
     : "";
   const dealLink = a.deal_index !== null && a.deal_index !== undefined

@@ -223,7 +223,14 @@ two sides *means*: a vintage contrast (one side spoiled — the deltas measure t
 vintage-matched (both from the same spoiled run — like-for-like, the one safe reading), or two different spoiled
 vintages (attributable to neither).
 
-**Generation budget.** The frozen protocol caps a request at 2048 tokens (2560 on the forced final) and stamps
+**Generation budget — informational, not a hazard.** A non-default budget is usually the arm's *intended*
+budget: the frozen Opus cells run at a 16,384-token API floor on purpose. So it renders as a muted badge, and on
+the index it is a lower-severity `hazardnote` excluded from the hazard count that drives sorting and the "has
+hazards" filter — painting it the same red as a spoiled vintage would make every confirmatory episode look broken
+and teach a reader to ignore the column. It stays in the filter's text haystack, and its tooltip says what it
+costs: the row does not pair with a default-cap run, intended or not.
+
+The frozen protocol caps a request at 2048 tokens (2560 on the forced final) and stamps
 that on every request, while a *raised* cap is stamped only where it was raised — so the default is invisible by
 design and the exception was invisible by accident. Two arms described as sharing a protocol ran at an 8x per-seat
 budget difference. The badge therefore reads the caps the turns actually carry, and three sources rather than one:
@@ -246,8 +253,11 @@ each with its per-round breakdown on hover — present even when every count is 
 episode was silent" is a claim a reader needs and an absent strip cannot make it. A silent turn is marked as a
 hazard on its card, in the scrubber, and in the conversation view, with a `SAID NOTHING` badge distinct from
 `NOT GENERATED` (different cause, different fix), and the text the model *did* produce reachable in one click as
-an unterminated-scratchpad panel. `raw` is carried for silent turns only: it runs to kilobytes and on a healthy
-local turn merely repeats `content`.
+an unterminated-scratchpad panel. `raw` is carried for silent turns only — it runs to kilobytes and on a healthy
+local turn merely repeats `content` — and capped at `RAW_EXCERPT_CHARS` (2048), because a turn that burned a
+raised 32k budget inside one `<think>` block carries a hundred kilobytes and a page with a dozen of those is a
+page nobody opens twice. The panel states the true length and says when it is showing less, so an excerpt cannot
+pass for the whole generation; the untruncated text is in the episode record every page links to.
 
 The at-cap heuristic is output within 2 tokens of the stamped cap — there is no `stop_reason` on the local
 generation path — which is the same slack the campaign's own cell report uses, so a page and a report cannot
@@ -262,9 +272,22 @@ seat repeated itself on its retry, and the turn was recorded as a **pass** — w
 arm's final ballots were silent abstentions that nothing on the page mentioned.
 
 The tally is therefore built around absence: every seat asked to vote gets a row whether or not it produced a
-ballot, a missing ballot is called an abstention in the loudest style the page has, the parser's own complaint is
-printed beside it (that string is the entire diagnosis and was in the record all along), and a ballot cast on the
-*wrong* package is distinguished from no ballot at all. Where a computable policy held the seat, its vote has an
+ballot, and a missing ballot is called an abstention in the loudest style the page has.
+
+**And "abstention" is where the page stops describing and starts quoting**, because the word undersells the
+mechanism. The seat did not decline to vote — it voted, on the wrong offer id, and the record kept nothing. Both
+halves of that signature are in the record, so the row prints both verbatim: the seat's own response
+(`{"action": "accept", "offer_id": "P5"}`) and the protocol's rejection (`The final vote is only on P6; reference
+that offer id.`). A ballot whose parse *succeeded* on a stale offer id is a third case and is distinguished from
+both.
+
+**The signature alone does not diagnose the defect; the seat's occupant does.** Measured across the Qwen3-8B
+robustness subset: the same recording signature appears at 6 of 21 forced-final turns in `one_oracle` — all 6 at
+computable-policy seats, which is the harness bug — and at 3 of 54 in `all_llm` and 3 of 44 in `one_rational`,
+all of those at LLM seats, which is a model referencing a stale offer id under the same recording rule. Both are
+real, they need different fixes, and only the occupant separates them; the row carries its occupant badge for
+exactly this reason. An audit that counts silent final ballots across arms without splitting by occupant
+attributes model errors to the harness and vice versa. Where a computable policy held the seat, its vote has an
 offline answer; re-deriving it in the renderer would be a second opinion with no authority, so the derived column
 reads gate G3's own output from `vote_derivation.json` (`gate_seeded_offer_votes.py --viz-sidecar`) and names a
 recorded-vs-derived disagreement a harness bug in the row itself.

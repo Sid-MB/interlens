@@ -62,6 +62,11 @@ from .hazards import generation_budget, vintage_provenance
 COUNTERFACTUAL_ORACLES = references.REFERENCE_ORDER
 COUNTERFACTUAL_ALIASES = references.ALIASES
 
+#: How much of a silent turn's generated-but-unpublished text travels to the page. Enough to read what the seat
+#: set out to do (a scratchpad states its intent in the first paragraph or two) and small enough that a dozen of
+#: them on one page cost nothing; the untruncated text is in the episode record every page links to.
+RAW_EXCERPT_CHARS = 2048
+
 # The provenance marker for a reconstructed view on a RETRY turn — a second turn in the same (round, phase, seat)
 # slot, which the engine issued after a malformed first attempt. Replay re-issues the original request, so the
 # reconstruction is the first attempt's prompt and is missing the repair instruction the model actually saw. Kept
@@ -557,7 +562,15 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
             # The text the model DID generate before the placeholder replaced it — normally an unterminated
             # scratchpad, and the only evidence of what the turn was trying to do. Carried for silent turns only:
             # it runs to several kilobytes and on a healthy local turn it merely repeats ``content``.
-            row["raw"] = t.get("raw")
+            #
+            # And capped. A turn that burned a raised 32k cap inside one ``<think>`` block can carry a hundred
+            # kilobytes, and a page with a dozen of those is a page nobody opens twice. The HEAD is what a reader
+            # wants (what the seat set out to do), and the full text is in the episode record the page links to,
+            # so ``raw_chars`` keeps the true length honest rather than letting the excerpt pass for the whole.
+            raw = str(t["raw"])
+            row["raw"] = raw[:RAW_EXCERPT_CHARS]
+            row["raw_chars"] = len(raw)
+            row["raw_truncated"] = len(raw) > RAW_EXCERPT_CHARS
         if deal_index is not None and geo is not None:
             row["deal"] = geo.at(deal_index).to_json()
             row["deal_welfare"] = geo.welfare_of(deal_index)

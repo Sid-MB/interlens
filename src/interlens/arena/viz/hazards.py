@@ -54,6 +54,35 @@ VINTAGE_SCAN_LINES = 40
 VINTAGE_SUMMARY_CHARS = 320
 
 
+def _strip_comments(lines: list[str]) -> list[str]:
+    """Drop HTML comment blocks, however many lines each spans, keeping any prose that shares a closing line.
+
+    Line-wise skipping is not enough: a wrapped ``<!-- … -->`` header leaves its continuation lines behind, and
+    the first one then reads as the file's headline. Tracks open/close across lines instead, and a comment that is
+    never closed swallows the rest of the scan — which is the safe direction, since a malformed file still yields
+    a record from its filename rather than quoting comment text at a reader."""
+    out, inside = [], False
+    for line in lines:
+        kept, i = [], 0
+        while i < len(line):
+            if inside:
+                end = line.find("-->", i)
+                if end < 0:                       # the comment continues onto the next line
+                    break
+                i, inside = end + 3, False
+                continue
+            start = line.find("<!--", i)
+            if start < 0:                         # no comment opens in the rest of this line
+                kept.append(line[i:])
+                break
+            kept.append(line[i:start])            # prose before a comment on the same line survives
+            i, inside = start + 4, True
+        text = "".join(kept).strip()
+        if text:
+            out.append(text)
+    return out
+
+
 def _plain(markdown: str) -> str:
     """One line of markdown as plain text, for a banner that renders escaped rather than as HTML.
 
@@ -89,7 +118,10 @@ def vintage_provenance(run_root: str | Path | None) -> dict | None:
         lines = [ln.strip() for ln in path.read_text().splitlines()[:VINTAGE_SCAN_LINES]]
     except OSError:
         return None
-    lines = [ln for ln in lines if not ln.startswith("<!--")]
+    # Comments are skipped as BLOCKS, not as lines. This repo's files open with a session stamp that routinely
+    # wraps across two or three lines, and a line-wise filter takes the stamp's second line for the headline —
+    # which is exactly what the first hazard file written to this convention did.
+    lines = _strip_comments(lines)
     headline, paragraph, started = "", [], False
     for line in lines:
         if not headline:

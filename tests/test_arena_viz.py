@@ -2575,3 +2575,135 @@ def test_a_clean_pair_says_nothing_about_vintage(two_runs):
     # asserted on the rendered elements: the stylesheet always ships the rules that would style them
     assert "warn danger vintage" not in page and "Vintage-matched" not in page
     assert "Vintage contrast" not in page and "class='vintagequick'" not in page
+
+
+def test_the_raw_scratchpad_excerpt_is_capped_and_says_that_it_is(episode, tmp_path):
+    """A turn that burned a raised 32k cap inside one `<think>` block carries a hundred kilobytes, and a page with
+    a dozen of those is a page nobody opens twice. The head is what a reader wants; the true length travels with
+    it so the excerpt cannot pass for the whole generation."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    ep, inst = episode
+    from interlens.arena.engine import EMPTY_TURN_PLACEHOLDER
+    huge = "<think>\n" + ("weighing Anvil Ridge against Weir Flats forever " * 4000)
+    turns = [{**t, "content": EMPTY_TURN_PLACEHOLDER, "raw": huge, "n_tokens_out": t["cap"],
+              "parsed_action": {**(t.get("parsed_action") or {}), "atype": "none"}} if t["idx"] == 0 else t
+             for t in ep["turns"]]
+    payload = viz.episode_payload({**ep, "turns": turns}, inst)
+    row = payload["turns"][0]
+    assert len(row["raw"]) == viz.RAW_EXCERPT_CHARS and row["raw_chars"] == len(huge)
+    assert row["raw_truncated"] is True
+    report = _run_harness(viz.render_episode_html(payload), [{"open": "raw"}], tmp_path)
+    loaded, opened = report["steps"]
+    assert f"first {viz.RAW_EXCERPT_CHARS} of {len(huge)} characters" in loaded["raw_panel_summaries"][0]
+    assert opened["raw_panel_bodies"][0] < len(huge), "the body carries the excerpt, not the whole generation"
+    assert "The full text is in the episode record" in viz.render_episode_html(payload)
+
+
+def test_a_short_raw_scratchpad_is_not_described_as_an_excerpt(episode, tmp_path):
+    """The cap must not make every panel claim to be truncated — most silent turns are well under it. Asserted on
+    the rendered summary rather than on the page source, which necessarily contains both branches."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    ep, inst = episode
+    payload = viz.episode_payload(_silence(ep, (0,)), inst)
+    row = payload["turns"][0]
+    assert row["raw_truncated"] is False and row["raw_chars"] == len(row["raw"])
+    summary = _run_harness(viz.render_episode_html(payload), [], tmp_path)["steps"][0]["raw_panel_summaries"][0]
+    assert f"{row['raw_chars']} characters" in summary and "first" not in summary
+
+
+def test_a_missing_ballot_quotes_what_the_seat_actually_said(payload):
+    """The sharper diagnosis, and the reason "abstention" undersells it: the seat did not stay silent, it answered
+    — on the wrong offer id — and the record kept nothing. Both halves of the signature are in the record, so the
+    row prints the seat's own words AND the protocol's rejection verbatim rather than paraphrasing either."""
+    spoiled = {**payload,
+               "turns": [{**t, "content": '```json\n{"action": "accept", "offer_id": "P6"}\n```',
+                          "action": {**t["action"], "atype": None, "offer": None,
+                                     "syntax_error": "The final vote is only on P17; reference that offer id."}}
+                         if t.get("phase") == "final_vote" else t for t in payload["turns"]]}
+    tally = viz.final_ballots(spoiled)
+    assert tally["n_abstentions"] == 3
+    row = tally["rows"][0]
+    assert row["attempted"] == '```json {"action": "accept", "offer_id": "P6"} ```'
+    html = viz.ballot_table(tally)
+    assert not _missing(html, "the seat did not stay silent — it answered",
+                        "&quot;offer_id&quot;: &quot;P6&quot;",
+                        "and the protocol rejected that",
+                        "The final vote is only on P17",
+                        "not an abstention, and calling it one describes the record")
+
+
+def test_a_seat_that_really_said_nothing_gets_no_invented_quote(payload):
+    """The quote is evidence, so it appears only where there is something to quote. A turn with no content must
+    not acquire an "it answered" line, and the rejection note has to read correctly on its own."""
+    silent_vote = {**payload, "turns": [{**t, "content": ""} if t.get("phase") == "final_vote" else t
+                                        for t in payload["turns"]]}
+    tally = viz.final_ballots(silent_vote)
+    assert all(r["attempted"] is None for r in tally["rows"])
+    html = viz.ballot_table(tally)
+    assert "did not stay silent" not in html and "and the protocol rejected that" not in html
+    assert "the protocol rejected this seat's response" in html
+
+
+def test_a_long_rejected_response_is_quoted_as_an_excerpt(payload):
+    """A seat that wrote a scratchpad before its illegal move should still show the move, but the cell is not the
+    place for the whole turn — the row links to it."""
+    long_text = "x" * (viz.ballots.ATTEMPT_EXCERPT_CHARS + 500)
+    wordy = {**payload, "turns": [{**t, "content": long_text, "action": {**t["action"], "atype": None}}
+                                  if t.get("phase") == "final_vote" else t for t in payload["turns"]]}
+    row = viz.final_ballots(wordy)["rows"][0]
+    assert len(row["attempted"]) == viz.ballots.ATTEMPT_EXCERPT_CHARS + 1 and row["attempted"].endswith("…")
+
+
+def test_a_non_default_token_budget_is_a_note_in_the_index_not_a_red_hazard(two_runs, tmp_path):
+    """The frozen Opus cells run at a 16,384 API floor on purpose. Painting that the same red as a spoiled vintage
+    would make every confirmatory episode look broken and teach a reader to ignore the column — so it is a
+    lower-severity badge, it is excluded from the hazard count that sorts and filters, and it stays searchable."""
+    lrun, _ = two_runs
+    (lrun / "manifest.json").write_text(json.dumps(
+        {"run_name": "left", "invocation": ["--table", "all_llm"],
+         "api_request_config": {"anthropic:claude-opus-5": {"turn_token_floor": 16384}}}))
+    out = tmp_path / "pages"
+    viz.export_run(lrun, out)
+    index = (out / "index.html").read_text()
+    assert "badge hazardnote'>budget 16384" in index
+    assert "badge hazard'>budget" not in index, "an intended budget is not a red hazard"
+    # the abstained ballots of this fixture are the row's only true hazard, so the count is 1, not 2
+    assert "data-hazards='1'" in index
+    assert "budget 16384" in index.split("data-hay=\"")[1].split('"')[0], "still findable by the text filter"
+    assert "does not pair with a default-cap run" in index, "and the tooltip says what it costs"
+
+
+def test_the_vintage_reader_skips_comment_BLOCKS_not_comment_lines(tmp_path):
+    """Caught on real data: this repo's files open with a session stamp that routinely WRAPS, and a line-wise
+    ``startswith("<!--")`` filter leaves the stamp's second line behind — which then becomes the headline. A
+    published page shipped reading "SPOILED VINTAGE — (pages repo 9f03fbb) into the per-episode pages…" before
+    this. Both shapes have to work: the wrapped comment and the single-line one that closes where it opens."""
+    (tmp_path / "VINTAGE_PROVENANCE.md").write_text(
+        "<!-- [session] 2026-08-12 — a stamp long enough to wrap\n"
+        "     onto a second and even a third line -->\n"
+        "# THIS ARM IS THE SPOILED-BALLOT VINTAGE\n\nthe verdict paragraph\n")
+    wrapped = viz.vintage_provenance(tmp_path)
+    assert wrapped["headline"] == "THIS ARM IS THE SPOILED-BALLOT VINTAGE"
+    assert wrapped["summary"] == "the verdict paragraph"
+
+    (tmp_path / "VINTAGE_PROVENANCE.md").write_text(
+        "<!-- [session] 2026-08-12 -->\n# SPOILED\n\nthe verdict\n")
+    assert viz.vintage_provenance(tmp_path)["headline"] == "SPOILED", "a same-line comment must not eat the file"
+    assert viz.vintage_provenance(tmp_path)["summary"] == "the verdict"
+
+
+def test_prose_sharing_a_line_with_a_comment_survives(tmp_path):
+    """A comment is stripped, not the line it sits on — otherwise a heading with a trailing note vanishes."""
+    (tmp_path / "VINTAGE_PROVENANCE.md").write_text("# SPOILED <!-- see errata --> VINTAGE\n\nverdict\n")
+    assert viz.vintage_provenance(tmp_path)["headline"] == "SPOILED VINTAGE"
+
+
+def test_an_unclosed_comment_falls_back_to_the_filename_rather_than_quoting_itself(tmp_path):
+    """The safe direction for a malformed file: yield a record (the hazard stays armed) whose headline is the
+    filename, rather than reading comment text out to a reader as if it were the verdict."""
+    (tmp_path / "VINTAGE_PROVENANCE.md").write_text("<!-- someone forgot to close this\n# SPOILED\n\nverdict\n")
+    record = viz.vintage_provenance(tmp_path)
+    assert record is not None and record["headline"] == "VINTAGE_PROVENANCE.md"
+    assert "forgot to close" not in record["headline"] + record["summary"]

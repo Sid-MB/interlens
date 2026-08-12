@@ -480,6 +480,10 @@ td .flag{color:var(--critical);font-weight:600}
 .parameter-tag{white-space:nowrap;margin:1px 2px 1px 0}
 .badge.hazard{white-space:nowrap;margin:1px 2px 1px 0;color:var(--critical);
  border-color:color-mix(in oklab,var(--critical) 55%,transparent);font-weight:650}
+/* Same column, lower severity: a non-default token budget is a pairing constraint, usually a deliberate one, and
+   must not read as a broken record beside a spoiled vintage. */
+.badge.hazardnote{white-space:nowrap;margin:1px 2px 1px 0;color:var(--s3);
+ border-color:color-mix(in oklab,var(--s3) 45%,transparent)}
 .correlation{margin-bottom:var(--sp-2);font-size:var(--t-sm)}
 
 /* --- help overlay ---------------------------------------------------------------------------------------- */

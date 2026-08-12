@@ -839,11 +839,15 @@ def _index_cell(row: dict, key: str, kind: str, scale: float) -> str:
         label = str(v or "PRIVATE").upper()
         return f"<td data-sort='{_e(label)}'><span class='visibility'>{_e(label)}</span></td>"
     if kind == "hazards":
-        # Every reason this row's numbers may not pair with another row's, as one badge each. Sorted on the
-        # COUNT so a click brings the compromised episodes to the top, which is the only ordering a reader
-        # scanning an index for trouble actually wants.
+        # Every reason this row's numbers may not pair with another row's, as one badge each — in TWO severities,
+        # because they are not the same kind of claim. A spoiled vintage or a silent episode says the record is
+        # compromised; a non-default token budget usually says the arm was configured that way on purpose and only
+        # constrains what it pairs with. Sorting and the filter count the hazards alone, so a whole confirmatory
+        # campaign does not surface as trouble — but the note is still on screen and still searchable.
         flags = [f.strip() for f in str(v or "").split("·") if f.strip()]
-        rendered = " ".join(f"<span class='badge hazard'>{_e(f)}</span>" for f in flags)
+        notes = [f.strip() for f in str(row.get("hazard_notes") or "").split("·") if f.strip()]
+        rendered = " ".join([*(f"<span class='badge hazard'>{_e(f)}</span>" for f in flags),
+                             *(f"<span class='badge hazardnote'>{_e(n)}</span>" for n in notes)])
         return (f"<td data-sort='{len(flags)}' title='{_e(row.get('hazard_detail') or '')}'>"
                 f"{rendered or '<span class=muted>none</span>'}</td>")
     if kind == "tags":
@@ -911,7 +915,9 @@ def render_index_html(rows: list[dict], title: str, note: str = "", readme_markd
     head = "".join(f"<th data-sort scope='col'>{_e(h)}</th>" for h, _, _ in INDEX_COLUMNS)
     body = []
     for r in rows:
-        hay = " ".join(str(r.get(k) or "") for _, k, _ in INDEX_COLUMNS)
+        # The filter's haystack is every column plus the lower-severity hazard notes, which share the hazard
+        # column's cell but not its key — a reader searching "budget" must still find them.
+        hay = " ".join([*(str(r.get(k) or "") for _, k, _ in INDEX_COLUMNS), str(r.get("hazard_notes") or "")])
         body.append(f"<tr data-hay=\"{_e(hay)}\" data-deal='{1 if r.get('deal') else 0}' "
                     f"data-fabricated='{r.get('fabricated_pct') or 0}' "
                     f"data-hazards='{len([f for f in str(r.get('hazards') or '').split('·') if f.strip()])}'>"

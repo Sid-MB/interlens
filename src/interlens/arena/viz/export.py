@@ -76,14 +76,19 @@ def _hazard_fields(payload: dict) -> dict:
     """
     census, budget = payload.get("census") or {}, payload.get("budget") or {}
     ballots = payload.get("ballots") or {}
-    flags, detail = [], []
+    flags, notes, detail = [], [], []
     if payload.get("vintage"):
         flags.append("SPOILED VINTAGE")
         detail.append(str((payload["vintage"] or {}).get("headline") or ""))
     if budget and not budget.get("default"):
-        flags.append(f"budget {budget.get('effective')}")
+        # INFORMATIONAL, not a hazard. A non-default budget is usually the arm's intended budget — the frozen
+        # Opus cells run at a 16,384 API floor on purpose — and it is only ever a constraint on what the row
+        # pairs WITH. Painting it the same red as a spoiled vintage would make every confirmatory episode look
+        # broken and teach a reader to ignore the column.
+        notes.append(f"budget {budget.get('effective')}")
         detail.append(f"generation budget {budget.get('effective')} tokens vs the frozen "
-                      f"{'/'.join(str(c) for c in budget.get('frozen') or [])}")
+                      f"{'/'.join(str(c) for c in budget.get('frozen') or [])} — intended or not, it does not "
+                      "pair with a default-cap run")
     if census.get("placeholder"):
         flags.append(f"{_pct(census.get('placeholder_rate'))} silent")
         detail.append(f"{census['placeholder']} of {census.get('n_turns')} turns published nothing")
@@ -93,16 +98,19 @@ def _hazard_fields(payload: dict) -> dict:
     if ballots.get("n_mismatch"):
         flags.append(f"{ballots['n_mismatch']} vote mismatch")
         detail.append(f"{ballots['n_mismatch']} recorded ballot(s) disagree with the seat's own policy")
-    return {"hazards": " · ".join(flags), "hazard_detail": "; ".join(d for d in detail if d),
+    return {"hazards": " · ".join(flags), "hazard_notes": " · ".join(notes),
+            "hazard_detail": "; ".join(d for d in detail if d),
             "silent_pct": _pct_value(census.get("placeholder_rate")),
             "non_action_pct": _pct_value(census.get("non_action_rate"))}
 
 
 def _merge_hazards(left: dict, right: dict) -> dict:
     """Union two episodes' hazard flags, keeping each flag once and the worse of each rate."""
-    flags = [f for f in (left["hazards"].split(" · ") + right["hazards"].split(" · ")) if f]
-    seen = list(dict.fromkeys(flags))
-    return {"hazards": " · ".join(seen),
+    def union(key: str) -> str:
+        both = [f for f in (left[key].split(" · ") + right[key].split(" · ")) if f]
+        return " · ".join(dict.fromkeys(both))
+
+    return {"hazards": union("hazards"), "hazard_notes": union("hazard_notes"),
             "hazard_detail": "; ".join(d for d in (left["hazard_detail"], right["hazard_detail"]) if d),
             "silent_pct": max(left["silent_pct"], right["silent_pct"]),
             "non_action_pct": max(left["non_action_pct"], right["non_action_pct"])}

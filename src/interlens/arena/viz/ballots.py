@@ -25,9 +25,14 @@ was recorded as a **pass**. A pass parses cleanly, so the episode closed, the st
 one arm's final ballots were silent abstentions that nothing on the page mentioned.
 
 So the tally is deliberately built around absence. Every seat that should have voted gets a row whether or not it
-produced a ballot, a seat with no recorded ballot is called an abstention in the loudest style the page has, and
-the parser's own complaint is printed beside it — that string (``"The final vote is only on P9; reference that
-offer id."``) is the entire diagnosis of the defect and it was sitting in the record the whole time.
+produced a ballot, and a seat with no recorded ballot is called an abstention in the loudest style the page has.
+
+**And "abstention" is where the page stops describing and starts quoting**, because the word undersells what
+happened. The seat did not decline to vote: it voted, on the wrong offer id, and the record kept nothing. Both
+halves of that signature are in the record — the protocol's rejection (``"The final vote is only on P9; reference
+that offer id."``) and the seat's own response (``{"action": "accept", "offer_id": "P6"}``) — so the row prints
+both verbatim rather than paraphrasing either. Everything downstream that called this a silent abstention was
+describing the record's shape instead of the agent's behaviour.
 
 **Derived ballots.** Where a computable policy occupied the seat, its vote has an offline answer, and gate G3
 (``experiments/rational_agents/gate_seeded_offer_votes.py``) already re-derives exactly that by replaying the
@@ -57,6 +62,11 @@ DERIVATION_SIDECAR = "vote_derivation.json"
 #: Action kinds that constitute a ballot. Anything else on a final-vote turn — a pass, an unparsed response, an
 #: attempted proposal — is an abstention, whatever the seat intended.
 BALLOT_ACTIONS = ("accept", "reject", "vote")
+
+#: How much of a rejected response the tally quotes. The spoiled ballots are one JSON object of about fifty
+#: characters, and a seat that wrote a scratchpad before its illegal move should still show its move — so this is
+#: generous enough for the latter and the row links to the turn for anything longer.
+ATTEMPT_EXCERPT_CHARS = 600
 
 
 def vote_derivation(run_root: str | Path | None) -> dict | None:
@@ -124,6 +134,15 @@ def final_ballots(payload: dict, derivation: dict | None = None) -> dict:
         atype = str(action.get("atype") or "").lower()
         derived = _derived_for(derivation, episode_id, int(t.get("idx")))
         derived_any = derived_any or derived is not None
+        # What the seat actually said, quoted, when the record holds no ballot. This is the half of the signature
+        # that names the mechanism: a rejected response reading `{"action": "accept", "offer_id": "P6"}` when only
+        # P9 was up for the vote is not an abstention, it is a ballot on the wrong offer. Only for non-ballots —
+        # a seat that voted legally has its vote in the ballot column and needs no transcript quoted at it.
+        attempted = None
+        if atype not in BALLOT_ACTIONS and (t.get("content") or "").strip():
+            text = " ".join(str(t["content"]).split())
+            attempted = (text[:ATTEMPT_EXCERPT_CHARS] + "…"
+                         if len(text) > ATTEMPT_EXCERPT_CHARS else text)
         rows.append({
             "turn_idx": t.get("idx"),
             "seat": t.get("seat"),
@@ -136,6 +155,7 @@ def final_ballots(payload: dict, derivation: dict | None = None) -> dict:
             # comparison separates them.
             "off_ballot": bool(action.get("offer")) and offer is not None and action.get("offer") != offer,
             "syntax_error": action.get("syntax_error"),
+            "attempted": attempted,
             "derived": (derived or {}).get("expected"),
             "derived_matches": (None if derived is None else bool(derived.get("match",
                                derived.get("expected") == derived.get("recorded")))),
@@ -171,8 +191,13 @@ def ballot_table(tally: dict | None) -> str:
         ballot = (f"<b>{_e(r['ballot'])}</b>" if r["is_ballot"]
                   else f"<b class='neg'>NO BALLOT — abstained</b>")
         notes = []
+        if r["attempted"]:
+            notes.append("the seat did not stay silent — it answered "
+                         f"<code>{_e(r['attempted'])}</code>")
         if r["syntax_error"]:
-            notes.append(f"the protocol rejected this seat's response: <i>{_e(r['syntax_error'])}</i>")
+            notes.append((("and the protocol rejected that: " if r["attempted"]
+                           else "the protocol rejected this seat's response: ")
+                          + f"<i>{_e(r['syntax_error'])}</i>"))
         if r["off_ballot"]:
             notes.append(f"voted on <b>{_e(r['on_offer'])}</b>, but the vote is on "
                          f"<b>{_e(tally.get('offer'))}</b>")
@@ -199,10 +224,13 @@ def ballot_table(tally: dict | None) -> str:
     if tally["n_mismatch"]:
         counts.append(f"<span class='pill bad'><b class='neg'>{tally['n_mismatch']} recorded-vs-derived "
                       "mismatch(es)</b></span>")
-    lead = ("An abstention on a forced final vote is always worth seeing: the seat was asked a yes/no question "
-            "about one named package and the record holds no answer. Where a computable policy held the seat, "
-            "its ballot has an offline answer" + (" and it is shown beside the record."
-            if show_derived else "; run gate G3 with its sidecar flag to show it beside the record."))
+    lead = ("A missing ballot on a forced final vote is always worth seeing: the seat was asked a yes/no question "
+            "about one named package and the record holds no answer. Where the seat DID answer and the protocol "
+            "rejected it, both its own words and the rejection are quoted below — a response voting on some other "
+            "offer id is not an abstention, and calling it one describes the record's shape rather than the "
+            "agent's behaviour. Where a computable policy held the seat, its ballot has an offline answer"
+            + (" and it is shown beside the record."
+               if show_derived else "; run gate G3 with its sidecar flag to show it beside the record."))
     return (f"<section class='card ballots{' hazard' if (tally['n_abstentions'] or tally['n_mismatch']) else ''}'"
             f" id='ballots'><h2>The final vote on <code>{_e(tally.get('offer'))}</code></h2>"
             f"<div class='sub'>{lead}</div><div class='pills'>{''.join(counts)}</div>"
