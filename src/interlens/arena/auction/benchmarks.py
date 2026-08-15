@@ -276,7 +276,13 @@ def saa_competitive_benchmark(vm: ValueModel, *, increment: int, reserve: int = 
         new_bids: dict[int, list[int]] = {}
         for i in sorted(range(n), key=lambda s: order[s]):
             pay = np.array([price[j] if holder[j] == i else price[j] + increment for j in range(m)])
-            bundle, _ = best_bundle_at_prices(vm, i, pay)
+            # The lots this seat is ALREADY standing high on are forced into its bundle: within a stage it
+            # cannot walk away from a standing high bid. Omitting them let a capacity-3 seat holding three lots
+            # demand three different ones and end the stage holding six, which made the benchmark allocation
+            # infeasible and its welfare -inf -- invisible at a 5-round cap (nobody accumulates that fast) and
+            # systematic at 20 rounds.
+            held = tuple(j for j in range(m) if holder[j] == i)
+            bundle, _ = best_bundle_at_prices(vm, i, pay, forced=held)
             demanded[i].update(bundle)
             want = [j for j in bundle if holder[j] != i]
             if want:
