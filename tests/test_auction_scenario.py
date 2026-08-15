@@ -650,3 +650,71 @@ def test_channel_content_is_persisted_on_the_outcome_not_just_its_dyad_counts():
     # The phase a DM rode on is a real distinction (a message round vs a bidding turn) and is stamped, so a
     # mid-stage DM never reads the same as a pre-bidding one.
     assert all(m["phase"] in ("talk", "bid") for m in msgs)
+
+
+@pytest.mark.parametrize("family", ["sealed_second", "dutch", "saa3"])
+def test_replay_integrity_reproduces_a_computable_seat_and_catches_a_tampered_move(tmp_path, family):
+    """The universal free-arm gate: every computable turn must equal its own policy re-evaluated on the very
+    state block it was rendered with.
+
+    This is the mechanism-independent form of "the played seat is its rule", and it is what gates the clock
+    families, where the equilibrium form of G3 does not apply (design.md §6). The negative half matters as
+    much as the positive: a checker that cannot fail is not a gate, so the test tampers with one recorded
+    move and requires the mismatch to be found."""
+    import json as _json
+
+    from interlens.arena.scenarios.auction_policy import AuctionPolicyParticipant, replay_integrity
+
+    scn = AuctionScenario()
+    make, n_items = FAMILIES[family]
+    mech = make(n_items)
+    inst = scn.generate_instance(0, 7, mechanism=mech, horizon=8)
+    seats = {i: "rational" for i in range(5)}
+    cfg = {"mechanism": mech.to_json(), "horizon": 2, "channel": "silent", "value_structure": "apv",
+           "policy_seats": seats}
+    state = scn.make_state(inst, "all_rational", 0, cfg)
+    spec = state["spec"]
+
+    # A bank of one, written where the checker looks for the instance it replays against.
+    bank = tmp_path / "bank"
+    bank.mkdir()
+    (bank / f"{inst.instance_id}.json").write_text(_json.dumps(inst.to_json()))
+
+    # Drive the episode with the real policy participants and record turns the way the runner does.
+    turns, idx = [], 0
+    while not state["done"]:
+        reqs = scn.next_requests(state)
+        if not reqs:
+            break
+        for req in reqs:
+            seat = int(req.meta["seat_index"])
+            name = state["seat_names"][seat]
+            participant = AuctionPolicyParticipant(name, spec=spec, seat=seat, information="private",
+                                                   instance_id=inst.instance_id)
+            text = participant.generate(req.view).content
+            turns.append({"idx": idx, "seat": name, "round": state["round"], "phase": req.phase,
+                          "view": req.view, "parsed_action": None, "_text": text})
+            idx += 1
+            scn.apply(state, req, text)
+            turns[-1]["parsed_action"] = _json.loads(text.split("```json")[1].split("```")[0])
+    episode = {"instance_id": inst.instance_id, "arm": "all_rational", "cell_cfg": cfg,
+               "seats": [{"name": state["seat_names"][i], "seat": i} for i in range(5)], "turns": turns}
+
+    clean = replay_integrity(episode, bank)
+    assert clean["checked"] > 0, "nothing was replayed — the gate would pass vacuously"
+    assert clean["pass"] and not clean["mismatches"]
+
+    # Tamper: rewrite one binding move to something the policy would never have produced.
+    tampered = _json.loads(_json.dumps({k: v for k, v in episode.items()}))
+    for turn in tampered["turns"]:
+        action = turn.get("parsed_action") or {}
+        if action.get("bids"):                      # multi-lot grammar
+            action["bids"][0]["amount"] = int(action["bids"][0]["amount"]) + 7
+            break
+        if "amount" in action:                      # single-lot grammar
+            action["amount"] = int(action["amount"]) + 7
+            break
+    else:
+        pytest.skip("no priced move to tamper with in this family")
+    caught = replay_integrity(tampered, bank)
+    assert not caught["pass"] and caught["mismatches"], "a tampered move slipped past the gate"
