@@ -82,7 +82,16 @@ def test_saa_straightforward_bidding_awards_lots_to_their_highest_valuers():
     # the first price where its surplus would be non-positive); the uncontested one at one increment.
     assert 85 <= bench.prices[0] <= 90
     assert bench.prices[1] == 5
-    assert bench.bids.tolist() == vm.values.astype(float).tolist()
+    # The PRIMARY benchmark bid is information-conditional: the amount a straightforward bidder actually
+    # SUBMITS on the lots it demands, and nan on the lots it never demands. Scoring the undemanded cells
+    # against own value booked a capacity constraint as suppression, and scoring the demanded ones against own
+    # value booked the price path as suppression. The all-lots own-value matrix is the secondary column.
+    assert np.isnan(bench.bids[0, 1]) and np.isnan(bench.bids[2, 0])
+    assert bench.bids[0, 0] == bench.prices[0]          # the winner's last submitted amount is the price
+    assert bench.bids[1, 0] == bench.prices[0] - 5      # the loser's is the increment below, where it stopped
+    assert bench.bids[2, 1] == bench.prices[1]
+    assert bench.detail["truthful_bids"].tolist() == vm.values.astype(float).tolist()
+    assert bench.detail["demanded"] == [[0], [0], [1]]
 
 
 def test_best_bundle_at_prices_respects_capacity_and_synergy():

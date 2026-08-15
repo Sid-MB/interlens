@@ -69,6 +69,7 @@ from ..stop import AnyStopCondition, StopCondition
 from ..transcript import Transcript
 from ..usage import UsageMeter
 from .oracles import OracleRecord
+from .refusal import REFUSAL_RECOVERY_KEY, RefusalLadder, is_refusal, recovery_record
 from .scenario import Scenario
 from .schema import Episode, EpisodeStore, Instance, SeatRequest, TurnRecord, new_id
 from .views import extract_json, strip_think
@@ -389,6 +390,7 @@ class EpisodeRun:
 			# text NO MODEL PRODUCED, so no downstream analysis can mistake it for behaviour.
 			gen_failed=bool(message.metadata.get(GEN_FAILED_KEY)),
 			gen_failure=message.metadata.get(GEN_FAILURE_KEY),
+			refusal_recovery=message.metadata.get(REFUSAL_RECOVERY_KEY),
 		))
 		self._turn_idx += 1
 		self.ep.tokens_in += tokens_in
@@ -473,14 +475,20 @@ class EpisodePool:
 	accumulated while it queued genuinely stops it from starting."""
 
 	def __init__(self, store: EpisodeStore | None = None, *, meter: UsageMeter | None = None,
-	             max_concurrent: int = 32, record_views: bool = True):
+	             max_concurrent: int = 32, record_views: bool = True,
+	             refusal_ladder: RefusalLadder | None = None):
 		self.store = store
 		self.meter = meter
 		self.record_views = record_views   # persist each turn's rendered view into its TurnRecord (default on)
+		# On an API-side refusal (``stop_reason="refusal"``, zero output tokens), re-render the SAME turn under
+		# this ladder's content-preserving perturbations and reissue, escalating rung by rung. Off by default,
+		# because it is a protocol commitment a campaign must preregister rather than acquire silently; pass
+		# ``RefusalLadder()`` to enable it. See ``arena/refusal.py``.
+		self.refusal_ladder = refusal_ladder
 		self._sem = asyncio.Semaphore(max_concurrent)  # concurrent EPISODES (generation width is the client's)
 
-	async def _generate(self, participant, request: SeatRequest, cap: int, *,
-	                    capture=None, steering=None, patch=None, turn: int | None = None) -> Message:
+	async def _generate_once(self, participant, view: list[dict], request: SeatRequest, cap: int, *,
+	                         capture=None, steering=None, patch=None, turn: int | None = None) -> Message:
 		# ``seat`` is always passed: a participant fronting several seats needs the request's own seat identity
 		# rather than having to recover it from the prompt wording.
 		kwargs: dict = {"max_new_tokens": cap, "seat": request.seat}
@@ -491,7 +499,38 @@ class EpisodePool:
 		if capture is not None:
 			kwargs["capture"] = capture
 			kwargs["turn"] = turn
-		return await asyncio.to_thread(lambda: participant.generate(request.view, **kwargs))
+		return await asyncio.to_thread(lambda: participant.generate(view, **kwargs))
+
+	async def _generate(self, participant, request: SeatRequest, cap: int, *,
+	                    capture=None, steering=None, patch=None, turn: int | None = None) -> Message:
+		"""One turn's generation, with refusal recovery when a ``refusal_ladder`` is installed.
+
+		An API-side refusal reproduces deterministically for byte-identical requests, so the ordinary retry
+		(same view plus a parser note) cannot clear it. When one arrives, the ladder re-renders the same view
+		under a content-preserving perturbation — nonce line, seeded block permutation, alternate section
+		framing — and reissues, escalating rung by rung until a completion comes back or the rungs run out.
+		The turn that is committed is the one that generated; its exact re-rendered view is recorded as
+		``conditioned_view`` so the transcript shows what the seat actually read, and
+		``metadata[REFUSAL_RECOVERY_KEY]`` records which rung cleared it (or that none did)."""
+		kw = dict(capture=capture, steering=steering, patch=patch, turn=turn)
+		message = await self._generate_once(participant, request.view, request, cap, **kw)
+		if self.refusal_ladder is None or not is_refusal(message):
+			return message
+		ladder, attempts = self.refusal_ladder, []
+		key = f"{request.episode_id}/{request.seat}/{request.round}/{request.phase}"
+		for rung in range(1, len(ladder) + 1):
+			view = ladder.perturb(request.view, rung, key=key)
+			attempts.append(ladder.rung_name(rung))
+			message = await self._generate_once(participant, view, request, cap, **kw)
+			if not is_refusal(message):
+				message.metadata[REFUSAL_RECOVERY_KEY] = recovery_record("recovered", rung, attempts)
+				message.metadata["conditioned_view"] = view
+				logger.info("refusal recovered at rung %d (%s) for %s", rung, ladder.rung_name(rung), key)
+				return message
+		message.metadata[REFUSAL_RECOVERY_KEY] = recovery_record("terminal", None, attempts)
+		message.metadata["conditioned_view"] = view
+		logger.warning("refusal NOT recovered after %d rungs (%s) for %s", len(ladder), ",".join(attempts), key)
+		return message
 
 	async def run_episode(self, scenario: Scenario, instance: Instance, arm: str, participant, *,
 	                      seed: int = 0, cfg: dict | None = None, gen_config: dict | None = None,

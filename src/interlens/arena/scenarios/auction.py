@@ -690,9 +690,11 @@ class AuctionScenario(Scenario):
         out = StageOutcome(stage=stage, values=draw.value_array, bids=bids, benchmark_bids=bench.bids,
                            winner_of=tuple(winner_of), payments=payments, bundle_values=bundle_values,
                            max_welfare=vm.max_welfare(), budgets=np.array(draw.budgets, dtype=float),
-                           exposure_seats=exposure)
+                           exposure_seats=exposure,
+                           truthful_bids=bench.detail.get("truthful_bids"))
         row = stage_metrics(out)
         row.update({"stage": stage, "benchmark": bench.label, "benchmark_revenue": bench.revenue,
+                    "benchmark_note": bench.note,
                     "benchmark_welfare": bench.welfare, "prices": list(prices),
                     "winner_of": list(winner_of), "payments": [float(p) for p in payments],
                     "surplus": [own[i]["surplus"] for i in range(n)]})

@@ -146,6 +146,12 @@ class TurnRecord:
 	# those, since it falls back to the legacy signature.
 	gen_failed: bool = False
 	gen_failure: str | None = None
+	# Did an API-side refusal precede this turn, and did the re-render ladder recover it? ``None`` on the
+	# overwhelming majority of turns (nothing was refused). Otherwise ``arena.refusal.recovery_record``'s dict:
+	# ``{"outcome": "recovered"|"terminal", "rung": <1-based rung that cleared it or None>, "attempts": [...]}``.
+	# A ``recovered`` turn IS model behaviour — it conditions on the same content, re-rendered — while a
+	# ``terminal`` one is a turn no model produced and is counted as silence, so the two must never be pooled.
+	refusal_recovery: dict | None = None
 
 
 @dataclass

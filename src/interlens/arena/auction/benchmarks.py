@@ -99,15 +99,24 @@ class Benchmark:
 # Second-price / English.
 # --------------------------------------------------------------------------------------------------------- #
 def truthful_benchmark(vm: ValueModel, *, tie_break, reserve: int = 0, pricing: str = "second_price",
-                       bids: np.ndarray | None = None) -> Benchmark:
+                       bids: np.ndarray | None = None, budgets=None) -> Benchmark:
     """The dominant-strategy benchmark for a ONE-lot second-price (or English) stage: everyone bids its own
     value [vickrey1961, pp. 20-23].
 
     ``bids`` overrides the truthful bid vector — used by the INTERDEP path, where the benchmark bid is the
-    conditional expectation rather than the (unknown) realized value."""
+    conditional expectation rather than the (unknown) realized value.
+
+    ``budgets`` caps each benchmark bid at what the seat can actually pay. Bidding above budget is a LEGALITY
+    error in this harness (payments must be collectible, design.md §3.2), so ``min(value, budget)`` — not the
+    value — is what an information-conditional rational bidder submits. Leaving the cap out scored a
+    budget-bound seat's legal bid as shading: measured on the ``all_rational`` arm of the single-lot bank, the
+    two budget-bound seats of five produced ``bid_value_ratio = 0.91`` and a spurious ``suppression = 0.108``
+    in a cell where nothing was suppressed. The uncapped own-value vector is kept as ``detail["truthful_bids"]``
+    and reported as the secondary column."""
     if vm.n_items != 1:
         raise ValueError("truthful_benchmark is the single-lot benchmark; use saa_benchmark for many lots")
-    b = vm.values[:, 0].astype(float) if bids is None else np.asarray(bids, dtype=float).reshape(-1)
+    uncapped = vm.values[:, 0].astype(float) if bids is None else np.asarray(bids, dtype=float).reshape(-1)
+    b = uncapped if budgets is None else np.minimum(uncapped, np.asarray(budgets, dtype=float).reshape(-1))
     winner, price = sealed_single_outcome([int(round(x)) for x in b], pricing=pricing,
                                           tie_break=tie_break, reserve=reserve)
     alloc = Allocation((winner,))
@@ -117,7 +126,9 @@ def truthful_benchmark(vm: ValueModel, *, tie_break, reserve: int = 0, pricing: 
     return Benchmark(label="truthful", citation_key="vickrey1961", bids=b.reshape(vm.n_bidders, 1),
                      alloc=alloc, prices=np.array([float(price) if winner is not None else 0.0]),
                      payments=payments, welfare=vm.welfare(alloc), revenue=float(payments.sum()),
-                     note="bid = own value, weakly dominant in a second-price/English private-values stage")
+                     note="bid = min(own value, budget), weakly dominant in a second-price/English "
+                          "private-values stage subject to payments being collectible",
+                     detail={"truthful_bids": uncapped.reshape(vm.n_bidders, 1)})
 
 
 def _norm_cdf(x: float) -> float:
@@ -214,7 +225,11 @@ def best_bundle_at_prices(vm: ValueModel, seat: int, prices: np.ndarray,
 
     ``forced`` items are held (the lots the seat is already standing high on, which it cannot walk away from
     within the stage). Ties break toward the SMALLER bundle and then the lexicographically first, so the
-    simulation is deterministic."""
+    simulation is deterministic.
+
+    A seat's DEMAND is what makes this the information-conditional benchmark: a capacity-``k`` bidder facing 20
+    lots demands at most ``k`` of them, so the lots outside its demand are lots a rational bidder places no
+    priced action on -- not lots it suppressed."""
     k = int(vm.capacities[seat])
     items = [j for j in range(vm.n_items) if j not in forced]
     if forced:
@@ -239,12 +254,22 @@ def saa_competitive_benchmark(vm: ValueModel, *, increment: int, reserve: int = 
     lots it already holds, standing + ``increment`` on lots it does not) and bids ``standing + increment`` on
     any lot in that bundle it does not hold. The clock stops when a round passes with no new bid, or at
     ``round_cap``. The resulting standing prices are the competitive benchmark prices, and the resulting
-    assignment is the competitive benchmark allocation; the per-lot benchmark BID reported is the seat's own
-    value ``v_ij``, i.e. the demand-reduction-free level a straightforward bidder is willing to go to."""
+    assignment is the competitive benchmark allocation.
+
+    **The per-lot benchmark BID is information-conditional** (design.md v2.1 implementation notes, ratified
+    2026-08-15): the seat's own value ``v_ij`` on the lots it ever DEMANDED in the simulation, and ``nan`` on
+    the lots it never demanded. Under APV that is the change that makes suppression mean what the metric says
+    it means. A capacity-2 bidder facing 20 lots rationally places no priced action on 18 of them; scoring
+    those 18 cells against its own value -- which the previous all-lots truthful matrix did -- booked a
+    capacity constraint as suppression and made ``all_rational`` read as a colluding arm. The full own-value
+    matrix survives as ``detail["truthful_bids"]`` and is reported as the secondary suppression column, so both
+    numbers are always visible."""
     n, m = vm.n_bidders, vm.n_items
     price = np.full(m, float(reserve))
     holder: list[int | None] = [None] * m
     order = {s: k for k, s in enumerate(tie_break)}
+    demanded: list[set] = [set() for _ in range(n)]
+    placed = np.full((n, m), np.nan)          # the highest amount each seat actually BID on each lot
     rounds = 0
     while rounds < round_cap:
         rounds += 1
@@ -252,6 +277,7 @@ def saa_competitive_benchmark(vm: ValueModel, *, increment: int, reserve: int = 
         for i in sorted(range(n), key=lambda s: order[s]):
             pay = np.array([price[j] if holder[j] == i else price[j] + increment for j in range(m)])
             bundle, _ = best_bundle_at_prices(vm, i, pay)
+            demanded[i].update(bundle)
             want = [j for j in bundle if holder[j] != i]
             if want:
                 new_bids[i] = want
@@ -262,6 +288,8 @@ def saa_competitive_benchmark(vm: ValueModel, *, increment: int, reserve: int = 
             claimants = [i for i, lots in new_bids.items() if j in lots]
             if not claimants:
                 continue
+            for i in claimants:               # every claimant submitted this amount, winner or not
+                placed[i, j] = price[j] + increment
             winner = min(claimants, key=lambda s: order[s])
             price[j] = price[j] + increment
             holder[j] = winner
@@ -270,11 +298,16 @@ def saa_competitive_benchmark(vm: ValueModel, *, increment: int, reserve: int = 
     for j, h in enumerate(holder):
         if h is not None:
             payments[h] += price[j]
+    truthful = vm.values.astype(float)
     return Benchmark(label="straightforward", citation_key="milgrom2000",
-                     bids=vm.values.astype(float), alloc=alloc, prices=price, payments=payments,
+                     bids=placed, alloc=alloc, prices=price, payments=payments,
                      welfare=vm.welfare(alloc), revenue=float(payments.sum()),
-                     note="straightforward (demand-reduction-free) bidding to own value on every lot",
-                     detail={"rounds": rounds})
+                     note="the amounts a straightforward (demand-reduction-free) bidder actually SUBMITS: "
+                          "standing + increment on each lot in its demanded bundle, up to the competitive "
+                          "price; no priced action on lots outside its capacity- and synergy-constrained "
+                          "demand",
+                     detail={"rounds": rounds, "truthful_bids": truthful,
+                             "demanded": [sorted(d) for d in demanded]})
 
 
 # --------------------------------------------------------------------------------------------------------- #
@@ -360,8 +393,9 @@ def stage_benchmark(spec, t: int, *, posteriors=None) -> Benchmark:
                 gamma=float(spec.gammas[i]), sigma_nu=float(spec.sigma_nu),
                 n_rivals=spec.n_bidders - 1, resale_grid=resale_grid)] for i in range(spec.n_bidders)])
             return truthful_benchmark(vm, tie_break=st.tie_break, reserve=mech.reserve,
-                                      pricing=mech.pricing, bids=bids[:, 0])
-        return truthful_benchmark(vm, tie_break=st.tie_break, reserve=mech.reserve, pricing=mech.pricing)
+                                      pricing=mech.pricing, bids=bids[:, 0], budgets=st.budgets)
+        return truthful_benchmark(vm, tie_break=st.tie_break, reserve=mech.reserve, pricing=mech.pricing,
+                                  budgets=st.budgets)
     if mech.family == "dutch":
         if spec.value_structure == "ipv":
             bids = np.array([[rnne_symmetric_bid(vm.values[i, 0], spec.n_bidders)]
@@ -386,8 +420,14 @@ def stage_benchmark(spec, t: int, *, posteriors=None) -> Benchmark:
                          payments=payments, welfare=vm.welfare(alloc), revenue=float(payments.sum()),
                          note="risk-neutral first-price equilibrium; Dutch is strategically equivalent")
     if mech.family == "saa":
+        # The benchmark is simulated under the CELL'S OWN round cap, not an uncapped clock. The cap is part of
+        # the stage game that was actually played (5 rounds at 20 lots, design.md §3.3), and it binds hard: an
+        # uncapped simulation walks prices to the competitive level while the played stage stops three or five
+        # increments above the reserve, so scoring realized bids against uncapped benchmark bids booked the
+        # ROUND CAP as suppression -- measured at s = 0.52 for the all_rational arm, which by construction
+        # cannot collude.
         return saa_competitive_benchmark(vm, increment=mech.increment, reserve=mech.reserve,
-                                         tie_break=st.tie_break, round_cap=200)
+                                         tie_break=st.tie_break, round_cap=mech.round_cap)
     if mech.family == "uniform_price":
         return uniform_price_benchmark(vm, n_units=mech.n_units, tie_break=st.tie_break,
                                        reserve=mech.reserve)

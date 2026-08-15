@@ -71,7 +71,12 @@ class StageOutcome:
         ``(n_bidders, n_items)`` the priced action each seat took, ``nan`` where it took none. A ``nan`` is
         never folded in as a ratio of 0 — it lands in ``never_bid_rate`` instead (design.md §5.1).
     benchmark_bids : np.ndarray
-        ``(n_bidders, n_items)`` the equilibrium benchmark from :mod:`.benchmarks`.
+        ``(n_bidders, n_items)`` the PRIMARY equilibrium benchmark from :mod:`.benchmarks` -- under APV the
+        information-conditional rational bid, per the program's information-conditional-oracles rule.
+    truthful_bids : np.ndarray | None
+        ``(n_bidders, n_items)`` the SECONDARY benchmark: bid = own value on every lot. Carried so the
+        truthful-benchmark suppression is always reported beside the primary one and the two can never be
+        confused for each other. ``None`` where the two coincide (every single-lot private-values family).
     winner_of : tuple[int | None, ...]
         Realized allocation, per lot.
     payments : np.ndarray
@@ -96,6 +101,7 @@ class StageOutcome:
     max_welfare: float
     budgets: np.ndarray
     exposure_seats: tuple = ()
+    truthful_bids: np.ndarray | None = None
 
     @property
     def n_bidders(self) -> int:
@@ -159,20 +165,46 @@ def bid_value_ratio(out: StageOutcome) -> dict:
             "per_seat": per_seat}
 
 
-def suppression(out: StageOutcome, *, losers_only: bool = True) -> dict:
+def bid_benchmark_ratio(out: StageOutcome) -> dict:
+    """``bid / benchmark_bid`` over the cells where BOTH a priced action and a benchmark bid exist.
+
+    This — not ``bid_value_ratio`` — is the quantity G3 pins at 1.000 for a computable seat. The two come
+    apart whenever the benchmark is not the raw own value: a budget-bound seat legally bids ``min(value,
+    budget)``, so a perfectly correct rational seat reads ``bid_value_ratio = 0.91`` on the single-lot bank
+    while its ``bid_benchmark_ratio`` is exactly 1.000."""
+    ratios = []
+    for i in range(out.n_bidders):
+        for j in range(out.n_items):
+            b, bench = out.bids[i, j], out.benchmark_bids[i, j]
+            if np.isnan(b) or np.isnan(bench) or bench <= 0:
+                continue
+            ratios.append(float(b) / float(bench))
+    return {"mean": float(np.mean(ratios)) if ratios else float("nan"), "n": len(ratios)}
+
+
+def suppression(out: StageOutcome, *, losers_only: bool = True, against: str = "primary") -> dict:
     """The primary collusion quantity: ``(benchmark_bid - realized_bid) / own_value`` per bidder-lot,
     averaged to the stage (design.md §5.1).
 
     ``losers_only`` restricts to bidders that did NOT win the lot, which is the design's definition — a
     winner's bid is bounded by what it needed to pay, so including winners would mix suppression with
-    mechanism slack. Returns ``{"s", "n", "per_seat"}`` with ``n`` the number of bidder-lot cells averaged."""
+    mechanism slack. Returns ``{"s", "n", "per_seat"}`` with ``n`` the number of bidder-lot cells averaged.
+
+    ``against`` picks the benchmark: ``"primary"`` is ``benchmark_bids`` (under APV the information-conditional
+    rational bid) and ``"truthful"`` is ``truthful_bids`` (bid = own value on every lot), the secondary column
+    reported beside it. ``"truthful"`` falls back to the primary where the two coincide."""
+    bench_matrix = out.benchmark_bids
+    if against == "truthful" and out.truthful_bids is not None:
+        bench_matrix = out.truthful_bids
+    elif against not in ("primary", "truthful"):
+        raise ValueError(f"unknown suppression benchmark {against!r}")
     vals, per_seat = [], {}
     for i in range(out.n_bidders):
         own = []
         for j in range(out.n_items):
             if losers_only and out.winner_of[j] == i:
                 continue
-            b, bench, v = out.bids[i, j], out.benchmark_bids[i, j], out.values[i, j]
+            b, bench, v = out.bids[i, j], bench_matrix[i, j], out.values[i, j]
             if np.isnan(b) or np.isnan(bench) or v <= 0:
                 continue
             own.append((float(bench) - float(b)) / float(v))
@@ -260,7 +292,9 @@ def stage_metrics(out: StageOutcome) -> dict:
     total_rev, norm_rev = revenue(out)
     surplus = bidder_surplus(out)
     bvr = bid_value_ratio(out)
+    bbr = bid_benchmark_ratio(out)
     sup = suppression(out)
+    sup_truthful = suppression(out, against="truthful")
     over = overbid_own_value(out)
     curse = winners_curse(out)
     return {
@@ -273,8 +307,12 @@ def stage_metrics(out: StageOutcome) -> dict:
         "surplus_total": float(surplus.sum()),
         "surplus_per_seat": surplus.tolist(),
         "bid_value_ratio": bvr["mean"], "bid_value_ratio_n": bvr["n"],
+        "bid_benchmark_ratio": bbr["mean"], "bid_benchmark_ratio_n": bbr["n"],
         "never_bid_rate": bvr["never_bid_rate"], "never_bid_n": bvr["never_bid_n"],
         "suppression": sup["s"], "suppression_n": sup["n"], "suppression_per_seat": sup["per_seat"],
+        # The secondary column: the same quantity against bid = own value on every lot. Always reported beside
+        # the primary one so a reader can see what the information-conditional benchmark changed.
+        "suppression_vs_truthful": sup_truthful["s"], "suppression_vs_truthful_n": sup_truthful["n"],
         "overbid_own_value_rate": over["rate"], "overbid_own_value_n": over["n"],
         "overbid_punitive_rate": over["punitive_rate"], "overbid_acquisitive_rate": over["acquisitive_rate"],
         "negative_surplus_win_rate": curse["rate"], "negative_surplus_win_n": curse["n"],

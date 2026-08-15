@@ -47,6 +47,7 @@ from .actions import (Accept, Action, Deal, LEGALITY, Offer, OfferId, OfferRegis
 from .oracles import Oracle, OracleRecord, OracleVerdict, annotate
 from .engine import (BatchedEpisodePool, EMPTY_TURN_PLACEHOLDER, EpisodePool, EpisodeRun,
                      GenerationFailureBudgetExceeded, TURN_SIGNATURES, gen_failures, turn_signatures)
+from .refusal import RefusalLadder, is_refusal
 from .ratchet import DifficultyRatchet, found_level
 from .rollouts import RolloutConfigMismatch, RolloutSet, config_fingerprint, rollout
 from .replay import ReplayError, replay_episode, rescore
@@ -96,6 +97,9 @@ __all__ = [
 	# invisible to the fabrication gate, parse_ok, and an empty-content check alike
 	"turn_signatures",
 	"TURN_SIGNATURES",
+	# API-side refusal recovery: the content-preserving re-render ladder and its detector
+	"RefusalLadder",
+	"is_refusal",
 	"DifficultyRatchet",
 	"found_level",
 	# rollout-set management: a directory of episodes + the manifest that says what produced them
