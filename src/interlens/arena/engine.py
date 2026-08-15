@@ -476,10 +476,13 @@ class EpisodePool:
 
 	def __init__(self, store: EpisodeStore | None = None, *, meter: UsageMeter | None = None,
 	             max_concurrent: int = 32, record_views: bool = True,
-	             refusal_ladder: RefusalLadder | None = None):
+	             refusal_ladder: RefusalLadder | None = None, wave_parallel: bool = True):
 		self.store = store
 		self.meter = meter
 		self.record_views = record_views   # persist each turn's rendered view into its TurnRecord (default on)
+		# Issue a simultaneous-move wave's generations concurrently rather than one seat after another (default
+		# on). See ``_generate_wave`` for exactly when it applies and why it cannot change what any seat reads.
+		self.wave_parallel = wave_parallel
 		# On an API-side refusal (``stop_reason="refusal"``, zero output tokens), re-render the SAME turn under
 		# this ladder's content-preserving perturbations and reissue, escalating rung by rung. Off by default,
 		# because it is a protocol commitment a campaign must preregister rather than acquire silently; pass
@@ -532,6 +535,41 @@ class EpisodePool:
 		logger.warning("refusal NOT recovered after %d rungs (%s) for %s", len(ladder), ",".join(attempts), key)
 		return message
 
+	def _wave_is_parallelizable(self, run: EpisodeRun, requests: list[SeatRequest]) -> bool:
+		"""Whether this wave's generations may be issued concurrently instead of one seat after another.
+
+		Three conditions, each of which is the thing that would otherwise make concurrency observable:
+
+		- **More than one request.** A one-request wave has nothing to overlap.
+		- **No interp hooks.** ``capture`` tags activations by ``run._turn_idx``, which is only well defined
+		  when turns are generated in the order they are committed; ``steering``/``patch`` are local-model paths
+		  where the throughput lever is :class:`BatchedEpisodePool` anyway. So a hooked episode stays serial.
+		- **No episode budget.** :meth:`EpisodeRun.turn_cap` reads the budget against the ledger of turns
+		  *already committed*, so under a ``TokenBudget(per_conversation=...)`` the second seat of a serial wave
+		  is capped by what the first seat just spent. Computing every cap at wave start would be a different
+		  (and arguably more correct, since the seats move simultaneously) rule, but it is not the same rule, so
+		  a budgeted episode falls back to serial rather than quietly changing its own caps.
+
+		What is deliberately NOT on this list is the scenario: a wave's views are all built by
+		``next_requests`` *before* any of them is sent, and a ``SeatRequest`` carries its rendered ``view``, so
+		no seat in a wave can read another seat's reply however the generations are ordered. That is a property
+		of the ``SeatRequest`` contract, not of any one scenario. Turns are still recorded in request order, so
+		the stored episode is identical regardless of which generation returns first."""
+		return (self.wave_parallel and len(requests) > 1
+		        and run.capture is None and run.steering is None and run.patch is None
+		        and run.budget is None)
+
+	async def _generate_wave(self, run: EpisodeRun, requests: list[SeatRequest],
+	                         caps: list[int]) -> list[Message]:
+		"""Every request of one wave generated concurrently, returned **in request order**.
+
+		Each element goes through the same :meth:`_generate` as the serial path, so the refusal ladder, its
+		per-turn recovery record, and usage accounting are unchanged. Concurrency here multiplies the requests
+		in flight by the wave width; the shared API client's ``max_in_flight`` (or an installed rate-limit
+		governor) is what actually bounds them, exactly as it bounds concurrent episodes."""
+		return list(await asyncio.gather(*(
+			self._generate(run.participant, request, cap) for request, cap in zip(requests, caps))))
+
 	async def run_episode(self, scenario: Scenario, instance: Instance, arm: str, participant, *,
 	                      seed: int = 0, cfg: dict | None = None, gen_config: dict | None = None,
 	                      budget: StopCondition | list | None = None,
@@ -566,11 +604,22 @@ class EpisodePool:
 						requests = run.pending()
 						if not requests:
 							break
-						for request in requests:
-							cap = run.turn_cap(request)
-							message = await self._generate(participant, request, cap, capture=run.capture,
-							                               steering=run.steering, patch=run.patch,
-							                               turn=run._turn_idx)
+						# A simultaneous-move wave is issued concurrently when nothing in the episode depends on
+						# generation ORDER (see _wave_is_parallelizable) — the ~wave-width wall-clock win on
+						# hosted seats. Turns are committed in request order either way, so the stored episode
+						# does not depend on which generation returns first.
+						if self._wave_is_parallelizable(run, requests):
+							caps = [run.turn_cap(q) for q in requests]
+							wave: list[Message | None] = list(await self._generate_wave(run, requests, caps))
+						else:
+							caps, wave = [0] * len(requests), [None] * len(requests)
+						for i, request in enumerate(requests):
+							if wave[i] is None:
+								caps[i] = run.turn_cap(request)
+								wave[i] = await self._generate(participant, request, caps[i],
+								                               capture=run.capture, steering=run.steering,
+								                               patch=run.patch, turn=run._turn_idx)
+							cap, message = caps[i], wave[i]
 							directive = run.record_turn(request, message, cap=cap)
 							while directive and "retry" in directive and run.allow_retry(request):
 								retry = run.retry_request(request, message.content, directive["retry"])
@@ -581,10 +630,16 @@ class EpisodePool:
 								directive = run.record_turn(retry, message, cap=cap)
 							# inline pure-Python oracle annotations of the committed turn (no extra generation)
 							run.annotate(request)
-						# forked provisional elicitations (state is never mutated by their responses)
-						for provisional in scenario.provisional_due(run.state):
+						# Forked provisional elicitations. Their responses never enter the state, so they are issued
+						# together under the same rule as the wave and recorded in request order.
+						probes = list(scenario.provisional_due(run.state))
+						for provisional in probes:
 							provisional.episode_id = run.ep.episode_id
-							message = await self._generate(participant, provisional, provisional.max_tokens)
+						if self._wave_is_parallelizable(run, probes):
+							replies = await self._generate_wave(run, probes, [p.max_tokens for p in probes])
+						else:
+							replies = [await self._generate(participant, p, p.max_tokens) for p in probes]
+						for provisional, message in zip(probes, replies):
 							parsed, score = run.score_provisional(message)
 							run.record_provisional(provisional, message, parsed, score)
 						run.save()

@@ -18,7 +18,10 @@ forking, budgets as stop conditions, reservation gating, persistence, and replay
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import threading
+import time
 
 import pytest
 
@@ -678,3 +681,102 @@ def test_stateful_policy_sees_the_same_call_order_batched_or_looped(tmp_path):
 	batched = BatchedEpisodePool(EpisodeStore(tmp_path / "b")).run_pool(
 		_mixed_jobs(None, n_seeds=4, instances=shared, seat_factory=Counting))
 	assert _fingerprint(looped) == _fingerprint(batched)
+
+
+# --- wave-parallel generation ------------------------------------------------------------------------------
+
+class WaveSeat(Participant):
+	"""A five-seat auction participant whose reply is a pure function of the rendered view.
+
+	Two properties make it the right probe for wave parallelism. The reply *hashes the view*, so any change in
+	what a seat read — a different prompt, a different wave, a different ordering of the seats' turns — shows up
+	as different stored bytes rather than as a silently equal episode. And ``generate`` sleeps, so a wave that is
+	issued concurrently finishes in about one seat's delay rather than five."""
+
+	def __init__(self, delay: float = 0.0):
+		self.name = "wave-seat"
+		self.delay = delay
+		self.calls = 0
+		self.max_concurrent = 0
+		self._in_flight = 0
+		self._lock = threading.Lock()
+
+	def generate(self, view, *, max_new_tokens=None, seat=None, **kwargs):
+		with self._lock:
+			self.calls += 1
+			self._in_flight += 1
+			self.max_concurrent = max(self.max_concurrent, self._in_flight)
+		try:
+			if self.delay:
+				time.sleep(self.delay)
+			digest = hashlib.sha1("\n".join(m["content"] for m in view).encode()).hexdigest()[:12]
+			text = json.dumps({"scratchpad": digest, "action": "pass"})
+			return Message(self.name, text, {"n_tokens": 12, "n_tokens_in": 400, "cost_usd": 0.0})
+		finally:
+			with self._lock:
+				self._in_flight -= 1
+
+
+def _auction_episode(tmp_path, *, wave_parallel: bool, delay: float = 0.0):
+	"""One scripted three-lot auction episode (five simultaneous-move seats per wave) through ``EpisodePool``."""
+	from interlens.arena.auction.spec import Mechanism
+	from interlens.arena.scenarios.auction import AuctionScenario
+
+	scen = AuctionScenario()
+	mech = Mechanism.saa(3)
+	inst = scen.generate_instance(0, 7, mechanism=mech, horizon=8)
+	cfg = {"mechanism": mech.to_json(), "horizon": 2, "channel": "silent", "value_structure": "apv"}
+	seat = WaveSeat(delay=delay)
+	pool = EpisodePool(EpisodeStore(tmp_path), wave_parallel=wave_parallel)
+	started = time.perf_counter()
+	ep = run(pool.run_episode(scen, inst, "all_llm", seat, cfg=cfg))
+	return ep, seat, time.perf_counter() - started
+
+
+def _comparable(ep) -> dict:
+	"""An episode's stored JSON minus the fields that are timing or identity by construction."""
+	d = json.loads(json.dumps(ep.to_json()))
+	for key in ("episode_id", "started_at", "ended_at"):
+		d.pop(key, None)
+	for turn in d.get("turns") or []:
+		turn.pop("episode_id", None)
+	return d
+
+
+def test_wave_parallel_episode_is_byte_identical_to_the_serial_one(tmp_path):
+	"""The ~wave-width throughput lever must be invisible in the record: same turns, same order, same views.
+
+	A wave's views are all built by ``next_requests`` before any of them is sent, so ordering the generations
+	cannot change what any seat reads — this pins that property rather than trusting it."""
+	serial, serial_seat, _ = _auction_episode(tmp_path / "serial", wave_parallel=False)
+	parallel, parallel_seat, _ = _auction_episode(tmp_path / "parallel", wave_parallel=True)
+
+	assert serial.status == "done" and parallel.status == "done"
+	assert serial_seat.max_concurrent == 1        # the serial path really is one call at a time
+	assert parallel_seat.max_concurrent > 1       # and the parallel one really does overlap a wave
+	assert serial_seat.calls == parallel_seat.calls
+	assert _comparable(serial) == _comparable(parallel)
+
+
+def test_wave_parallel_is_faster_than_serial_on_a_latency_bound_seat(tmp_path):
+	"""The point of the change: on a network-bound seat a five-wide wave costs about one seat's latency."""
+	_, _, serial_s = _auction_episode(tmp_path / "serial", wave_parallel=False, delay=0.02)
+	_, _, parallel_s = _auction_episode(tmp_path / "parallel", wave_parallel=True, delay=0.02)
+	assert parallel_s < serial_s / 2.0, f"serial {serial_s:.2f}s vs parallel {parallel_s:.2f}s"
+
+
+def test_wave_parallel_falls_back_to_serial_under_an_episode_budget(tmp_path):
+	"""A ``TokenBudget`` shrinks each turn's cap against the turns already committed, so a budgeted episode
+	keeps generating one seat at a time rather than quietly computing every cap at wave start."""
+	from interlens.arena.auction.spec import Mechanism
+	from interlens.arena.scenarios.auction import AuctionScenario
+
+	scen = AuctionScenario()
+	mech = Mechanism.saa(3)
+	inst = scen.generate_instance(0, 7, mechanism=mech, horizon=8)
+	cfg = {"mechanism": mech.to_json(), "horizon": 1, "channel": "silent", "value_structure": "apv"}
+	seat = WaveSeat()
+	pool = EpisodePool(EpisodeStore(tmp_path), wave_parallel=True)
+	run(pool.run_episode(scen, inst, "all_llm", seat, cfg=cfg,
+	                     budget=TokenBudget(per_conversation=10_000, per_turn=256)))
+	assert seat.max_concurrent == 1
