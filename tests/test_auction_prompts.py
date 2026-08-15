@@ -180,3 +180,22 @@ def test_unreviewed_family_refuses_rather_than_improvising():
     with pytest.raises(ValueError):
         sc.format_rules(family="uniform_price", pricing="uniform", n_items=1, increment=1, start_price=0,
                         reserve=0, round_cap=1)
+
+
+def test_reviewed_constants_are_the_ones_the_prose_prints():
+    """The structural constants a bank is frozen at must be the ones the prior statement PRINTS.
+
+    ``arena/auction/spec.py`` carries library defaults of beta 1.0 and sigma_eps 0.20; the reviewed templates
+    state 0.40 and 0.18. Both were silently in force at once until the auction-core lane flagged the conflict,
+    which meant every seat read a fit premium of 172% while its own draws obeyed 50%. This pins the reviewed
+    values and pins them to the rendered prose, so the two cannot drift apart again."""
+    from interlens.arena.auction import spec as auction_spec
+    assert P.REVIEWED_CONSTANTS == {"beta": 0.40, "sigma_z": 0.25, "sigma_eps": 0.18}
+    prose = P.AuctionPromptScaffold().prior_statement(
+        sigma_nu=0.0, value_structure="apv", multi_item=True, **P.REVIEWED_CONSTANTS)
+    assert "equals **0.40**" in prose
+    assert "roughly 49% more" in prose
+    assert "a standard deviation of **0.25**" in prose
+    assert "a standard deviation of **0.18**" in prose
+    # The library defaults are deliberately different; the reviewed value wins and is passed explicitly.
+    assert auction_spec.DEFAULT_BETA != P.REVIEWED_CONSTANTS["beta"]

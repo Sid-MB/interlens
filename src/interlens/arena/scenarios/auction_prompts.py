@@ -42,6 +42,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+#: The structural constants the reviewed templates PRINT, and therefore the values a bank must be frozen at.
+#:
+#: ``rendered_examples.md`` states them in as many words -- "beta = 0.40, K = 4, sigma_z = 0.25,
+#: sigma_eps = 0.18" -- and every one of them appears in the prior statement the model reads, so a bank frozen
+#: at a different value would hand every seat a printed number its own draws do not obey. They live beside the
+#: prose that prints them rather than in ``arena/auction/spec.py`` because they are part of what was REVIEWED:
+#: the spec module's own defaults are library defaults, and where the two disagree the reviewed value wins
+#: (:data:`~interlens.arena.auction.spec.DEFAULT_BETA` is 1.0 and ``DEFAULT_SIGMA_EPS`` is 0.20, both of which
+#: were silently in force until the auction-core lane flagged the conflict).
+#:
+#: ``sigma_nu`` is absent from the reviewed set -- it appears only in INTERDEP, which no committed cell runs --
+#: so the library default stands and is named here rather than left implicit.
+REVIEWED_CONSTANTS: dict[str, float] = {"beta": 0.40, "sigma_z": 0.25, "sigma_eps": 0.18}
+
 #: Unicode minus (U+2212) and the em dash, used in the reviewed prose. Kept as named constants so a signed
 #: integer is rendered the same way everywhere and a stray ASCII hyphen cannot creep into one table.
 MINUS = "−"

@@ -403,3 +403,27 @@ def test_surface_variants_are_reproducible_and_arm_invariant():
     c = policy_text.variant_index("inst-1", 2, 4, "dm_initiate", 3)
     assert a == b
     assert 0 <= a < 3 and 0 <= c < 3
+
+
+def test_state_block_carries_every_field_the_conditional_bayes_seat_updates_on():
+    """The rational seat's within-stage updating reads `exits`, `clock_price`, `active`, `standing` and
+    `standing_winner` through `AuctionPolicy._conditioned`. If the stage loop fails to feed those, the seat
+    degenerates to a truthful bidder and Q5 measures the wrong agent — so the block's field set is pinned."""
+    scn = AuctionScenario()
+    make, _ = FAMILIES["english"]
+    mech = make(1)
+    inst = scn.generate_instance(0, 31, mechanism=mech, horizon=8)
+    state = scn.make_state(inst, "one_rational", 0,
+                           {"mechanism": mech.to_json(), "horizon": 2, "channel": "silent",
+                            "policy_seats": {0: "rational"}})
+    # Drive one clock round so an exit is on the record, then read the block.
+    for req in scn.next_requests(state):
+        seat = int(req.meta["seat_index"])
+        move = "exit" if seat == 4 else "stay"
+        scn.apply(state, req, json.dumps({"action": move}))
+    block = scn.state_block(state, 0)
+    for field in ("stage", "round", "phase", "values", "budget", "standing", "standing_winner",
+                  "clock_price", "active", "exits", "inbox"):
+        assert field in block, f"the policy state block must carry {field}"
+    assert block["exits"], "a public exit must reach the rational seat's state block"
+    assert 4 not in block["active"]

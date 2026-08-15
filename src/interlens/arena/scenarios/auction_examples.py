@@ -119,7 +119,8 @@ def build_example(cfg: dict) -> tuple[str, str]:
     from :data:`NARRATIVES`."""
     scn = AuctionScenario()
     mech = cfg["mechanism"]
-    inst = scn.generate_instance(0, cfg["seed"], mechanism=mech, horizon=16)
+    from .auction_prompts import REVIEWED_CONSTANTS
+    inst = scn.generate_instance(0, cfg["seed"], mechanism=mech, horizon=16, **REVIEWED_CONSTANTS)
     state = scn.make_state(inst, "all_llm", 0,
                            {"mechanism": mech.to_json(), "horizon": cfg["horizon"],
                             "channel": cfg["channel"], "value_structure": cfg["value_structure"]})
