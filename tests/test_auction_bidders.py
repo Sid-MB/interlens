@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 from interlens.arena.auction import bidders as P
-from interlens.arena.auction.actions import Bid, Claim, Exit, PassLot, Stay, Wait
+from interlens.arena.auction.actions import Bid, Claim, Exit, PassLot, SAATurn, Stay, Wait
 from interlens.arena.auction.spec import Mechanism, generate_spec
 
 
@@ -133,9 +133,40 @@ def test_saa_move_is_straightforward_and_respects_the_ratchet_shape():
     pol = P.ConditionalBayesPolicy("private")
     state = P.AuctionState.from_spec(spec, 1, 0)
     move = pol.act(state)
-    assert isinstance(move, (Bid, PassLot))
-    if isinstance(move, Bid):
-        assert move.amount == spec.mechanism.reserve + spec.mechanism.increment
+    # An SAA turn is a SET of moves, not one: the demand correspondence is a bundle argmax, so the policy
+    # decides the whole round at once rather than one lot at a time.
+    assert isinstance(move, SAATurn)
+    assert not (move.bids and move.passes)
+    for bid in move.bids:
+        assert bid.amount == spec.mechanism.reserve + spec.mechanism.increment
+    assert len({b.item for b in move.bids}) == len(move.bids)
+    assert len(move.bids) <= int(spec.capacities[0])
+
+
+def test_saa_policy_demand_is_the_benchmark_rule_itself():
+    """G3's precondition: the played rule and the rule ``bid_benchmark_ratio`` scores it against are ONE rule.
+
+    A greedy lot-at-a-time derivation passes at 3 lots — where taking the best lot and re-solving happens to
+    reach the bundle argmax — and silently diverges once synergies make a lot's marginal value depend on the
+    rest of the bundle, which is why this asserts against ``best_bundle_at_prices`` at a lot count where the
+    two can come apart rather than at the smallest one."""
+    from interlens.arena.auction.benchmarks import best_bundle_at_prices
+
+    for seed in (6, 11, 23, 84001):
+        spec = generate_spec(seed, mechanism=Mechanism.saa(10), value_structure="apv", horizon=1)
+        for seat in range(spec.n_bidders):
+            state = P.AuctionState.from_spec(spec, 1, seat)
+            move = pol_act = P.ConditionalBayesPolicy("private").act(state)
+            assert isinstance(pol_act, SAATurn)
+            vm = state.value_model()
+            pay = np.full(spec.n_items, float(spec.mechanism.reserve + spec.mechanism.increment))
+            bundle, surplus = best_bundle_at_prices(vm, 0, pay, forced=())
+            if surplus <= 0:
+                assert not move.bids
+                continue
+            # Equal up to the lots the budget forces the seat to drop, which the benchmark does not model;
+            # nothing outside the argmax bundle may ever be bid on.
+            assert {b.item for b in move.bids} <= set(bundle)
 
 
 def test_demand_schedule_shades_under_uniform_pricing_and_not_under_clinching():

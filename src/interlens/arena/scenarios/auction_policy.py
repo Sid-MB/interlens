@@ -165,25 +165,20 @@ class AuctionPolicyParticipant(Participant):
                 .get(getattr(action, "kind", ""), "pass")}
 
     def _saa_move(self, block: dict, state: AuctionState) -> dict:
-        """The SAA turn. The policy emits one lot at a time, so the turn is built by asking it repeatedly
-        against a locally-advanced standing table until it stops wanting to raise or the budget runs out —
-        which is the same straightforward-bidding rule, expressed in the reviewed multi-lot grammar."""
-        standing = list(block.get("standing") or [])
-        winners = list(block.get("standing_winner") or [])
-        headroom = int(state.budget)
-        bids: list[dict] = []
-        for _ in range(int(self.spec.capacities[self.seat])):
-            action = self.policy.act(state)
-            if not isinstance(action, A.Bid) or action.amount > headroom:
-                break
-            if any(b["lot"] == P.lot_id(action.item) for b in bids):
-                break
-            bids.append({"lot": P.lot_id(action.item), "amount": int(action.amount)})
-            headroom -= int(action.amount)
-            standing[action.item] = int(action.amount)
-            winners[action.item] = self.seat
-            state = _with(state, standing=standing, standing_winner=winners, budget=headroom)
-        return {"action": "bid", "bids": bids} if bids else {"action": "pass"}
+        """The SAA turn: render the policy's own :class:`~interlens.arena.auction.actions.SAATurn` into the
+        reviewed multi-lot grammar.
+
+        The policy decides the whole round's demand in ONE call, because straightforward bidding's demand
+        correspondence is a bundle argmax (see :meth:`AuctionPolicy._saa_move`). This method previously
+        rebuilt the turn here instead, asking the policy for one lot at a time against a locally-advanced
+        standing table — a greedy path that does not reproduce the bundle argmax once synergies are live, and
+        so put both computable arms off the benchmark that G3 pins them to. Rendering rather than re-deriving
+        is what keeps the played rule and the benchmarked rule the same rule."""
+        action = self.policy.act(state)
+        if not isinstance(action, A.SAATurn) or not action.bids:
+            return {"action": "pass"}
+        return {"action": "bid",
+                "bids": [{"lot": P.lot_id(b.item), "amount": int(b.amount)} for b in action.bids]}
 
     # -- channels ------------------------------------------------------------------------------------------
     def _broadcast(self, block: dict, state: AuctionState, *, talk: bool) -> str:
@@ -238,13 +233,6 @@ class AuctionPolicyParticipant(Participant):
                                 threat_seat=seats[threat], fit_lot=P.lot_id(int(proposal.item or 0)),
                                 counter_lots=[P.lot_id(j) for j in theirs] or [P.lot_id(j) for j in mine])})
         return out
-
-
-def _with(state: AuctionState, **kw) -> AuctionState:
-    """A shallow copy of a policy's state with fields replaced — used to advance the standing table locally
-    while a multi-lot turn is assembled."""
-    from dataclasses import replace
-    return replace(state, **kw)
 
 
 def _read_proposal(msg: dict, seats, n_items: int) -> Proposal | None:

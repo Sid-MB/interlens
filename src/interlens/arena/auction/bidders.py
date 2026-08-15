@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..actions import Action, Pass
-from .actions import Bid, Claim, Demand, Exit, PassLot, Schedule, Stay, Wait
+from .actions import Bid, Claim, Demand, Exit, PassLot, SAATurn, Schedule, Stay, Wait
 from .allocation import ValueModel
 from .benchmarks import (best_bundle_at_prices, expected_value_given_winning, rnne_bid_against, rnne_shade)
 from .priors import RivalPosterior
@@ -293,8 +293,33 @@ class AuctionPolicy(ABC):
         raise ValueError(f"no policy move defined for family {mech.family!r}")
 
     def _saa_move(self, state: AuctionState) -> Action:
-        """Straightforward bidding on the lot with the largest surplus at prices-to-pay, subject to capacity
-        and eligibility; :class:`PassLot` on the best lot when nothing clears [milgrom2000]."""
+        """Straightforward bidding [milgrom2000]: the seat's WHOLE round demand as one :class:`SAATurn` —
+        ``standing + increment`` on every lot in its surplus-maximizing bundle at prices-to-pay that it does
+        not already hold.
+
+        This is the same rule, and the same call, that
+        :func:`~interlens.arena.auction.benchmarks.saa_competitive_benchmark` simulates, which is what makes
+        ``bid_benchmark_ratio`` a gate rather than a comparison of two different rules. It has to be one call
+        because straightforward bidding's demand correspondence is defined over BUNDLES: the argmax bundle is
+        not in general reachable by taking its best lot, re-solving, and taking the next, once synergies make
+        a lot's marginal value depend on which others the seat wins. Deriving the turn that way — one
+        ``act()`` per lot against a locally-advanced standing table — is what this method replaces, and it put
+        the two computable arms off the benchmark on every multi-item bank with live synergies (14 of 16
+        stages on the frozen 10-lot bank, ``bid_benchmark_ratio`` spread 0.923-1.141) while reading exactly
+        1.000 at 3 lots, where the greedy path and the bundle argmax coincide.
+
+        Two further alignments with the benchmark ride along. ``forced=held`` is now passed, so the lots the
+        seat is already standing high on are in its bundle rather than re-contested from scratch — the
+        omission the benchmark's own docstring warns about, which let a capacity-``k`` seat demand ``k`` fresh
+        lots while holding ``k`` others. And the budget DROPS lots rather than truncating amounts: an SAA bid
+        must be at least ``standing + increment``, so a truncated amount is a ``below_minimum`` legality error
+        rather than a cheaper bid, which is why :meth:`_afford` is deliberately not used here. Lots are
+        dropped in ascending surplus order, so the seat keeps the most valuable part of its demand.
+
+        No new tie-breaking is introduced: :func:`best_bundle_at_prices` already resolves an exact tie toward
+        the smaller bundle and then the lexicographically first, so the bundle is a deterministic function of
+        the state and the stage's seeded permutation continues to decide only the mechanism's own contests.
+        """
         prices = np.array([(state.standing[j] if state.standing and state.standing[j] is not None
                             else state.reserve) for j in range(state.n_items)], dtype=float)
         held = tuple(j for j in range(state.n_items)
@@ -302,16 +327,25 @@ class AuctionPolicy(ABC):
         pay = np.array([prices[j] if j in held else prices[j] + state.increment
                         for j in range(state.n_items)])
         vm = state.value_model()
-        bundle, surplus = best_bundle_at_prices(vm, 0, pay)
+        bundle, surplus = best_bundle_at_prices(vm, 0, pay, forced=held)
         want = [j for j in bundle if j not in held]
+        free = [j for j in range(state.n_items) if j not in held]
         if not want or surplus <= 0:
-            free = [j for j in range(state.n_items) if j not in held]
-            return PassLot(item=free[0]) if free else Pass()
-        j = max(want, key=lambda k: self.bid_for(state, k) - pay[k])
-        amount = self._afford(state, int(pay[j]))
-        if amount is None:
-            return PassLot(item=j)
-        return Bid(item=j, amount=amount)
+            return SAATurn(passes=(PassLot(item=free[0]),)) if free else SAATurn()
+        # ``state.budget`` is already NET of this seat's live standing commitments (the scenario's
+        # ``_remaining_budget`` subtracts them for the SAA family), and every lot in ``want`` is one the seat
+        # does not hold, so each bid is a fresh commitment and the constraint is simply their sum.
+        headroom = int(state.budget)
+        bids: list[Bid] = []
+        for j in sorted(want, key=lambda k: -(self.bid_for(state, k) - pay[k])):
+            amount = int(pay[j])
+            if amount > headroom:
+                continue
+            bids.append(Bid(item=j, amount=amount))
+            headroom -= amount
+        if not bids:
+            return SAATurn(passes=(PassLot(item=want[0]),))
+        return SAATurn(bids=tuple(sorted(bids, key=lambda b: b.item)))
 
     def schedule(self, state: AuctionState) -> list[int]:
         """The per-unit bid schedule for the multi-unit families. The default is the seat's true decayed
