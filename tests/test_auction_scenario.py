@@ -153,6 +153,37 @@ def test_saa_at_both_lot_counts(n_items):
     assert out["family"] == "saa"
 
 
+def test_saa_wave_resolution_is_invariant_to_the_order_the_wave_arrives_in():
+    """The reproducibility property every paired cross-cell contrast rests on: the SAME wave of actions must
+    fold to the SAME ledger and the same standing table no matter what order the seats' turns arrive in.
+
+    It did not. Every SAA raiser bids exactly ``standing + increment``, so simultaneous claims on a lot are
+    exact ties by construction, and the ledger superseded on ``<=`` — the lot went to whichever seat the wave
+    happened to apply last, i.e. dict iteration order. The fold now resolves each lot by (highest amount,
+    then the stage's frozen seeded permutation), which is both the announced rule and order-invariant."""
+    scn = AuctionScenario()
+    inst, state = build(scn, family="saa3", horizon=1, channel="silent")
+    mech = state["spec"].mechanism
+    seats = list(range(state["spec"].n_bidders))
+    # One wave in which every seat claims the same two lots at the identical legal amount — the exact tie.
+    amount = mech.reserve + mech.increment
+    wave = {s: A.SAATurn(bids=(A.Bid(item=0, amount=amount), A.Bid(item=1, amount=amount)))
+            for s in seats}
+
+    def fold(order):
+        _, st = build(scn, family="saa3", horizon=1, channel="silent")
+        scn._fold_bids(st, {s: wave[s] for s in order})
+        return st["ledger"].to_json(), st["ledger"].standing_winners(1)
+
+    baseline, winners = fold(seats)
+    for order in (list(reversed(seats)), [seats[i] for i in (2, 0, 4, 1, 3)]):
+        assert fold(order) == (baseline, winners), f"wave order {order} changed the ledger"
+    # And the winner is the announced one: first in the stage's seeded priority order, not first-applied.
+    priority = {s: k for k, s in enumerate(state["spec"].stage(1).tie_break)}
+    assert winners[0] == min(seats, key=lambda s: priority[s])
+    assert winners[1] == min(seats, key=lambda s: priority[s])
+
+
 def test_replay_determinism():
     """The ledger is a pure function of the applied action sequence: replaying the recorded actions rebuilds
     it byte for byte."""

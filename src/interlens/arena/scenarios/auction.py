@@ -633,13 +633,36 @@ class AuctionScenario(Scenario):
             "round": rnd,
             "prices": ledger.standing_prices(stage, reserve=mech.reserve),
             "holders": ledger.standing_winners(stage)})
-        raised = False
+        # Resolve the wave's claims per lot by (highest amount, then the stage's FROZEN seeded permutation),
+        # which is the rule the seats are actually told: "Two bids on the same lot in the same round at the
+        # same amount are resolved by this stage's priority order, announced in the stage header; the loser of
+        # the tie is not treated as having passed and may bid again" (docs/templates/format_rules.md).
+        #
+        # Applying in this order is what makes the announced rule the played rule. Every SAA raiser bids
+        # exactly `standing + increment`, so simultaneous claims on a lot are exact ties by construction; the
+        # previous code applied them in `wave.items()` order, so the auction was decided by dict iteration
+        # rather than by the announced permutation. Sorting here also makes the fold INVARIANT to wave
+        # ordering, which is the reproducibility property every paired cross-cell contrast depends on: the
+        # same actions must produce the same ledger regardless of the order they arrive in.
+        #
+        # The tie's loser is recorded but not live (BidLedger.apply's strict `<` guard), and is deliberately
+        # NOT given a pass, so the eligibility ratchet does not treat it as having withdrawn.
+        #
+        # Note the coincidence with the benchmark: because straightforward demand is computed with
+        # `forced=held`, an incumbent never re-claims a lot it already holds, so "contest every claimant"
+        # (what saa_competitive_benchmark does) and "keep the incumbent on a tie" (what the strict `<` guard
+        # does) agree on every reachable state. The guard is what keeps them agreeing even if some future
+        # policy re-bids its own standing amount.
+        order = {s: k for k, s in enumerate(spec.stage(stage).tie_break)}
+        claims = [(b.item, -int(b.amount), order[seat], seat, b)
+                  for seat, act in wave.items() if isinstance(act, A.SAATurn)
+                  for b in act.bids]
+        raised = bool(claims)
+        for _item, _neg_amount, _priority, seat, bid in sorted(claims, key=lambda e: e[:3]):
+            ledger.apply(bid, seat, stage=stage, round=rnd)
         for seat, act in wave.items():
             if not isinstance(act, A.SAATurn):
                 continue
-            for b in act.bids:
-                ledger.apply(b, seat, stage=stage, round=rnd)
-                raised = True
             for p in act.passes:
                 ledger.apply(p, seat, stage=stage, round=rnd)
                 state["pass_round"].setdefault((stage, seat, p.item), rnd)

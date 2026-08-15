@@ -44,6 +44,17 @@ def test_bid_ledger_tracks_the_standing_high_and_keeps_superseded_bids():
     assert led.standing(0, 2) is None                      # stages do not leak into each other
 
 
+def test_an_equal_bid_never_dislodges_the_standing_high_bidder():
+    """Strict supersession: an equal amount is not a raise. Under the previous `<=` the later equal bid won,
+    so a lot went to whichever seat the wave applied last — dict order deciding the auction."""
+    led = _replay([(0, A.Bid(0, 10), 1, 1), (1, A.Bid(0, 10), 1, 1)])
+    assert led.standing(0, 1).seat == 0                    # first at that amount keeps it
+    assert len(led.stage_bids(1)) == 2                     # the loser's bid is still recorded...
+    assert [b.live for b in led.stage_bids(1)] == [True, False]
+    # ...and the tie's loser is NOT treated as having passed, so the ratchet does not shut it out.
+    assert led.eligible(1, 0, 1)
+
+
 def test_bid_ledger_is_a_pure_function_of_the_action_sequence():
     seq = [(0, A.Bid(0, 10), 1, 1), (1, A.Bid(1, 15), 1, 1), (0, A.PassLot(2), 1, 1),
            (2, A.Exit(), 1, 2), (1, A.Bid(0, 25), 2, 1)]

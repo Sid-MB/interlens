@@ -293,10 +293,19 @@ class BidLedger:
             self._counter += 1
             rec = StandingBid(f"{self.prefix}{self._counter}", stage, round, seat, action.item, action.amount)
             prev = self.standing(action.item, stage)
-            if prev is not None and prev.amount <= action.amount:
+            if prev is not None and prev.amount < action.amount:
                 prev.live = False
             elif prev is not None:
-                rec.live = False                        # a bid below the standing high never stands
+                # STRICT `<`: an equal amount is not a raise, so it never dislodges a standing high bidder.
+                # This was `<=`, under which an equal bid superseded and the lot went to whichever seat the
+                # wave happened to apply LAST — dict iteration order deciding the auction. Every SAA raiser
+                # bids exactly `standing + increment`, so that was the common case, not an edge case (76 of
+                # 196 contested lot-rounds on the frozen 10-lot bank), and it silently diverged from the rule
+                # the seats are told: "Two bids on the same lot in the same round at the same amount are
+                # resolved by this stage's priority order" (docs/templates/format_rules.md). Simultaneous
+                # equal claims are now resolved by that seeded permutation in the scenario's fold, which
+                # applies the wave's winner first; this guard is what makes the fold's decision stick.
+                rec.live = False                        # a bid at or below the standing high never stands
             self.bids.append(rec)
             return rec.bid_id
         if isinstance(action, PassLot):
