@@ -513,7 +513,7 @@ class AuctionScenario(Scenario):
             state["hygiene"]["broadcasts"] += 1
         if deliver and spec.channel in ("dm", "dm_transfers"):
             for dm in env.dms:
-                made = state["dm"].route(dm, name, stage=stage, round=rnd)
+                made = state["dm"].route(dm, name, stage=stage, round=rnd, phase=state["phase"])
                 state["hygiene"]["dms"] += len(made)
         if deliver and spec.channel == "dm_transfers" and env.transfer is not None:
             if env.transfer.amount > 0 and env.transfer.to in state["seat_names"] \
@@ -1043,6 +1043,19 @@ class AuctionScenario(Scenario):
             "dm_graph": {f"{a}->{b}": c for (a, b), c in state["dm"].graph().items()},
             "dm_dropped": int(state["dm"].dropped),
             "broadcasts": int(hy["broadcasts"]),
+            # The channel's CONTENT, chronological across both rungs. The dyad counts above are not enough for
+            # design.md §9.3's measure 3: the per-dyad mutual information is between a seat's message TEXT to a
+            # given rival and its value bin, so a stored run that kept only counts made the campaign's third
+            # collusion measure uncomputable in exactly the DM cells (R2, R3, R4) it exists for. Broadcasts
+            # carry ``recipient = None`` and are treated as a dyad to "all", which is what puts the two rungs
+            # of the ladder on one scale.
+            "messages": ([{"stage": m["stage"], "round": m["round"], "phase": m["phase"],
+                           "channel": "broadcast", "sender": m["sender"], "recipient": None,
+                           "text": m["text"]}
+                          for m in state["broadcasts"]]
+                         + [{"stage": r.stage, "round": r.round, "phase": r.phase, "channel": "dm",
+                             "sender": r.sender, "recipient": r.recipient, "text": r.text}
+                            for r in state["dm"].records]),
             "transfers": state["transfers"].to_json()["declared"],
             "policy_seats": {str(k): v for k, v in state["policy_seats"].items()},
             "channel": spec.channel, "family": spec.mechanism.family, "n_items": spec.n_items,

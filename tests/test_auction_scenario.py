@@ -583,3 +583,39 @@ def test_scramble_is_refused_under_interdep():
     spec = generate_spec(3, mechanism=Mechanism.sealed(), value_structure="interdep", horizon=1)
     with pytest.raises(ValueError, match="interdep"):
         scramble_public_cards(spec, seed=card_scramble_seed("auction-3"))
+
+
+def test_channel_content_is_persisted_on_the_outcome_not_just_its_dyad_counts():
+    """design.md §9.3's third collusion measure is the mutual information between a seat's message TEXT to a
+    named rival and its value bin, so a stored run carrying only ``dm_graph`` counts makes that measure
+    uncomputable in exactly the DM cells it exists for. Both rungs land in one chronological log, broadcasts
+    as a dyad to "all" (``recipient is None``), so the ladder is on one scale."""
+    scn = AuctionScenario()
+    mech = Mechanism.sealed("second_price", reserve=20)
+    inst = scn.generate_instance(0, 7, mechanism=mech, horizon=8)
+    state = scn.make_state(inst, "all_llm", 0, {"mechanism": mech.to_json(), "horizon": 1, "channel": "dm",
+                                                "talk_rounds": 1})
+    names = list(state["seat_names"])
+    for _ in range(20):
+        reqs = scn.next_requests(state)
+        if not reqs:
+            break
+        for req in reqs:
+            seat = int(req.meta["seat_index"])
+            talk = state["phase"] == "talk"
+            payload = {"action": "none"} if talk else {"action": "bid", "amount": 30}
+            if talk:
+                payload |= {"message": f"hold at {40 + seat}",
+                            "dm": [{"to": [names[(seat + 1) % 5]],
+                                    "text": f"split lot one at {40 + seat}"}]}
+            scn.apply(state, req, "```json\n" + json.dumps(payload) + "\n```")
+    msgs = scn.score(state)["messages"]
+    dms = [m for m in msgs if m["channel"] == "dm"]
+    casts = [m for m in msgs if m["channel"] == "broadcast"]
+    assert dms and casts, "both rungs of the ladder must reach the stored outcome"
+    assert all(m["text"] for m in msgs), "the TEXT is the measure; a count is not a substitute for it"
+    assert all(m["recipient"] is None for m in casts)
+    assert {(m["sender"], m["recipient"]) for m in dms} == {(names[i], names[(i + 1) % 5]) for i in range(5)}
+    # The phase a DM rode on is a real distinction (a message round vs a bidding turn) and is stamped, so a
+    # mid-stage DM never reads the same as a pre-bidding one.
+    assert all(m["phase"] in ("talk", "bid") for m in msgs)

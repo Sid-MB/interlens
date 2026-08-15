@@ -360,23 +360,29 @@ class BidLedger:
 @dataclass(frozen=True)
 class DirectMessageRecord:
     """One delivered private message. The DM graph and the per-dyad MI estimator are both built from these,
-    so every field the analysis needs (sender, recipient, stage, round) is on the record itself."""
+    so every field the analysis needs (sender, recipient, stage, round, phase) is on the record itself.
+
+    ``phase`` is the scenario phase the message was attached to — a DM rides on whatever turn its sender
+    wrote, so one sent on a bidding turn and one sent in a message round are different acts and must not read
+    the same in the channel log."""
 
     stage: int
     round: int
     sender: str
     recipient: str
     text: str
+    phase: str | None = None
 
     def to_json(self) -> dict:
         """JSON-ready dict."""
         return {"stage": self.stage, "round": self.round, "sender": self.sender,
-                "recipient": self.recipient, "text": self.text}
+                "recipient": self.recipient, "text": self.text, "phase": self.phase}
 
     @staticmethod
     def from_json(d: dict) -> "DirectMessageRecord":
         """Rebuild a :class:`DirectMessageRecord` from :meth:`to_json` output."""
-        return DirectMessageRecord(int(d["stage"]), int(d["round"]), d["sender"], d["recipient"], d["text"])
+        return DirectMessageRecord(int(d["stage"]), int(d["round"]), d["sender"], d["recipient"], d["text"],
+                                   d.get("phase"))
 
 
 class DMRouter:
@@ -401,9 +407,11 @@ class DMRouter:
         self.records: list[DirectMessageRecord] = []
         self.dropped: int = 0
 
-    def route(self, dm: DirectMessage, sender: str, *, stage: int, round: int) -> list[DirectMessageRecord]:
+    def route(self, dm: DirectMessage, sender: str, *, stage: int, round: int,
+              phase: str | None = None) -> list[DirectMessageRecord]:
         """Deliver one :class:`DirectMessage` and return the records created (also appended to
-        :attr:`records`). Recipients past :attr:`dm_cap`, unknown names, and the sender itself are dropped."""
+        :attr:`records`). Recipients past :attr:`dm_cap`, unknown names, and the sender itself are dropped.
+        ``phase`` is stamped on every record so the channel log says which turn each message rode on."""
         wanted = [r for r in dm.to if r in self.seats and r != sender]
         self.dropped += len(dm.to) - len(wanted)
         kept, seen = [], set()
@@ -413,7 +421,7 @@ class DMRouter:
                 seen.add(r)
             else:
                 self.dropped += 1
-        made = [DirectMessageRecord(stage, round, sender, r, dm.text) for r in kept]
+        made = [DirectMessageRecord(stage, round, sender, r, dm.text, phase) for r in kept]
         self.records.extend(made)
         return made
 
