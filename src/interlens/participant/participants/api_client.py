@@ -24,6 +24,8 @@ import random
 import threading
 import time
 
+from ..governor import current_governor
+
 
 # Per-turn reasoning provenance marker values (``Completion.reasoning_provenance``):
 #   "none"                    — the provider produced no reasoning for this turn
@@ -127,6 +129,7 @@ class _RetryingClient:
 
 	def __init__(self, max_in_flight: int = 4, max_retries: int = 6, base_delay: float = 1.0, max_delay: float = 30.0):
 		self._sem = threading.Semaphore(max_in_flight)
+		self._last_headers: dict[int, object] = {}  # calling thread -> that call's response headers (governor feed)
 		self.max_retries = max_retries
 		self.base_delay = base_delay
 		self.max_delay = max_delay
@@ -140,18 +143,38 @@ class _RetryingClient:
 
 	def __call__(self, system, messages, model, max_tokens, temperature, thinking=None,
 	             provider_routing=None, output_config=None) -> "Completion":
+		# With a governor installed (``participant.governor.install_governor``) admission is paced by the
+		# provider's rate-limit headers instead of the fixed ``max_in_flight`` semaphore — the semaphore would
+		# otherwise cap the whole campaign at 4 and defeat the point. The governor sits in FRONT of this retry
+		# loop and consumes its signals; the backoff below is unchanged.
 		attempt = 0
 		while True:
+			governor = current_governor()
+			gate = governor.admit() if governor is not None else self._sem
 			try:
-				with self._sem:  # bound concurrent in-flight requests across all caller threads
-					return self._call_once(system, messages, model, max_tokens, temperature, thinking,
-					                       provider_routing, output_config=output_config)
+				with gate:
+					completion = self._call_once(system, messages, model, max_tokens, temperature, thinking,
+					                             provider_routing, output_config=output_config)
 			except Exception as exc:
+				if governor is not None:
+					governor.note_exception(exc)
 				attempt += 1
 				if attempt > self.max_retries or not self._transient(exc):
 					raise
 				delay = min(self.max_delay, self.base_delay * (2 ** (attempt - 1)))
 				time.sleep(delay + random.uniform(0, delay))  # full jitter
+			else:
+				if governor is not None:
+					governor.note_success(headers=self._last_headers.pop(threading.get_ident(), None),
+					                      tokens_in=completion.input_tokens, tokens_out=completion.output_tokens)
+				return completion
+
+	def _record_headers(self, headers) -> None:
+		"""Stash one response's headers for the calling thread so ``__call__`` can hand them to the governor.
+		Per-thread rather than per-client because one shared client serves every concurrent caller. Subclasses
+		whose SDK exposes response headers call this from ``_call_once``; those that do not simply never do, and
+		the governor degrades to header-blind AIMD."""
+		self._last_headers[threading.get_ident()] = headers
 
 	def submit_batch(self, requests: list[dict], *, poll_interval: float = 30.0) -> "list[Completion]":
 		"""Submit many independent generations through the provider's asynchronous **batch API** and block until
@@ -227,7 +250,11 @@ class AnthropicClient(_RetryingClient):
 		# output-config keys without a library change.
 		if output_config is not None:
 			kw["output_config"] = output_config
-		resp = self._client.messages.create(**kw)
+		# ``with_raw_response`` returns the parsed message AND the HTTP response headers, which carry the
+		# ``anthropic-ratelimit-*`` ceilings the governor paces against. Parsing is otherwise identical.
+		raw = self._client.messages.with_raw_response.create(**kw)
+		self._record_headers(getattr(raw, "headers", None))
+		resp = raw.parse()
 		text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 		usage = getattr(resp, "usage", None)
 		reasoning, provenance = anthropic_reasoning(resp.content)
