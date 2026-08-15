@@ -488,3 +488,98 @@ def test_sealed_and_silent_cells_get_no_mid_stage_round():
                         else ("bid" if family == "sealed_second" else "stay"))
                 payload = {"action": move} | ({"amount": 30} if move == "bid" else {})
                 scn.apply(state, req, json.dumps(payload))
+
+
+# --------------------------------------------------------------------------------------------------------- #
+# X1 — the persona-scrambled control (design.md §4.2, gate G2(b)).
+# --------------------------------------------------------------------------------------------------------- #
+def _x1_pair(seed: int = 11, horizon: int = 1, channel: str = "silent"):
+    """One instance read as its O1 reference cell and as its X1 scrambled twin — the same frozen draws."""
+    scn = AuctionScenario()
+    mech = Mechanism.sealed("second_price", reserve=20)
+    inst = scn.generate_instance(0, seed, mechanism=mech, horizon=8)
+    base = {"mechanism": mech.to_json(), "horizon": horizon, "channel": channel, "value_structure": "apv"}
+    return scn, inst, scn.spec_for(inst, base), scn.spec_for(inst, base | {"scramble_cards": True})
+
+
+def test_scramble_is_a_derangement_of_whole_cards():
+    """No seat keeps its own card, and the card moves as ONE UNIT — a seat showing one persona's prose beside
+    another's attribute vector would be a half-scramble that leaves the public prior partly informative."""
+    from interlens.arena.auction.spec import PUBLIC_CARD_FIELDS
+    scn, inst, plain, scrambled = _x1_pair()
+    perm = scrambled.meta["card_scramble"]["derangement"]
+    assert sorted(perm) == list(range(5)) and all(perm[i] != i for i in range(5))
+    for i in range(5):
+        for f in PUBLIC_CARD_FIELDS:
+            assert getattr(scrambled.bidders[i], f) == getattr(plain.bidders[perm[i]], f)
+        assert scrambled.bidders[i].seat == i
+    # Every card is still present exactly once: the scramble is a permutation, not a redraw.
+    assert sorted(b.persona_id for b in scrambled.bidders) == sorted(b.persona_id for b in plain.bidders)
+
+
+def test_scramble_leaves_every_private_draw_and_every_valuation_untouched():
+    """The break is public-card-to-valuation and nothing else: values, budgets, targets, signals and the
+    tie-break permutation are byte-identical to the reference cell's."""
+    scn, inst, plain, scrambled = _x1_pair(horizon=8)
+    assert [s.to_json() for s in scrambled.stages] == [s.to_json() for s in plain.stages]
+    assert scrambled.mechanism == plain.mechanism and scrambled.value_structure == "apv"
+
+
+def test_scramble_seed_is_frozen_to_the_instance_id():
+    """Same instance -> same derangement, in any rerun and any arm order; different instance -> its own."""
+    from interlens.arena.auction.spec import card_scramble_seed, derangement
+    scn, inst, _, first = _x1_pair(seed=11)
+    _, _, _, again = _x1_pair(seed=11)
+    _, other_inst, _, other = _x1_pair(seed=12)
+    assert first.meta["card_scramble"] == again.meta["card_scramble"]
+    assert first.meta["card_scramble"]["seed"] == card_scramble_seed(inst.instance_id)
+    assert tuple(first.meta["card_scramble"]["derangement"]) \
+        == derangement(5, card_scramble_seed(inst.instance_id))
+    assert other.meta["card_scramble"]["derangement"] != first.meta["card_scramble"]["derangement"]
+
+
+def test_scrambled_rendering_moves_prose_and_numbers_together():
+    """The rendered system prompt is the real check: the seat addressed as X must carry X's prose AND X's
+    printed profile line, and the reading seat's "your seat" line must name the card it holds."""
+    scn, inst, plain, scrambled = _x1_pair()
+    perm = scrambled.meta["card_scramble"]["derangement"]
+    plain_state = scn.make_state(inst, "all_llm", 0, {"mechanism": plain.mechanism.to_json(), "horizon": 1})
+    x1_state = scn.make_state(inst, "all_llm", 0,
+                              {"mechanism": plain.mechanism.to_json(), "horizon": 1, "scramble_cards": True})
+    # The same five cards are on the table in both cells — only which seat holds which one moves. That is what
+    # makes X1 a scramble rather than a different set of personas, so the roster is compared as a SET of card
+    # blocks (it is printed in seat order, which is exactly the thing the scramble permutes).
+    roster = lambda st: sorted((scn.system_prompt(st, 0).split("The five organizations at this auction")[1]
+                                .split("How lots are worth")[0]).split("\n\n"))
+    assert roster(plain_state) == roster(x1_state)
+    for i in range(5):
+        held = plain.bidders[perm[i]]
+        seat_line = scn.system_prompt(x1_state, i)
+        assert f"You are **{held.display_name}**, seat id `{held.persona_id}`" in seat_line
+        # The scrambled seat's addressable id IS the card it holds, so nothing a bidder reads contradicts
+        # anything else it reads.
+        assert x1_state["seat_names"][i] == held.persona_id
+
+
+def test_scramble_privacy_is_unchanged_and_the_private_block_stays_with_its_own_seat():
+    """Seat i still reads seat i's realized values and budget — the scramble must not move a draw across the
+    privacy line, and no rival's numbers may appear in any view."""
+    scn, inst, plain, scrambled = _x1_pair()
+    state = scn.make_state(inst, "all_llm", 0,
+                           {"mechanism": plain.mechanism.to_json(), "horizon": 1, "scramble_cards": True})
+    draw = plain.stage(1)
+    for i in range(5):
+        view = scn.system_prompt(state, i) + "\n" + scn.turn_prompt(state, i)
+        assert str(int(draw.values[i][0])) in view and str(int(draw.budgets[i])) in view
+        for j in range(5):
+            if j != i:
+                assert f"is worth **{int(draw.values[j][0])}**" not in view
+
+
+def test_scramble_is_refused_under_interdep():
+    """gamma is both a printed card figure and the switch selecting which seat holds the stage's resale
+    signals, so permuting it would split one seat across the public/private line."""
+    from interlens.arena.auction.spec import card_scramble_seed, scramble_public_cards
+    spec = generate_spec(3, mechanism=Mechanism.sealed(), value_structure="interdep", horizon=1)
+    with pytest.raises(ValueError, match="interdep"):
+        scramble_public_cards(spec, seed=card_scramble_seed("auction-3"))

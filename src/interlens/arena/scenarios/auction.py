@@ -54,7 +54,7 @@ from ..auction import priors
 from ..auction.allocation import Allocation, ValueModel, sealed_single_outcome
 from ..auction.benchmarks import stage_benchmark
 from ..auction.metrics import StageOutcome, stage_metrics
-from ..auction.spec import AuctionSpec, Mechanism
+from ..auction.spec import AuctionSpec, Mechanism, card_scramble_seed, scramble_public_cards
 from ..engine import EMPTY_TURN_PLACEHOLDER
 from ..scenario import Scenario
 from ..schema import Instance, SeatRequest
@@ -205,7 +205,13 @@ class AuctionScenario(Scenario):
 
         A cell never redraws. ``mechanism`` may be replaced (a single-lot bank serves the sealed, Dutch, and
         English cells from identical draws, which is what makes R3 <-> R4 a within-bank paired contrast), but
-        its lot count may not change, since the draws are per-lot."""
+        its lot count may not change, since the draws are per-lot.
+
+        ``cfg["scramble_cards"]`` is the X1 control: the five public cards are permuted across the seats under
+        a derangement seeded from the INSTANCE ID, so X1 and its matched real-persona cell O1 read the same
+        frozen draws and the same scramble in every rerun (:func:`~interlens.arena.auction.spec
+        .scramble_public_cards`). It is applied last, after the mechanism, horizon and channel, so a scrambled
+        cell differs from its reference cell in the cards and in nothing else."""
         payload = instance.payload
         vs = cfg.get("value_structure", "apv")
         spec = AuctionSpec.from_json(payload["specs"][vs] if "specs" in payload else payload["spec"])
@@ -225,6 +231,8 @@ class AuctionScenario(Scenario):
         for key in ("channel", "talk_rounds", "dm_cap", "framing"):
             if key in cfg:
                 spec = _replace(spec, **{key: cfg[key]})
+        if cfg.get("scramble_cards"):
+            spec = scramble_public_cards(spec, seed=card_scramble_seed(instance.instance_id))
         return spec
 
     def seat_specs(self, state: dict) -> list[dict]:
@@ -1039,6 +1047,11 @@ class AuctionScenario(Scenario):
             "policy_seats": {str(k): v for k, v in state["policy_seats"].items()},
             "channel": spec.channel, "family": spec.mechanism.family, "n_items": spec.n_items,
             "value_structure": spec.value_structure,
+            # A first-class outcome column, not a config detail: X1 and O1 differ ONLY in this, so an analysis
+            # that pooled them would compare a cell with itself and report G2(b) against its own reference.
+            # ``None`` in every unscrambled cell, so the column is defined everywhere.
+            "card_scramble": spec.meta.get("card_scramble"),
+            "cards": [b.persona_id for b in spec.bidders],
         }
 
     def classify_outcome(self, state: dict, turns: list, outcome: dict) -> dict:

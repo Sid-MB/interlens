@@ -270,16 +270,19 @@ class AuctionPolicy(ABC):
     def act(self, state: AuctionState) -> Action:
         """The typed move for this stage's format, derived from :meth:`bid_for` and the seat's capacity."""
         mech = state.spec.mechanism
+        # Every decision goes through ``_afford``: a payment must be collectible, so a policy never bids, stays
+        # in, or claims above its budget. Its ``None`` — the seat cannot afford even the reserve — is the case
+        # where no legal move buys anything, so the policy takes no part in the lot rather than emitting a
+        # number the mechanism would reject.
         if mech.family == "sealed_single":
-            return Bid(item=0, amount=self._afford(state, self.bid_for(state, 0)))
-        # The clock decisions go through ``_afford`` for the same reason the sealed bid does: a payment must be
-        # collectible, so a policy never stays in (or claims) above its budget. Without the clamp a seat whose
-        # budget sits below its valuation emits a move the mechanism rejects as a legality error, which turns a
-        # decision-rule arm into a parse-hygiene artifact.
+            ceiling = self._afford(state, self.bid_for(state, 0))
+            return Pass() if ceiling is None else Bid(item=0, amount=ceiling)
         if mech.family == "english":
-            return Stay() if (state.clock_price or 0) <= self._afford(state, self.bid_for(state, 0)) else Exit()
+            ceiling = self._afford(state, self.bid_for(state, 0))
+            return Stay() if ceiling is not None and (state.clock_price or 0) <= ceiling else Exit()
         if mech.family == "dutch":
-            return Claim() if (state.clock_price or 0) <= self._afford(state, self.bid_for(state, 0)) else Wait()
+            ceiling = self._afford(state, self.bid_for(state, 0))
+            return Claim() if ceiling is not None and (state.clock_price or 0) <= ceiling else Wait()
         if mech.family == "saa":
             return self._saa_move(state)
         if mech.family == "uniform_price":
@@ -305,7 +308,10 @@ class AuctionPolicy(ABC):
             free = [j for j in range(state.n_items) if j not in held]
             return PassLot(item=free[0]) if free else Pass()
         j = max(want, key=lambda k: self.bid_for(state, k) - pay[k])
-        return Bid(item=j, amount=self._afford(state, int(pay[j])))
+        amount = self._afford(state, int(pay[j]))
+        if amount is None:
+            return PassLot(item=j)
+        return Bid(item=j, amount=amount)
 
     def schedule(self, state: AuctionState) -> list[int]:
         """The per-unit bid schedule for the multi-unit families. The default is the seat's true decayed
@@ -316,9 +322,19 @@ class AuctionPolicy(ABC):
         k = min(int(state.spec.capacities[state.seat]), int(state.spec.mechanism.n_units))
         return [int(round(base * d ** r)) for r in range(k)]
 
-    def _afford(self, state: AuctionState, amount: int) -> int:
+    def _afford(self, state: AuctionState, amount: int) -> int | None:
         """Truncate a bid to the seat's remaining budget: a payment must be collectible, so a policy never
-        emits a bid it cannot pay (which would be a legality error rather than a decision)."""
+        emits a bid it cannot pay (which would be a legality error rather than a decision).
+
+        ``None`` when the seat cannot even afford the RESERVE, where no legal bid exists at all and the only
+        correct move is to take no part in the lot. Clamping up to the reserve there was a real defect: on the
+        frozen single-lot bank (reserve 20) the Che-Gale budget-bound seat draws budgets below it, so every
+        single-item cell emitted one unpayable bid per affected stage, which the mechanism rejected as a
+        legality error and replaced with a fallback pass. The move was then a parse-hygiene artifact rather
+        than the policy's decision, and it held `parse_ok_rate` at exactly G1's 0.95 threshold in the free
+        arms — an arm whose correctness G3 asserts exactly."""
+        if int(state.budget) < int(state.reserve):
+            return None
         return int(max(state.reserve, min(int(amount), int(state.budget))))
 
     def _rival_values(self, state: AuctionState, item: int) -> np.ndarray | None:

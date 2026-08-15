@@ -46,6 +46,7 @@ Example::
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -680,7 +681,8 @@ def generate_spec(seed: int, *, mechanism: Mechanism, value_structure: str = "ap
         Permutation of :data:`~interlens.arena.auction.priors.PERSONAS` indices onto seats 0..4. ``None``
         draws one from ``seed``, which is how persona/seat identity varies across the bank while the five
         archetypes stay fixed. The persona-scrambled control X1 does NOT use this: it keeps the draws and
-        permutes the CARDS, which is a rendering-time operation the scenario lane owns.
+        permutes the CARDS, via :func:`scramble_public_cards`, which is applied to a bank instance at cell
+        time rather than at generation time so X1 and O1 read the SAME frozen draws.
     coherent : bool
         Apply the once-per-instance coherence permutation (design.md §2.2, the ``_make_role_coherent``
         analogue): a persona's expected-argmax slot is never one its public attributes point away from. The
@@ -783,3 +785,103 @@ def generate_spec(seed: int, *, mechanism: Mechanism, value_structure: str = "ap
                        value_structure=value_structure, channel=channel, dm_cap=dm_cap,
                        talk_rounds=talk_rounds, disclose_public_facts=disclose_public_facts,
                        ring=ring, framing=framing, meta=spec_meta)
+
+
+# --------------------------------------------------------------------------------------------------------- #
+# X1 — the persona-scrambled control (design.md §4.2, §6 G2(b), §8).
+# --------------------------------------------------------------------------------------------------------- #
+#: The fields of :class:`BidderSpec` that make up the PUBLIC CARD, permuted as ONE UNIT by
+#: :func:`scramble_public_cards`. Everything printed about a seat to its rivals is in this list, and nothing
+#: else is: the prose paragraph is keyed by ``persona_id``, the printed public profile line is ``attrs``, and
+#: ``capacity`` / ``synergy_rate`` / ``decay`` / ``gamma`` are the multi-item and interdependent-value figures
+#: the roster prints beside it. ``budget_mult`` rides along because it is a public parameter of the seat even
+#: though the frozen scaffold prints no budget tercile line -- leaving it behind would make the card a
+#: half-scramble the moment a wording revision started printing it.
+PUBLIC_CARD_FIELDS: tuple[str, ...] = ("persona_id", "display_name", "attrs", "capacity", "gamma",
+                                       "synergy_rate", "decay", "budget_mult", "public_fact_keys")
+
+
+def card_scramble_seed(instance_id: str) -> int:
+    """The frozen scramble seed for one bank instance, derived from its ``instance_id``.
+
+    A content hash rather than a counter, so the derangement is a property of the INSTANCE and is identical in
+    every rerun, on every machine, in any arm order -- the scramble is frozen with the bank even though it is
+    applied at cell time."""
+    return int.from_bytes(hashlib.sha256(instance_id.encode("utf-8")).digest()[:8], "big")
+
+
+def derangement(n: int, seed: int) -> tuple[int, ...]:
+    """A seeded permutation of ``0..n-1`` with NO fixed point: ``perm[i] != i`` for every ``i``.
+
+    Drawn by rejection from :class:`numpy.random.Generator`, which terminates almost surely (the derangement
+    share of permutations tends to ``1/e``). A fixed point would leave one seat holding its own card, which
+    would make X1 a partial control on that seat -- the one failure mode the control cannot tolerate, since
+    G2(b) reads a cross-persona dispersion that a single un-scrambled seat would inflate."""
+    if n < 2:
+        raise ValueError(f"a derangement needs at least 2 elements, got n={n}")
+    rng = np.random.default_rng(seed)
+    while True:
+        perm = tuple(int(x) for x in rng.permutation(n))
+        if all(perm[i] != i for i in range(n)):
+            return perm
+
+
+def scramble_public_cards(spec: AuctionSpec, *, seed: int) -> AuctionSpec:
+    """X1: permute the five PUBLIC CARDS across the seats under a seeded derangement, keeping every draw.
+
+    What moves is the whole card as one unit -- :data:`PUBLIC_CARD_FIELDS`, i.e. the persona prose (keyed by
+    ``persona_id``), the printed public attribute vector ``a_i``, and the public per-seat figures beside it.
+    Seat ``i`` presents as, and *is*, the organization whose card it holds: the addressable seat id, the
+    roster entry, the "your seat" line, and every mechanic the card states (capacity limit, adjacency
+    premium, decay) are the card's, so nothing a bidder reads contradicts anything else it reads.
+
+    What does NOT move is every seat's PRIVATE block -- its realized valuations, its budget, its synergy
+    target set, its resale signals, and the tie-break permutation -- because those live on
+    :class:`StageDraw`, which this function does not touch. **Valuations are not redrawn.** The scramble
+    therefore breaks exactly one thing: the mapping from the public card to the valuation it used to
+    describe. Persona text is still present at every seat (which is what controls Jia et al.'s
+    persona-shifts-competence confound), and it is now uninformative about the draw (which is what destroys
+    the prior's information content, the thing G2(b) tests O1 against).
+
+    The computable free arms run under this too, and their posteriors are then systematically wrong, since a
+    rational bidder forms them from the public attribute matrix. That is the intended reading, not a defect:
+    it prices what the public prior was worth to a bidder that used it correctly.
+
+    Parameters
+    ----------
+    spec : AuctionSpec
+        The instance spec, already at the cell's mechanism / horizon / channel.
+    seed : int
+        The derangement seed; use :func:`card_scramble_seed` on the instance id so it is frozen with the bank.
+
+    Returns
+    -------
+    AuctionSpec
+        A new spec with permuted cards and a ``meta["card_scramble"]`` provenance block recording the
+        derangement, the seed, and which fields moved.
+
+    Raises
+    ------
+    ValueError
+        Under ``interdep``, where ``gamma`` selects which seat receives the stage's resale signals: moving the
+        published resale weight away from the seat holding the signals would be a half-scramble across the
+        public/private line, so the control is refused rather than approximated. X1 is an ``apv`` cell.
+
+    Example::
+
+        spec = scramble_public_cards(spec, seed=card_scramble_seed(instance.instance_id))
+        spec.meta["card_scramble"]["derangement"]      # e.g. [2, 3, 4, 0, 1]
+    """
+    if spec.value_structure == "interdep":
+        raise ValueError("the persona scramble is not defined under interdep: gamma is both a printed card "
+                         "figure and the switch selecting which seat holds the stage's resale signals, so "
+                         "permuting it would split one seat's public and private information")
+    perm = derangement(len(spec.bidders), seed)
+    bidders = tuple(replace(spec.bidders[i], seat=i,
+                            **{f: getattr(spec.bidders[perm[i]], f) for f in PUBLIC_CARD_FIELDS})
+                    for i in range(len(spec.bidders)))
+    meta = dict(spec.meta)
+    meta["card_scramble"] = {"derangement": list(perm), "seed": int(seed),
+                             "fields": list(PUBLIC_CARD_FIELDS),
+                             "note": "seat i holds seat perm[i]'s public card; every stage draw is unmoved"}
+    return replace(spec, bidders=bidders, meta=meta)
