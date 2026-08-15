@@ -329,9 +329,15 @@ class AuctionPolicy(ABC):
         vm = state.value_model()
         bundle, surplus = best_bundle_at_prices(vm, 0, pay, forced=held)
         want = [j for j in bundle if j not in held]
-        free = [j for j in range(state.n_items) if j not in held]
         if not want or surplus <= 0:
-            return SAATurn(passes=(PassLot(item=free[0]),)) if free else SAATurn()
+            # An EMPTY turn, not a pass on some arbitrary lot. Under the SAA activity rule a ``PassLot`` is
+            # irrevocable for the whole stage, so passing on ``free[0]`` — a lot chosen by index, not by any
+            # decision — permanently forfeited a lot the seat had merely not demanded THIS round, and did so
+            # every round it stood pat. It is a real forfeiture because a lot's marginal value can rise later
+            # in the stage once the seat wins its complements. The mechanism accepts an empty ``SAATurn`` (it
+            # is the parser's own fallback move), so declining to bid costs the seat nothing, which is what
+            # straightforward bidding actually prescribes and what the benchmark simulates.
+            return SAATurn()
         # ``state.budget`` is already NET of this seat's live standing commitments (the scenario's
         # ``_remaining_budget`` subtracts them for the SAA family), and every lot in ``want`` is one the seat
         # does not hold, so each bid is a fresh commitment and the constraint is simply their sum.
@@ -344,7 +350,7 @@ class AuctionPolicy(ABC):
             bids.append(Bid(item=j, amount=amount))
             headroom -= amount
         if not bids:
-            return SAATurn(passes=(PassLot(item=want[0]),))
+            return SAATurn()                  # budget-priced-out this round, not a forfeit of the lot
         return SAATurn(bids=tuple(sorted(bids, key=lambda b: b.item)))
 
     def schedule(self, state: AuctionState) -> list[int]:
