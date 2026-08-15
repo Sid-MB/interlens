@@ -246,9 +246,93 @@ def best_bundle_at_prices(vm: ValueModel, seat: int, prices: np.ndarray,
     return best, best_surplus
 
 
+def saa_onpath_benchmark(vm: ValueModel, *, trajectory, increment: int, budgets=None) -> Benchmark:
+    """Straightforward bidding evaluated **ON THE REALIZED PRICE PATH** — the suppression denominator for
+    the SAA family (design.md §6, ratified 2026-08-15).
+
+    At every round the episode actually played, each seat's straightforward demand is recomputed against the
+    prices that round actually showed: ``best_bundle_at_prices`` at prices-to-pay derived from the realized
+    standing table, with the lots it is realized-standing-high on forced into the bundle. ``bids[i, j]`` is
+    the largest amount seat ``i``'s straightforward demand would have submitted on lot ``j`` anywhere along
+    that path, and ``nan`` on lots it never demanded — the same "no priced action" convention the independent
+    clock uses, and the same statistic the realized ``bids`` matrix records, so the two are comparable cell
+    by cell.
+
+    **Why on-path rather than an independently simulated clock.** Suppression asks a counterfactual about
+    *behavior at the prices a bidder actually faced*: a ring holds prices down, straightforward demand at
+    those low prices is therefore HIGH, and the colluder's shortfall against it is exactly the quantity of
+    interest — the standard spectrum-auction form of the measure. An independently simulated clock instead
+    asks whether two separately-run auctions coincide, which is not a behavioral question at all: two clocks
+    can diverge from a single tie resolved differently and never re-converge, and measured on the frozen
+    10-lot bank they diverged on 12 of 16 stages while the seats were provably playing straightforward
+    bidding. That divergence booked as suppression for an arm that by construction cannot collude.
+
+    ``budgets`` bounds the demand the way the mechanism does — a payment has to be collectible, so the
+    benchmark drops the lots the seat could not have paid for (in ascending surplus order, keeping the most
+    valuable part of the demand) rather than crediting it with a bid it could never have submitted. Pass
+    ``None`` to score against unbudgeted demand.
+
+    Parameters
+    ----------
+    vm : ValueModel
+        The stage's full value model.
+    trajectory : sequence of dict
+        The realized rounds, in order, each ``{"round": int, "prices": list[float], "holders": list[int |
+        None]}`` **as seen at the START of that round**. Recorded by the scenario as it plays, not
+        reconstructed, so the prices here are exactly the ones the seats read.
+    increment : int
+        The mechanism's bid increment.
+    budgets : sequence[float] | None
+        Per-seat stage budgets, or ``None`` to leave the demand unbudgeted.
+    """
+    n, m = vm.n_bidders, vm.n_items
+    placed = np.full((n, m), np.nan)
+    for step in trajectory:
+        price = np.asarray(step["prices"], dtype=float)
+        holders = list(step["holders"])
+        for i in range(n):
+            held = tuple(j for j in range(m) if holders[j] == i)
+            pay = np.array([price[j] if holders[j] == i else price[j] + increment for j in range(m)])
+            bundle, surplus = best_bundle_at_prices(vm, i, pay, forced=held)
+            if surplus <= 0:
+                continue
+            want = [j for j in bundle if holders[j] != i]
+            if budgets is not None:
+                headroom = float(budgets[i]) - float(sum(price[j] for j in held))
+                keep = []
+                for j in sorted(want, key=lambda k: -(float(vm.values[i, k]) - pay[k])):
+                    if pay[j] > headroom:
+                        continue
+                    keep.append(j)
+                    headroom -= pay[j]
+                want = keep
+            for j in want:
+                amount = float(pay[j])
+                if np.isnan(placed[i, j]) or amount > placed[i, j]:
+                    placed[i, j] = amount
+    return Benchmark(label="straightforward_onpath", citation_key="milgrom2000",
+                     bids=placed, alloc=Allocation(tuple([None] * m)), prices=np.zeros(m),
+                     payments=np.zeros(n), welfare=float("nan"), revenue=float("nan"),
+                     note="straightforward bidding's demand recomputed at the prices each round of THIS "
+                          "episode actually showed; no priced action on lots outside the demanded bundle. "
+                          "Allocation, revenue and welfare are deliberately absent — an on-path demand has "
+                          "no counterfactual outcome; see benchmark_independent_clock for those.",
+                     detail={"truthful_bids": vm.values.astype(float), "rounds": len(trajectory)})
+
+
 def saa_competitive_benchmark(vm: ValueModel, *, increment: int, reserve: int = 0, tie_break,
                               round_cap: int = 200) -> Benchmark:
-    """Simulate the simultaneous ascending auction under STRAIGHTFORWARD bidding [milgrom2000, pp. 250-258].
+    """Simulate an INDEPENDENT simultaneous ascending auction under straightforward bidding
+    [milgrom2000, pp. 250-258] — a **descriptive** revenue and efficiency ceiling, never a suppression
+    denominator.
+
+    Ratified 2026-08-15 (design.md §6): this form is reported beside the on-path measure as
+    ``benchmark_independent_clock`` and is path-INDEPENDENT by construction — it starts from the reserve and
+    runs its own clock, so it answers "what would a clean straightforward-bidding auction on these draws have
+    raised and achieved", not "did this bidder suppress". It must not be used as a per-lot bid benchmark:
+    every contested round is an exact tie (all raisers bid ``standing + increment``), and one tie resolved
+    differently sends the two clocks down permanently different paths, so its per-lot bids diverge from any
+    realized run's for reasons that are not behavioral. Use :func:`saa_onpath_benchmark` for suppression.
 
     Every round, each seat computes its surplus-maximizing bundle at "prices to pay" (the standing price on
     lots it already holds, standing + ``increment`` on lots it does not) and bids ``standing + increment`` on
@@ -371,7 +455,7 @@ def clinching_benchmark(vm: ValueModel, *, n_units: int, increment: int = 1, res
 # --------------------------------------------------------------------------------------------------------- #
 # The one entry point.
 # --------------------------------------------------------------------------------------------------------- #
-def stage_benchmark(spec, t: int, *, posteriors=None) -> Benchmark:
+def stage_benchmark(spec, t: int, *, posteriors=None, trajectory=None) -> Benchmark:
     """The exact equilibrium benchmark for stage ``t`` of ``spec``, dispatching on the mechanism family.
 
     Parameters
@@ -426,6 +510,19 @@ def stage_benchmark(spec, t: int, *, posteriors=None) -> Benchmark:
                          payments=payments, welfare=vm.welfare(alloc), revenue=float(payments.sum()),
                          note="risk-neutral first-price equilibrium; Dutch is strategically equivalent")
     if mech.family == "saa":
+        if trajectory is not None:
+            # The suppression denominator is the ON-PATH demand (design.md §6, ratified 2026-08-15). The
+            # independent clock below is still computed and carried in `detail` so the descriptive revenue and
+            # efficiency ceiling stays available beside it — it is simply never the per-lot bid benchmark.
+            onpath = saa_onpath_benchmark(vm, trajectory=trajectory, increment=mech.increment,
+                                          budgets=st.budgets)
+            independent = saa_competitive_benchmark(vm, increment=mech.increment, reserve=mech.reserve,
+                                                    tie_break=st.tie_break, round_cap=mech.round_cap)
+            onpath.detail["independent_clock"] = {
+                "label": independent.label, "revenue": independent.revenue,
+                "welfare": independent.welfare, "rounds": independent.detail.get("rounds"),
+                "note": independent.note}
+            return onpath
         # The benchmark is simulated under the CELL'S OWN round cap, not an uncapped clock. The cap is part of
         # the stage game that was actually played (5 rounds at 20 lots, design.md §3.3), and it binds hard: an
         # uncapped simulation walks prices to the competitive level while the played stage stops three or five

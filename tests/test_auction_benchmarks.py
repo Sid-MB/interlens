@@ -94,6 +94,62 @@ def test_saa_straightforward_bidding_awards_lots_to_their_highest_valuers():
     assert bench.detail["demanded"] == [[0], [0], [1]]
 
 
+def test_onpath_benchmark_prices_demand_at_the_prices_the_round_actually_showed():
+    """The suppression denominator for the SAA family (design.md §6): demand recomputed on the REALIZED path.
+
+    Two rounds of a hand-built trajectory, so the expected numbers are known independently of any simulation.
+    Seats 0 and 1 both want lot 0; seat 2 wants lot 1 only."""
+    vm = ValueModel(values=np.array([[100, 1], [90, 1], [1, 40]]), capacities=(1, 1, 1),
+                    decays=(1.0,) * 3, synergy_rates=(0.0,) * 3, synergy_targets=(None,) * 3)
+    trajectory = [
+        {"round": 1, "prices": [0.0, 0.0], "holders": [None, None]},
+        {"round": 2, "prices": [5.0, 5.0], "holders": [0, 2]},
+    ]
+    bench = B.saa_onpath_benchmark(vm, trajectory=trajectory, increment=5)
+    assert bench.label == "straightforward_onpath"
+    # Round 1: everyone demands at reserve + increment = 5. Round 2: seat 1 is still under its value and
+    # raises to 10; seat 0 already holds lot 0 and re-demands it at the standing 5, so its recorded amount
+    # stays 5; seat 2 holds lot 1 likewise.
+    assert bench.bids[1, 0] == 10
+    assert bench.bids[0, 0] == 5
+    assert bench.bids[2, 1] == 5
+    # Never-demanded cells stay nan — a capacity- or value-constrained seat placed no priced action there,
+    # and scoring those cells would book a constraint as suppression.
+    assert np.isnan(bench.bids[0, 1]) and np.isnan(bench.bids[2, 0])
+    # An on-path demand has no counterfactual outcome; those live on the independent clock instead.
+    assert np.isnan(bench.revenue) and np.isnan(bench.welfare)
+
+
+def test_onpath_benchmark_drops_lots_the_budget_cannot_pay_for():
+    """A payment has to be collectible, so the benchmark never credits a seat with a bid it could not submit.
+    Lots are dropped in ascending surplus order, keeping the most valuable part of the demand."""
+    vm = ValueModel(values=np.array([[100, 90]]), capacities=(2,), decays=(1.0,),
+                    synergy_rates=(0.0,), synergy_targets=(None,))
+    trajectory = [{"round": 1, "prices": [0.0, 0.0], "holders": [None, None]}]
+    rich = B.saa_onpath_benchmark(vm, trajectory=trajectory, increment=10, budgets=(1000,))
+    assert rich.bids[0, 0] == 10 and rich.bids[0, 1] == 10
+    poor = B.saa_onpath_benchmark(vm, trajectory=trajectory, increment=10, budgets=(10,))
+    assert poor.bids[0, 0] == 10                       # the higher-surplus lot is kept
+    assert np.isnan(poor.bids[0, 1])                   # the second is unaffordable and simply not demanded
+
+
+def test_stage_benchmark_dispatches_onpath_for_saa_and_carries_the_independent_clock_beside_it():
+    """Both forms coexist: on-path is the returned bid benchmark, the independent clock rides in detail as a
+    descriptive revenue/efficiency ceiling and must never become the suppression denominator."""
+    spec = generate_spec(6, mechanism=Mechanism.saa(4), value_structure="apv", horizon=1)
+    trajectory = [{"round": 1,
+                   "prices": [float(spec.mechanism.reserve)] * spec.n_items,
+                   "holders": [None] * spec.n_items}]
+    onpath = B.stage_benchmark(spec, 1, trajectory=trajectory)
+    assert onpath.label == "straightforward_onpath"
+    independent = onpath.detail["independent_clock"]
+    assert independent["label"] == "straightforward"
+    assert np.isfinite(independent["revenue"]) and np.isfinite(independent["welfare"])
+    # Without a trajectory the dispatcher still returns the independent simulation, so the sealed/one-shot
+    # path and any off-line caller are unchanged.
+    assert B.stage_benchmark(spec, 1).label == "straightforward"
+
+
 def test_best_bundle_at_prices_respects_capacity_and_synergy():
     vm = ValueModel(values=np.array([[6, 6, 1]]), capacities=(2,), decays=(1.0,), synergy_rates=(1.0,),
                     synergy_targets=((0, 1),))

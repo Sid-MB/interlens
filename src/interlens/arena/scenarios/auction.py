@@ -625,6 +625,14 @@ class AuctionScenario(Scenario):
                 return True
             return False
         # SAA
+        # Snapshot the standing table AS THE SEATS SAW IT this round, before any of the wave's bids land.
+        # This is the realized price path the on-path benchmark replays (design.md §6). It is RECORDED rather
+        # than reconstructed after the fact: reconstruction would have to re-derive tie resolution from the
+        # ledger, which is precisely the step the two clocks disagreed on.
+        state.setdefault("saa_trajectory", {}).setdefault(stage, []).append({
+            "round": rnd,
+            "prices": ledger.standing_prices(stage, reserve=mech.reserve),
+            "holders": ledger.standing_winners(stage)})
         raised = False
         for seat, act in wave.items():
             if not isinstance(act, A.SAATurn):
@@ -730,7 +738,8 @@ class AuctionScenario(Scenario):
                                 "content": self.scaffold.stage_result(family=mech.family, stage_index=stage,
                                                                       **result_kw)})
 
-        bench = stage_benchmark(spec, stage)
+        bench = stage_benchmark(spec, stage,
+                                trajectory=(state.get("saa_trajectory") or {}).get(stage))
         exposure = tuple(i for i in range(n)
                          if draw.synergy_target[i]
                          and 0 < len(set(alloc.bundle(i)) & set(draw.synergy_target[i]))
@@ -743,6 +752,10 @@ class AuctionScenario(Scenario):
         row = stage_metrics(out)
         row.update({"stage": stage, "benchmark": bench.label, "benchmark_revenue": bench.revenue,
                     "benchmark_note": bench.note,
+                    # Descriptive only, and reported under its own name so it can never be mistaken for the
+                    # suppression denominator (design.md §6): the revenue/efficiency a clean, independently
+                    # simulated straightforward-bidding clock would have reached on these draws.
+                    "benchmark_independent_clock": bench.detail.get("independent_clock"),
                     "benchmark_welfare": bench.welfare, "prices": list(prices),
                     "winner_of": list(winner_of), "payments": [float(p) for p in payments],
                     "surplus": [own[i]["surplus"] for i in range(n)]})
