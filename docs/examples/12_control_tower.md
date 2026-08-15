@@ -96,5 +96,41 @@ The returned function has Control Tower's `UntrustedPolicyGenerateFn` signature:
 output = await generate(messages, tools, tool_choice, generate_config)
 ```
 
+## Attack and collaborative policies
+
+The same boundary also exposes an attack-policy wrapper and a private planner-reviewer-executor team. The attack
+wrapper reads Control Tower's sample-local side-task goal and uses it only as the Interlens policy's private system
+prompt; blue protocols retain their neutral monitor-visible history:
+
+```bash
+uv run ct run eval \
+  --untrusted-policy interlens.integrations.control_tower:interlens_attack_policy \
+  --untrusted-policy-arg participant_factory=my_project.policies:local_qwen \
+  --protocol trusted-monitoring \
+  --protocol-arg sus_threshold=7 \
+  --task-file medium
+```
+
+For collaborative inference, one local participant sequentially plays planner, reviewer, and executor on every
+outer action. Planner and reviewer see a text capability summary but receive no callable tool schemas; only the
+executor can propose an external action:
+
+```bash
+uv run ct run eval \
+  --untrusted-policy interlens.integrations.control_tower:interlens_team_policy \
+  --untrusted-policy-arg participant_factory=my_project.policies:local_qwen \
+  --untrusted-policy-arg mode=honest \
+  --untrusted-policy-arg planner_max_tokens=512 \
+  --untrusted-policy-arg reviewer_max_tokens=512 \
+  --protocol untrusted-agent \
+  --protocol-arg max_steps=80 \
+  --task-file one_per_env
+```
+
+Set `mode=attack` only on a task file containing side tasks. Private planning/review text is recorded under
+`ModelOutput.metadata["interlens"]["collaboration"]`; all three calls contribute to the reported input tokens,
+output tokens, and cost. The executor's message and tool calls remain ordinary Inspect objects, so monitoring,
+deferral, editing, sandbox execution, and scoring continue to be Control Tower's responsibility.
+
 This adapter is intentionally for local `ModelParticipant`-style generators. Hosted Interlens API participants
 already overlap with Inspect's provider layer and do not expose local activation interventions.

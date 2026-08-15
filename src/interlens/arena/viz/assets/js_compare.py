@@ -38,10 +38,7 @@ function pickC(mk, clicked) {
 }
 
 if (G) {
-  const marks = [];
-  Object.entries(G.solutions).forEach(([name, pt]) => marks.push({
-    index: pt.index, ...solutionMarkStyle(name), label: pt.label, r: 7, role: "solution", concept: name,
-    title: `${pt.label} — ${name}` }));
+  const marks = solutionReferenceMarks(G, 7);
   G.party_best.forEach(pb => marks.push({ index: pb.index, kind: "diamond", color: "s3", r: 5,
     ...partyBestLabel(G, pb), role: "party_best", party: pb.party,
     title: `best efficient deal for ${seatName(G, pb.party)} — surplus ${pb.surplus}` }));

@@ -38,6 +38,7 @@ CONCEPT_LABELS = {
     "kalai_smorodinsky": "KS",
     "utilitarian": "UTIL",
     "egalitarian": "EGAL",
+    "normalized_egalitarian": "nEGAL",
     "max_nash_welfare": "MNW",
 }
 
@@ -64,6 +65,11 @@ CONCEPT_MATH = {
         "name": "egalitarian point",
         "math": "argmax<sub>d</sub> min<sub>i</sub> (u<sub>i</sub>(d) &minus; &tau;<sub>i</sub>)",
         "note": "maximizes the <b>worst-off</b> party's surplus &mdash; Rawlsian maximin. It is blind to everything above that minimum, so two deals with the same worst-off party tie however differently they treat everyone else.",
+    },
+    "normalized_egalitarian": {
+        "name": "normalized egalitarian point",
+        "math": "argmax<sub>d</sub> min<sub>i</sub> z<sub>i</sub>(d),&nbsp; z<sub>i</sub> = max(u<sub>i</sub> &minus; &tau;<sub>i</sub>, 0) / (b<sub>i</sub> &minus; &tau;<sub>i</sub>)",
+        "note": "maximizes the <b>worst party's fraction of its own ideal gain</b>. It is the scale-invariant version of raw EGAL and is shown only when it chooses a different deal.",
     },
     "max_nash_welfare": {
         "name": "maximum Nash welfare",

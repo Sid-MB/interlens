@@ -82,6 +82,78 @@ class OpenRouterRouting:
 			request["data_collection"] = self.data_collection
 		return request
 
+#: Anthropic caches a prefix only once it reaches a model-dependent minimum (512 tokens on claude-opus-5,
+#: 1024 on Opus 4.8 and Sonnet 5, 4096 on Opus 4.6 / Haiku 4.5). A shorter prefix is silently NOT cached — no
+#: error, just zero reads forever — so this is documented beside the spec rather than left to be rediscovered.
+MIN_CACHEABLE_PREFIX_NOTE = "Anthropic caches a prefix only from ~512-4096 tokens up, depending on the model."
+
+#: Anthropic's hard ceiling on ``cache_control`` breakpoints in one request.
+MAX_CACHE_BREAKPOINTS = 4
+
+
+@dataclass(frozen=True)
+class PromptCache:
+	"""Where to put a request's ``cache_control`` breakpoints — Anthropic only.
+
+	Caching is a **prefix** match: the cache key is the exact bytes up to each breakpoint, in the provider's
+	render order (``tools`` → ``system`` → ``messages``), so any byte that changes early invalidates everything
+	after it. This spec therefore describes *stability boundaries*, not "cache these strings".
+
+	:param system: Put a breakpoint at the end of the system prompt (default on). This is the one boundary every
+		multi-turn scenario has for free: a seat's system prompt is fixed for its whole episode, and it renders
+		before any message, so one breakpoint there caches the framing of every later turn.
+	:param marks: Literal substrings of the LAST user message, in the order they appear. The text *before* each
+		mark's first occurrence ends a cached prefix, so a scenario that renders its turn view as stable
+		sections followed by volatile ones (a catalogue and a history digest, then this turn's private state and
+		ask) gets those sections cached by naming the headings that follow them. Splitting is byte-preserving —
+		the concatenated blocks are the original message — so the model reads exactly what it read uncached, and
+		the refusal ladder and stored ``view`` are untouched. A mark that does not occur is skipped rather than
+		raising, because a view legitimately varies by phase.
+	:param ttl: ``"5m"`` (default) or ``"1h"``. A write costs 1.25x the input rate at 5m and 2x at 1h, against
+		0.1x for a read, so 5m breaks even on the second request and 1h on the third. Prefer ``"1h"`` only when
+		a seat's turns are more than five minutes apart — which wave-parallel generation is specifically
+		designed to stop being true.
+
+	Breakpoints are capped at :data:`MAX_CACHE_BREAKPOINTS`; ``system`` consumes one, so at most three marks
+	take effect and the rest are ignored. {note}
+	"""
+
+	system: bool = True
+	marks: tuple[str, ...] = ()
+	ttl: str = "5m"
+
+	def __post_init__(self) -> None:
+		if self.ttl not in ("5m", "1h"):
+			raise ValueError(f"prompt-cache ttl must be '5m' or '1h'; got {self.ttl!r}")
+
+	def control(self) -> dict:
+		"""The ``cache_control`` value one breakpoint carries."""
+		return {"type": "ephemeral"} | ({"ttl": self.ttl} if self.ttl != "5m" else {})
+
+	def split(self, text: str) -> list[dict]:
+		"""``text`` as Anthropic text blocks with a breakpoint before each of :attr:`marks`.
+
+		Concatenating the blocks' ``text`` reproduces ``text`` exactly. The final block never carries a
+		breakpoint: it is the volatile tail, and marking it would write a fresh cache entry per turn that is
+		never read — the failure that reports as "caching is on and saving nothing"."""
+		budget = MAX_CACHE_BREAKPOINTS - (1 if self.system else 0)
+		cuts, at = [], 0
+		for mark in self.marks[:max(0, budget)]:
+			found = text.find(mark, at)
+			if found <= at:              # absent this turn, or nothing before it to cache
+				continue
+			cuts.append(found)
+			at = found + len(mark)
+		blocks, start = [], 0
+		for cut in cuts:
+			blocks.append({"type": "text", "text": text[start:cut], "cache_control": self.control()})
+			start = cut
+		blocks.append({"type": "text", "text": text[start:]})
+		return blocks
+
+
+PromptCache.__doc__ = (PromptCache.__doc__ or "").replace("{note}", MIN_CACHEABLE_PREFIX_NOTE)
+
 # provider name -> client class in api_client. Each provider gets ONE process-wide shared client (retry/backoff +
 # a global max-in-flight cap), so the concurrency cap holds across every API participant in a rollout.
 _CLIENT_CLASSES = {"anthropic": "AnthropicClient", "openai": "OpenAIClient", "openrouter": "OpenRouterClient"}
@@ -136,6 +208,15 @@ class APIParticipant(Functional, Participant):
 	openrouter_routing: OpenRouterRouting | None = None
 	"""Required for ``provider="openrouter"``. Pin an upstream endpoint for research, or explicitly pass
 	``OpenRouterRouting.unpinned()`` for exploratory use where variable routing is acceptable."""
+
+	prompt_cache: PromptCache | None = None
+	"""Where to place Anthropic ``cache_control`` breakpoints, or ``None`` (default) for no caching.
+
+	Off by default because caching is only free when the prefix is genuinely stable: a write costs 1.25x the
+	input rate, so switching it on over a prefix that changes every turn makes a run *more* expensive, silently.
+	Turn it on once the view's stability boundaries are known and confirm with ``UsageMeter.cache_report()`` —
+	a hit rate near zero means the breakpoints are in the wrong place, not that the feature is unavailable.
+	Non-Anthropic providers raise rather than silently ignoring it."""
 
 	meter: object = None
 	"""Optional ``interlens.usage.UsageMeter``: every call this participant makes is reported into it (tokens,
@@ -210,7 +291,7 @@ class APIParticipant(Functional, Participant):
 				f"available and must not be silently ignored. Use a ModelParticipant for interp."
 			)
 
-		system, messages = self._split_view(view)
+		system, messages = self._cached_view(view)
 		client = self.client or _default_client(self.provider)
 		max_tokens = self._effective_cap(max_new_tokens)
 		kw = {"thinking": self.thinking} if self.thinking is not None else {}
@@ -240,7 +321,7 @@ class APIParticipant(Functional, Participant):
 		max_tokens = self._effective_cap(max_new_tokens)
 		requests = []
 		for view in views:
-			system, messages = self._split_view(view)
+			system, messages = self._cached_view(view)
 			requests.append(dict(system=system, messages=messages, model=self.model_id,
 			                     max_tokens=max_tokens, temperature=self.temperature,
 			                     **({"thinking": self.thinking} if self.thinking is not None else {}),
@@ -258,6 +339,28 @@ class APIParticipant(Functional, Participant):
 		return [Message(author=self.name, content=str(t),
 		                metadata=self._usage_metadata(t) | {"batched": True})
 		        for t in texts]
+
+	def _cached_view(self, view: list[dict]) -> tuple:
+		""":meth:`_split_view`, then this participant's ``prompt_cache`` breakpoints applied to the result.
+
+		With no ``prompt_cache`` this is exactly ``_split_view`` and the request bytes are unchanged. With one,
+		the system string becomes a one-element block list carrying the breakpoint and the final user message is
+		split at its marks — both byte-preserving, so the model reads the same prompt either way and a cached
+		run stays comparable to an uncached one."""
+		system, messages = self._split_view(view)
+		spec = self.prompt_cache
+		if spec is None:
+			return system, messages
+		if self.provider != "anthropic":
+			raise ValueError(
+				f"prompt_cache is Anthropic-only (it maps to cache_control breakpoints); provider is "
+				f"{self.provider!r}. Refusing to silently drop a caching setting.")
+		if system and spec.system:
+			system = [{"type": "text", "text": system, "cache_control": spec.control()}]
+		if spec.marks and messages and messages[-1]["role"] == "user":
+			tail = dict(messages[-1], content=spec.split(messages[-1]["content"]))
+			messages = messages[:-1] + [tail]
+		return system, messages
 
 	def _effective_cap(self, max_new_tokens: int | None) -> int:
 		"""The output-token cap actually sent: the caller's ``max_new_tokens`` (else this participant's
@@ -287,7 +390,10 @@ class APIParticipant(Functional, Participant):
 		it sent."""
 		return {"model": self.model_id, "provider": self.provider, "thinking": self.thinking,
 		        "effort": self.effort, "max_tokens": self.max_tokens,
-		        "turn_token_floor": self.turn_token_floor, "temperature": self.temperature}
+		        "turn_token_floor": self.turn_token_floor, "temperature": self.temperature,
+		        "prompt_cache": (None if self.prompt_cache is None else
+		                         {"system": self.prompt_cache.system, "marks": list(self.prompt_cache.marks),
+		                          "ttl": self.prompt_cache.ttl})}
 
 	def _routing_kwargs(self) -> dict:
 		if self.provider != "openrouter":
@@ -331,12 +437,22 @@ class APIParticipant(Functional, Participant):
 		telemetry."""
 		tokens_in = int(getattr(completion, "input_tokens", 0) or 0)
 		tokens_out = int(getattr(completion, "output_tokens", 0) or 0)
+		cache_read = int(getattr(completion, "cache_read_tokens", 0) or 0)
+		cache_write = int(getattr(completion, "cache_write_tokens", 0) or 0)
 		stop_reason = getattr(completion, "stop_reason", None)
 		batched = bool(getattr(completion, "batched", False))
 		# "refusal" is Anthropic's native refusal stop; "content_filter" is the OpenAI-schema analogue.
 		refusal = stop_reason in ("refusal", "content_filter")
+		# ``n_tokens_in`` is the WHOLE prompt, cached parts included. The provider reports ``input_tokens`` as
+		# the full-price remainder only, so recording that alone would make a cached run look like it shrank its
+		# prompt by 80% — a prompt-size series has to stay comparable across the caching switch. The split rides
+		# alongside for cost work.
 		metadata = {"provider": self.provider, "model": self.model_id,
-		            "n_tokens": tokens_out, "n_tokens_in": tokens_in, "stop_reason": stop_reason}
+		            "n_tokens": tokens_out, "n_tokens_in": tokens_in + cache_read + cache_write,
+		            "stop_reason": stop_reason}
+		if cache_read or cache_write:
+			metadata["n_tokens_cache_read"] = cache_read
+			metadata["n_tokens_cache_write"] = cache_write
 		if self.provider == "openrouter" and self.openrouter_routing is not None:
 			metadata["provider_routing"] = self.openrouter_routing.request_dict()
 			metadata["upstream_provider"] = getattr(completion, "upstream_provider", None)
@@ -358,8 +474,10 @@ class APIParticipant(Functional, Participant):
 			metadata["refusal"] = True
 		if self.meter is not None:
 			mult = 0.5 if batched else 1.0  # provider batch APIs bill at half price
-			metadata["cost_usd"] = self.meter.add(self.model_id, tokens_in, tokens_out,
-			                                      price_multiplier=mult, refusal=refusal)
+			metadata["cost_usd"] = self.meter.add(
+				self.model_id, tokens_in, tokens_out, price_multiplier=mult, refusal=refusal,
+				cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+				cache_ttl=(self.prompt_cache.ttl if self.prompt_cache is not None else "5m"))
 			if batched:
 				metadata["price_multiplier"] = mult
 		return metadata

@@ -27,6 +27,7 @@ from interlens import (
 	APIParticipant, CostBudget, Conversation, OpenRouterRouting, TokenBudget, UsageMeter, transcript_usage,
 )
 from interlens.participant.participants.api_client import Completion
+from interlens.participant.participants.api_participant import PromptCache
 from interlens.usage import register_pricing
 
 
@@ -283,3 +284,95 @@ def test_thinking_control_mapping_and_guards():
 			pass
 	with pytest.raises(NotImplementedError):
 		_FakeOpenAICompat()._call_once(None, [], "m", 10, None, thinking="disabled")
+
+
+# --- prompt caching ---------------------------------------------------------------------------------------
+
+class _CacheClient:
+	"""A mocked Anthropic client reporting cache usage and capturing the request it was handed."""
+
+	def __init__(self, *, tokens_in=200, cache_read=0, cache_write=0):
+		self.kw = dict(input_tokens=tokens_in, output_tokens=10,
+		               cache_read_tokens=cache_read, cache_write_tokens=cache_write)
+		self.requests = []
+
+	def __call__(self, system, messages, model, max_tokens, temperature, **rest):
+		self.requests.append({"system": system, "messages": messages})
+		return Completion("ok", **self.kw)
+
+
+def test_prompt_cache_split_is_byte_preserving_and_marks_only_stable_prefixes():
+	spec = PromptCache(marks=("## Prior stages", "## Your private"))
+	text = "## Catalogue\nA\n\n## Prior stages\nB\n\n## Your private\nC\n\n## Now\nD"
+	blocks = spec.split(text)
+	assert "".join(b["text"] for b in blocks) == text     # the seat reads exactly what it read uncached
+	assert [("cache_control" in b) for b in blocks] == [True, True, False]  # the volatile tail is never marked
+
+
+def test_prompt_cache_skips_absent_marks_rather_than_raising():
+	# A view legitimately varies by phase, so a heading missing this turn must degrade to fewer breakpoints.
+	spec = PromptCache(marks=("## Prior stages", "## Missing"))
+	blocks = spec.split("## Catalogue\nA\n\n## Prior stages\nB")
+	assert len(blocks) == 2 and "".join(b["text"] for b in blocks).startswith("## Catalogue")
+
+
+def test_prompt_cache_respects_the_four_breakpoint_ceiling():
+	spec = PromptCache(system=True, marks=tuple(f"#{i}" for i in range(1, 7)))
+	blocks = spec.split("".join(f"#{i} body " for i in range(7)))
+	assert sum("cache_control" in b for b in blocks) == 3   # 4 total minus the system breakpoint
+
+
+def test_prompt_cache_wires_breakpoints_into_the_request():
+	client = _CacheClient()
+	p = APIParticipant(name="a", model_id="m", client=client,
+	                   prompt_cache=PromptCache(marks=("## Now",), ttl="1h"))
+	p.generate([{"role": "system", "content": "framing"}, {"role": "user", "content": "cat\n\n## Now\nbid"}])
+	sent = client.requests[0]
+	assert sent["system"] == [{"type": "text", "text": "framing",
+	                           "cache_control": {"type": "ephemeral", "ttl": "1h"}}]
+	assert [("cache_control" in b) for b in sent["messages"][-1]["content"]] == [True, False]
+
+
+def test_no_prompt_cache_leaves_the_request_untouched():
+	client = _CacheClient()
+	APIParticipant(name="a", model_id="m", client=client).generate(
+		[{"role": "system", "content": "framing"}, {"role": "user", "content": "hi"}])
+	assert client.requests[0] == {"system": "framing", "messages": [{"role": "user", "content": "hi"}]}
+
+
+def test_prompt_cache_is_anthropic_only():
+	p = APIParticipant(name="a", model_id="m", provider="openai", client=_CacheClient(),
+	                   prompt_cache=PromptCache())
+	with pytest.raises(ValueError, match="Anthropic-only"):
+		p.generate([{"role": "user", "content": "hi"}])
+
+
+def test_cached_call_prices_reads_and_writes_off_the_input_rate():
+	meter = UsageMeter(pricing={"m": {"in": 10.0, "out": 20.0}})
+	p = APIParticipant(name="a", model_id="m", meter=meter, prompt_cache=PromptCache(),
+	                   client=_CacheClient(tokens_in=100, cache_read=800, cache_write=100))
+	msg = p.generate([{"role": "user", "content": "hi"}])
+	assert msg.metadata["cost_usd"] == pytest.approx(
+		(100 * 10 + 800 * 10 * 0.1 + 100 * 10 * 1.25) / 1e6 + 10 * 20 / 1e6)
+	# the recorded prompt size is the WHOLE prompt, so it stays comparable to an uncached run
+	assert msg.metadata["n_tokens_in"] == 1000
+	assert msg.metadata["n_tokens_cache_read"] == 800
+
+
+def test_cache_report_hit_rate_and_a_negative_saving_when_nothing_is_reread():
+	meter = UsageMeter(pricing={"m": {"in": 10.0, "out": 20.0}})
+	meter.add("m", 100, 10, cache_read_tokens=800, cache_write_tokens=100)
+	report = meter.cache_report()["m"]
+	assert report["prompt_tokens"] == 1000 and report["hit_rate"] == pytest.approx(0.8)
+	assert report["saved_usd"] > 0
+
+	# breakpoints on an unstable prefix: every turn writes, nothing ever reads — this must NOT report 0.
+	waste = UsageMeter(pricing={"m": {"in": 10.0, "out": 20.0}})
+	waste.add("m", 0, 10, cache_write_tokens=1000)
+	assert waste.cache_report()["m"]["saved_usd"] < 0
+
+
+def test_request_config_records_the_caching_condition():
+	p = APIParticipant(name="a", model_id="m", prompt_cache=PromptCache(marks=("## Now",), ttl="1h"))
+	assert p.request_config()["prompt_cache"] == {"system": True, "marks": ["## Now"], "ttl": "1h"}
+	assert APIParticipant(name="a", model_id="m").request_config()["prompt_cache"] is None

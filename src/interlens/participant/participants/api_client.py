@@ -42,8 +42,10 @@ REASONING_FULL = "full"
 class Completion(str):
 	"""A completion string that also carries the call's **usage telemetry** as attributes: ``input_tokens`` /
 	``output_tokens`` (0 when the provider reported none), ``stop_reason`` (the provider's native stop/finish
-	reason, ``None`` when unreported), ``batched`` (served via a provider batch API at discount pricing), and
-	the call's **reasoning record**: ``reasoning`` (whatever reasoning text the provider returned — Anthropic
+	reason, ``None`` when unreported), ``batched`` (served via a provider batch API at discount pricing),
+	``cache_read_tokens`` / ``cache_write_tokens`` (Anthropic prompt-cache accounting: tokens served from a cache
+	entry, and tokens written into one — both EXCLUDED from ``input_tokens``, which is the full-price remainder),
+	and the call's **reasoning record**: ``reasoning`` (whatever reasoning text the provider returned — Anthropic
 	thinking blocks including summarized ones, OpenAI-compatible ``reasoning``/``reasoning_content`` fields —
 	or ``None``) with ``reasoning_provenance`` marking how complete that record is (see the marker constants
 	above). OpenAI-compatible responses also preserve ``upstream_provider``, ``response_model``, and
@@ -57,6 +59,8 @@ class Completion(str):
 	output_tokens: int
 	stop_reason: str | None
 	batched: bool
+	cache_read_tokens: int
+	cache_write_tokens: int
 	reasoning: str | None
 	reasoning_provenance: str
 	reasoning_tokens: int
@@ -66,6 +70,7 @@ class Completion(str):
 
 	def __new__(cls, text: str, *, input_tokens: int = 0, output_tokens: int = 0,
 	            stop_reason: str | None = None, batched: bool = False,
+	            cache_read_tokens: int = 0, cache_write_tokens: int = 0,
 	            reasoning: str | None = None, reasoning_provenance: str = REASONING_NONE,
 	            reasoning_tokens: int = 0,
 	            upstream_provider: str | None = None, response_model: str | None = None,
@@ -75,6 +80,8 @@ class Completion(str):
 		self.output_tokens = output_tokens
 		self.stop_reason = stop_reason
 		self.batched = batched
+		self.cache_read_tokens = cache_read_tokens
+		self.cache_write_tokens = cache_write_tokens
 		self.reasoning = reasoning
 		self.reasoning_provenance = reasoning_provenance
 		self.reasoning_tokens = reasoning_tokens
@@ -221,6 +228,19 @@ class AnthropicClient(_RetryingClient):
 		raise ValueError(f"thinking must be None, 'disabled', an int budget, or a dict; got {thinking!r}")
 
 	@staticmethod
+	def _cache_tokens(usage) -> tuple[int, int]:
+		"""``(cache_read_input_tokens, cache_creation_input_tokens)`` off an Anthropic ``usage`` object.
+
+		Both are 0 when the request carried no ``cache_control`` breakpoint and — the trap — ALSO when it carried
+		one that did not take: a prefix under the model's minimum cacheable length (512 tokens on claude-opus-5)
+		is silently not cached, with no error. So zero reads across repeated identical prefixes is the signature
+		of a breakpoint that is not where the caller thinks it is, not of caching being off."""
+		if usage is None:
+			return 0, 0
+		return (int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+		        int(getattr(usage, "cache_creation_input_tokens", 0) or 0))
+
+	@staticmethod
 	def _thinking_tokens(usage) -> int:
 		"""Hidden reasoning tokens the provider billed for this call, from
 		``usage.output_tokens_details.thinking_tokens``.
@@ -258,10 +278,12 @@ class AnthropicClient(_RetryingClient):
 		text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 		usage = getattr(resp, "usage", None)
 		reasoning, provenance = anthropic_reasoning(resp.content)
+		cache_read, cache_write = self._cache_tokens(usage)
 		return Completion(text,
 		                  input_tokens=getattr(usage, "input_tokens", 0) or 0,
 		                  output_tokens=getattr(usage, "output_tokens", 0) or 0,
 		                  stop_reason=getattr(resp, "stop_reason", None),
+		                  cache_read_tokens=cache_read, cache_write_tokens=cache_write,
 		                  reasoning=reasoning, reasoning_provenance=provenance,
 		                  reasoning_tokens=self._thinking_tokens(usage))
 
@@ -288,11 +310,13 @@ class AnthropicClient(_RetryingClient):
 			msg = entry.result.message
 			usage = getattr(msg, "usage", None)
 			reasoning, provenance = anthropic_reasoning(msg.content)
+			cache_read, cache_write = self._cache_tokens(usage)
 			texts[entry.custom_id] = Completion(
 				"".join(b.text for b in msg.content if getattr(b, "type", None) == "text"),
 				input_tokens=getattr(usage, "input_tokens", 0) or 0,
 				output_tokens=getattr(usage, "output_tokens", 0) or 0,
 				stop_reason=getattr(msg, "stop_reason", None), batched=True,
+				cache_read_tokens=cache_read, cache_write_tokens=cache_write,
 				reasoning=reasoning, reasoning_provenance=provenance,
 				reasoning_tokens=self._thinking_tokens(usage))
 		return [texts[f"req-{i}"] for i in range(len(requests))]

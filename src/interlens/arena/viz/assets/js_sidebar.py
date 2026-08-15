@@ -111,11 +111,8 @@ function mountSidebar(cfg) {
      standing on the table is squared, later ones are ghosted rather than dropped so the shape of the cloud a
      reader has been looking at does not jump. */
   function miniMarks(upto, standing) {
-    const marks = [];
+    const marks = solutionReferenceMarks(G, 6);
     if (!G) return marks;
-    Object.entries(G.solutions || {}).forEach(([name, pt]) => marks.push({
-      index: pt.index, ...solutionMarkStyle(name), label: pt.label, r: 6,
-      title: pt.label + " — " + name, role: "solution", concept: name }));
     (G.party_best || []).forEach(pb => marks.push({
       index: pb.index, kind: "diamond", color: "s3", r: 4.5, ...partyBestLabel(G, pb), role: "party_best",
       title: "best efficient deal for " + seatName(G, pb.party) + " (" + pb.agent + ")" }));

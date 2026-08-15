@@ -64,6 +64,14 @@ DEFAULT_PRICING: dict[str, dict[str, float]] = {
 # overstated, never understated.
 FALLBACK_PRICING = {"in": 25.0, "out": 100.0}
 
+# Anthropic prompt-cache price multipliers, applied to a model's INPUT rate. A cache read is a tenth of the
+# input price; a write is a premium over it, and the premium depends on the entry's TTL. Break-even therefore
+# depends on the TTL too: at 5m a prefix pays for itself on the second request (1.25 + 0.1 against 2.0
+# uncached), at 1h on the third (2.0 + 0.2 against 3.0). Named here rather than at the call site because the
+# participant that reports usage and the meter that prices it must not be able to disagree about them.
+CACHE_READ_MULTIPLIER = 0.1
+CACHE_WRITE_MULTIPLIERS = {"5m": 1.25, "1h": 2.0}
+
 _REGISTERED: dict[str, dict[str, float]] = {}
 
 
@@ -113,29 +121,73 @@ class UsageMeter:
 
 	# --- pricing -------------------------------------------------------------------------------------------
 
-	def price(self, model: str, tokens_in: int, tokens_out: int) -> float:
-		"""Dollar cost of one call at full (non-batch) price. Unknown models use ``FALLBACK_PRICING``."""
+	def price(self, model: str, tokens_in: int, tokens_out: int, *,
+	          cache_read_tokens: int = 0, cache_write_tokens: int = 0, cache_ttl: str = "5m") -> float:
+		"""Dollar cost of one call at full (non-batch) price. Unknown models use ``FALLBACK_PRICING``.
+
+		``tokens_in`` is the prompt portion billed at the full input rate — for a cached Anthropic call that is
+		the provider's ``usage.input_tokens``, which EXCLUDES both cache reads and cache writes. The cached
+		portions are priced separately off the same input rate at :data:`CACHE_READ_MULTIPLIER` and
+		:data:`CACHE_WRITE_MULTIPLIERS` keyed by ``cache_ttl``, so the three never double-count each other."""
 		p = self.pricing.get(model, FALLBACK_PRICING)
-		return tokens_in * p["in"] / 1e6 + tokens_out * p["out"] / 1e6
+		rate_in = p["in"] / 1e6
+		write_mult = CACHE_WRITE_MULTIPLIERS.get(cache_ttl, CACHE_WRITE_MULTIPLIERS["5m"])
+		return (tokens_in * rate_in
+		        + cache_read_tokens * rate_in * CACHE_READ_MULTIPLIER
+		        + cache_write_tokens * rate_in * write_mult
+		        + tokens_out * p["out"] / 1e6)
 
 	# --- recording -----------------------------------------------------------------------------------------
 
 	def add(self, model: str, tokens_in: int, tokens_out: int, *, price_multiplier: float = 1.0,
-	        refusal: bool = False) -> float:
+	        refusal: bool = False, cache_read_tokens: int = 0, cache_write_tokens: int = 0,
+	        cache_ttl: str = "5m") -> float:
 		"""Record one completed API call; returns its cost in dollars. ``price_multiplier`` scales the price for
-		discounted billing paths (0.5 = provider batch API). Thread-safe; persists when ``path`` is set."""
-		cost = self.price(model, tokens_in, tokens_out) * price_multiplier
+		discounted billing paths (0.5 = provider batch API). Thread-safe; persists when ``path`` is set.
+
+		The cache counters are recorded per model as well as priced, because a run's cache HIT RATE is what tells
+		a campaign whether its prompt-cache breakpoints are actually placed on a stable prefix — and the per-turn
+		metadata is not aggregated anywhere else. ``m["in"]`` accumulates the WHOLE prompt (uncached + read +
+		written) so a prompt-size series stays comparable across cached and uncached runs; the split lives in
+		``m["cache_read"]`` / ``m["cache_write"]``."""
+		cost = self.price(model, tokens_in, tokens_out, cache_read_tokens=cache_read_tokens,
+		                  cache_write_tokens=cache_write_tokens, cache_ttl=cache_ttl) * price_multiplier
 		with self._lock:
 			self.total_usd += cost
 			m = self.by_model.setdefault(model, {"in": 0, "out": 0, "usd": 0.0, "calls": 0, "refusals": 0})
-			m["in"] += tokens_in
+			m["in"] += tokens_in + cache_read_tokens + cache_write_tokens
 			m["out"] += tokens_out
 			m["usd"] += cost
 			m["calls"] += 1
+			m["cache_read"] = m.get("cache_read", 0) + cache_read_tokens
+			m["cache_write"] = m.get("cache_write", 0) + cache_write_tokens
 			if refusal:
 				m["refusals"] += 1
 			self._persist()
 		return cost
+
+	def cache_report(self) -> dict:
+		"""Per-model prompt-cache accounting: ``{model: {prompt_tokens, cache_read, cache_write, uncached,
+		hit_rate, saved_usd}}``.
+
+		``hit_rate`` is cache reads over the whole prompt volume — the honest denominator, since a write is a
+		prefix the cache did NOT serve. ``saved_usd`` is what the same token volume would have cost with no
+		caching minus what it did cost, so a run whose breakpoints sit on an unstable prefix reports a NEGATIVE
+		saving (writes at a premium, never read) rather than a flattering zero."""
+		out = {}
+		for model, m in self.snapshot()["by_model"].items():
+			read, write = int(m.get("cache_read", 0)), int(m.get("cache_write", 0))
+			prompt = int(m["in"])
+			if not (read or write):
+				continue
+			rate_in = self.pricing.get(model, FALLBACK_PRICING)["in"] / 1e6
+			paid = (prompt - read - write) * rate_in + read * rate_in * CACHE_READ_MULTIPLIER \
+			       + write * rate_in * CACHE_WRITE_MULTIPLIERS["5m"]
+			out[model] = {"prompt_tokens": prompt, "cache_read": read, "cache_write": write,
+			              "uncached": prompt - read - write,
+			              "hit_rate": round(read / prompt, 4) if prompt else 0.0,
+			              "saved_usd": round(prompt * rate_in - paid, 4)}
+		return out
 
 	def _persist(self) -> None:
 		if self.path is None:

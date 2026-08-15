@@ -34,11 +34,7 @@ let CHART = null, PINNED = null, CURRENT_TURN = null;
 
 function buildMarks() {
   if (!G) return [];
-  const marks = [];
-  Object.entries(G.solutions).forEach(([name, pt]) => marks.push({
-    index: pt.index, ...solutionMarkStyle(name), label: pt.label, r: 7,
-    title: `${pt.label} — ${name}${pt.scale_invariant ? " (scale-invariant)" : " (NOT scale-invariant across private scales)"}`,
-    role: "solution", concept: name }));
+  const marks = solutionReferenceMarks(G, 7);
   G.party_best.forEach(pb => marks.push({
     index: pb.index, kind: "diamond", color: "s3", r: 5, ...partyBestLabel(G, pb),
     title: `best efficient deal for ${seatName(G, pb.party)} (${pb.agent}) — surplus ${pb.surplus}`,
