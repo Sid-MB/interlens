@@ -122,35 +122,35 @@ COMMON_PRIVATE_FACT_KEYS: tuple[str, ...] = ("capital_position", "budget", "top_
 #: The five archetypes. Attribute signatures are exactly design.md §2.2's table; the unnamed dimensions are 0.
 PERSONAS: tuple[Persona, ...] = (
     Persona(
-        persona_id="hyperscaler", display_name="Meridian Compute",
+        persona_id="hyperscaler", display_name="Meridian Cloud",
         attrs=(1, 1, 0, 0), capacity=3, gamma=0.0, synergy_rate=0.15, decay=0.90, budget_mult=1.15,
         role="the large bidder in the demand-reduction prediction [ausubel_cramton2014]",
         public_fact_keys=("sites_operated", "workload", "capex_guidance"),
         private_fact_keys=COMMON_PRIVATE_FACT_KEYS + ("synergy_target",),
     ),
     Persona(
-        persona_id="regional_operator", display_name="Northwind Facilities",
+        persona_id="regional_operator", display_name="Cascade Regional",
         attrs=(-1, 0, 0, 1), capacity=2, gamma=0.0, synergy_rate=0.10, decay=0.95, budget_mult=0.85,
         role="the small bidder; the contrast in the shading gradient",
         public_fact_keys=("sites_operated", "tenant_mix", "footprint"),
         private_fact_keys=COMMON_PRIVATE_FACT_KEYS + ("synergy_target",),
     ),
     Persona(
-        persona_id="ai_lab", display_name="Cadence Research",
+        persona_id="ai_lab", display_name="Aster Labs",
         attrs=(0, 1, 1, 0), capacity=2, gamma=0.0, synergy_rate=0.20, decay=1.00, budget_mult=0.70,
         role="binding-budget, high-urgency; the Che-Gale subject [che_gale1998]",
         public_fact_keys=("flagship_run", "delivery_deadline", "no_estate"),
         private_fact_keys=COMMON_PRIVATE_FACT_KEYS + ("synergy_target",),
     ),
     Persona(
-        persona_id="colocation_reseller", display_name="Tessellate Capacity",
+        persona_id="colocation_reseller", display_name="Keystone Capacity",
         attrs=(0, 0, 0, 0), capacity=3, gamma=0.45, synergy_rate=0.0, decay=0.85, budget_mult=1.00,
         role="the common-value channel in INTERDEP [athey_levin_seira2011, pp. 214-219]",
         public_fact_keys=("business_model", "resale_weight"),
         private_fact_keys=COMMON_PRIVATE_FACT_KEYS + ("resale_signal",),
     ),
     Persona(
-        persona_id="sovereign_fund", display_name="Aster Infrastructure",
+        persona_id="sovereign_fund", display_name="Northgate Infrastructure",
         attrs=(1, 0, -1, 0), capacity=3, gamma=0.0, synergy_rate=0.10, decay=0.95, budget_mult=1.40,
         role="the deep-pocketed natural outsider seat; outsider surplus is reported separately [asker2010]",
         public_fact_keys=("mandate", "cost_of_capital", "jurisdiction"),

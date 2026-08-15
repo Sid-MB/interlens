@@ -45,11 +45,12 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from ...parsing import last_json
-from ..actions import LEGALITY, SYNTAX, Action, ParseResult
+from ..actions import LEGALITY, SYNTAX, Action, ParseResult, Pass
 
-__all__ = ["Bid", "PassLot", "Schedule", "Demand", "Stay", "Exit", "Claim", "Wait", "Speak",
-           "DirectMessage", "Transfer", "auction_action_from_json", "BidLedger", "StandingBid", "DMRouter",
-           "DirectMessageRecord", "TransferBook", "TurnEnvelope", "parse_auction_action", "parse_envelope"]
+__all__ = ["Bid", "PassLot", "SAATurn", "Schedule", "Demand", "Stay", "Exit", "Claim", "Wait", "Speak",
+           "DirectMessage", "Transfer", "Pass", "auction_action_from_json", "BidLedger", "StandingBid",
+           "DMRouter", "DirectMessageRecord", "TransferBook", "TurnEnvelope", "parse_auction_action",
+           "parse_envelope", "whole_number", "resolve_item"]
 
 
 # ----------------------------------------------------------------- actions ---
@@ -78,6 +79,26 @@ class PassLot(Action):
 
     def to_json(self) -> dict:
         return {"action": self.kind, "item": self.item}
+
+
+@dataclass(frozen=True)
+class SAATurn(Action):
+    """One whole SAA turn: the raises and the permanent passes a seat declared together.
+
+    The reviewed action grammar lets a bidder raise on any number of lots and pass permanently on any number
+    of lots in a single turn, so an SAA turn is not one move but a SET of them, and the set has to be
+    validated as a unit (its total is what the budget binds on, and a lot may not appear in both halves).
+    :func:`parse_auction_action` deliberately validates exactly one binding move and therefore does not read
+    this shape; the scenario parses the list and folds each :class:`Bid` / :class:`PassLot` into the ledger
+    individually, so the ledger's purity property is untouched."""
+
+    kind: ClassVar[str] = "saa_turn"
+    bids: tuple = ()
+    passes: tuple = ()
+
+    def to_json(self) -> dict:
+        return {"action": self.kind, "bids": [b.to_json() for b in self.bids],
+                "passes": [p.to_json() for p in self.passes]}
 
 
 @dataclass(frozen=True)
@@ -174,8 +195,8 @@ class Transfer(Action):
 
 
 _AUCTION_ACTIONS: dict[str, type] = {a.kind: a for a in
-                                     (Bid, PassLot, Schedule, Demand, Stay, Exit, Claim, Wait, Speak,
-                                      DirectMessage, Transfer)}
+                                     (Bid, PassLot, SAATurn, Schedule, Demand, Stay, Exit, Claim, Wait,
+                                      Speak, DirectMessage, Transfer)}
 
 
 def auction_action_from_json(d: dict) -> Action:
@@ -190,6 +211,9 @@ def auction_action_from_json(d: dict) -> Action:
         return Bid(item=int(d["item"]), amount=int(d["amount"]))
     if cls is PassLot:
         return PassLot(item=int(d["item"]))
+    if cls is SAATurn:
+        return SAATurn(bids=tuple(Bid(item=int(b["item"]), amount=int(b["amount"])) for b in d.get("bids", ())),
+                       passes=tuple(PassLot(item=int(x["item"])) for x in d.get("passes", ())))
     if cls is Schedule:
         return Schedule(amounts=tuple(int(x) for x in d["amounts"]))
     if cls is Demand:
@@ -672,3 +696,12 @@ def _resolve_item(raw, item_names: tuple[str, ...]) -> int | None:
             if name.strip().lower() == key:
                 return j
     return None
+
+
+#: Public aliases for the two reference helpers. The scenario lane's SAA grammar carries a LIST of lots per
+#: turn (``{"action": "bid", "bids": [...], "lots": [...]}``, the reviewed template), which
+#: :func:`parse_auction_action` does not read because it validates exactly one binding move; the scenario
+#: therefore parses that list itself and needs the same whole-number and lot-reference rules rather than a
+#: second, subtly different copy of them.
+whole_number = _whole
+resolve_item = _resolve_item
