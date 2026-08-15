@@ -55,6 +55,7 @@ from ..auction.allocation import Allocation, ValueModel, sealed_single_outcome
 from ..auction.benchmarks import stage_benchmark
 from ..auction.metrics import StageOutcome, stage_metrics
 from ..auction.spec import AuctionSpec, Mechanism
+from ..engine import EMPTY_TURN_PLACEHOLDER
 from ..scenario import Scenario
 from ..schema import Instance, SeatRequest
 from . import auction_policy, auction_prompts as P
@@ -287,6 +288,13 @@ class AuctionScenario(Scenario):
         spec = state["spec"]
         env = A.parse_envelope(text)
         state["_last_parse"] = (None, False)
+
+        # An API-side refusal or an empty completion arrives here as the engine's placeholder. It must NOT be
+        # counted as a syntax error: the seat wrote nothing, so recording a fallback pass would put a bid of
+        # "none" into the data that the model never chose. It is a GENERATION failure, counted separately and
+        # surfaced by the runner's gate (design.md §6, G1's ``gen_failed = 0``).
+        if text.strip() == EMPTY_TURN_PLACEHOLDER:
+            state["hygiene"]["api_silence"] += 1
 
         parsed, err = self._read_move(state, seat, env, text)
         if err is not None:
@@ -763,7 +771,8 @@ class AuctionScenario(Scenario):
         once and shared, and only :meth:`_private_block` reads a draw, for its owner only."""
         sc = self.scaffold
         return sc.turn_prompt(catalogue=self._catalogue(state), digest=self._digest(state, seat),
-                              private=self._private_block(state, seat), phase=self._phase_block(state, seat))
+                              private=self._private_block(state, seat), phase=self._phase_block(state, seat),
+                              turn_no=self._global_round(state))
 
     def _catalogue(self, state) -> str:
         """The shared per-stage header. Built once per stage and byte-identical across seats."""
@@ -975,6 +984,7 @@ class AuctionScenario(Scenario):
             "parse_ok_rate": hy["parse_ok"] / turns,
             "syntax_errors": int(hy["syntax_errors"]), "legality_errors": int(hy["legality_errors"]),
             "fallback_moves": int(hy["fallback_moves"]), "n_turns": int(hy["turns"]),
+            "api_silence": int(hy["api_silence"]), "api_silence_rate": hy["api_silence"] / turns,
             "dm_volume": hy["dms"] / max(1, completed * spec.n_bidders),
             "dm_graph": {f"{a}->{b}": c for (a, b), c in state["dm"].graph().items()},
             "dm_dropped": int(state["dm"].dropped),

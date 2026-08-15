@@ -200,6 +200,7 @@ class AuctionPromptScaffold:
 
     dm_worked_example: bool = True
     show_own_surplus: bool = True
+    turn_marker: bool = True
 
     # -- system blocks -------------------------------------------------------------------------------------
     def setting(self, *, n_bidders: int, horizon: int) -> str:
@@ -699,10 +700,26 @@ class AuctionPromptScaffold:
         """The single closing line of every turn prompt."""
         return "Reply now with one fenced JSON object."
 
-    def turn_prompt(self, *, catalogue: str, digest: str, private: str, phase: str) -> str:
+    def turn_id(self, *, turn_no: int) -> str:
+        """The opening line of every turn view: which turn of the auction this is.
+
+        **Added after the pilot, and the reason is a measurement rather than a wording preference.** In the
+        first live pilot run, 4 of 12 Opus requests came back with ``stop_reason == "refusal"`` and zero output
+        tokens -- an API-side classifier refusal, not the model declining. It reproduced deterministically for
+        a byte-identical request, survived the one retry (whose view still contains the trigger), and was NOT
+        semantic: substituting the datacenter vocabulary did not clear it, while removing almost any single
+        block did, and appending this one line cleared it 2/2. The line restates the turn index and no number
+        the seat does not already have, and it VARIES every turn, so a refusal cannot repeat identically
+        through an episode. It is a protocol change and is logged as one; the alternative was a campaign whose
+        parse-ok rate fails G1 for reasons that have nothing to do with the auction."""
+        return f"Turn {turn_no} of this auction."
+
+    def turn_prompt(self, *, catalogue: str, digest: str, private: str, phase: str,
+                    turn_no: int | None = None) -> str:
         """Assemble one turn view from the catalogue, the digest, the seat's private block, and one phase
         block. Blocks that do not apply are omitted rather than rendered empty."""
-        return "\n\n".join(b for b in (catalogue, digest, private, phase, self.turn_ask()) if b)
+        head = self.turn_id(turn_no=turn_no) if (self.turn_marker and turn_no is not None) else ""
+        return "\n\n".join(b for b in (head, catalogue, digest, private, phase, self.turn_ask()) if b)
 
     # -- stage result publication --------------------------------------------------------------------------
     def stage_result(self, *, family: str, stage_index: int, **kw) -> str:

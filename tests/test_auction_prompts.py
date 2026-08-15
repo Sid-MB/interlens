@@ -57,7 +57,9 @@ def test_every_example_restates_the_deadline_and_asks_once(cfg):
     """Composition invariant 3: stages remaining is restated in every turn view, and the turn closes with the
     single reviewed ask."""
     system, turn = build_example(cfg)
-    assert turn.splitlines()[0].startswith("## ")
+    lines = turn.splitlines()
+    assert lines[0].startswith("Turn ") and lines[0].endswith("of this auction.")
+    assert lines[2].startswith("## ")
     assert turn.rstrip().endswith("Reply now with one fenced JSON object.")
     assert turn.count("Reply now with one fenced JSON object.") == 1
     if cfg["horizon"] > 1:
