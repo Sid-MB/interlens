@@ -427,3 +427,64 @@ def test_state_block_carries_every_field_the_conditional_bayes_seat_updates_on()
         assert field in block, f"the policy state block must carry {field}"
     assert block["exits"], "a public exit must reach the rational seat's state block"
     assert 4 not in block["active"]
+
+
+def test_clock_formats_get_one_mid_stage_message_round_per_stage():
+    """design.md §3.4 commits to a message round "once more before the final bidding round in clock formats",
+    so a ring can be TESTED mid-stage and not only formed before it. The end of a clock stage is endogenous, so
+    the trigger is the midpoint of the announced schedule: exactly one extra talk wave per stage, it does not
+    disturb the clock, and the seats are told the price the clock is standing at."""
+    scn = AuctionScenario()
+    make, _ = FAMILIES["english"]
+    mech = make(1)
+    inst = scn.generate_instance(0, 17, mechanism=mech, horizon=8)
+    state = scn.make_state(inst, "all_llm", 0,
+                           {"mechanism": mech.to_json(), "horizon": 1, "channel": "dm", "talk_rounds": 1})
+    cap = state["spec"].mechanism.round_cap
+    phases, mid_views, prices = [], [], []
+    for _ in range(400):
+        reqs = scn.next_requests(state)
+        if not reqs:
+            break
+        phases.append((state["phase"], state["bid_round"], state["mid_talk_active"]))
+        if state["mid_talk_active"]:
+            mid_views.append(reqs[0].view[-1]["content"])
+            prices.append(int(state["clock_price"]))
+        for req in reqs:
+            move = "none" if state["phase"] == "talk" else ("stay" if int(req.meta["seat_index"]) < 2 else "exit")
+            scn.apply(state, req, json.dumps({"action": move}))
+
+    mid = [p for p in phases if p[2]]
+    assert len(mid) == 1, "exactly one mid-stage message round per stage"
+    assert mid[0][1] == max(2, cap // 2), "it fires at the midpoint of the announced clock schedule"
+    assert "Mid-stage message round" in mid_views[0]
+    assert f"**{prices[0]}**" in mid_views[0], "the paused clock price is restated, not left to be inferred"
+    assert "before bidding begins" not in mid_views[0], "bidding HAS begun by then"
+    # The detour leaves the clock exactly where it was: the round index and the price on the bidding wave
+    # after it are the ones the mid-stage view named.
+    i = next(k for k, p in enumerate(phases) if p[2])
+    assert phases[i + 1][0] == "bid" and phases[i + 1][1] == phases[i][1]
+    assert int(state["spec"].mechanism.increment) > 0
+
+
+def test_sealed_and_silent_cells_get_no_mid_stage_round():
+    """A sealed stage has one bidding round and a silent cell has no channel, so a mid-stage message round
+    would be a wasted turn per seat per stage in both."""
+    scn = AuctionScenario()
+    for family, channel in (("sealed_second", "dm"), ("english", "silent")):
+        make, _ = FAMILIES[family]
+        mech = make(1)
+        inst = scn.generate_instance(0, 17, mechanism=mech, horizon=8)
+        state = scn.make_state(inst, "all_llm", 0,
+                               {"mechanism": mech.to_json(), "horizon": 1, "channel": channel,
+                                "talk_rounds": 1})
+        for _ in range(400):
+            reqs = scn.next_requests(state)
+            if not reqs:
+                break
+            assert not state["mid_talk_active"], f"{family}/{channel} must get no mid-stage round"
+            for req in reqs:
+                move = ("none" if state["phase"] == "talk"
+                        else ("bid" if family == "sealed_second" else "stay"))
+                payload = {"action": move} | ({"amount": 30} if move == "bid" else {})
+                scn.apply(state, req, json.dumps(payload))

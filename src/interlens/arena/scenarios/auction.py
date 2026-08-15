@@ -66,6 +66,11 @@ from .auction_prompts import DEFAULT_AUCTION_SCAFFOLD, AuctionPromptScaffold
 TALK_PHASE = "talk"
 BID_PHASE = "bid"
 
+#: Families that get the mid-stage message round of design.md §3.4 ("once more before the final bidding round
+#: in clock formats"). Sealed and SAA stages do not: a sealed stage has one bidding round, and an SAA stage's
+#: standing-bid table is itself a live channel between rounds.
+MID_STAGE_TALK_FAMILIES = ("dutch", "english")
+
 #: Per-turn output cap. The hosted-seat floor is applied by the participant (``--api-turn-token-floor``); this
 #: is the scenario's own request, raised for the bidding turn of a 20-lot stage where the model has a whole
 #: catalogue to reason over.
@@ -184,6 +189,12 @@ class AuctionScenario(Scenario):
             "policy_seats": {int(k): v for k, v in (cfg.get("policy_seats") or {}).items()},
             "hygiene": Counter(),
             "clock_ceiling_stages": [],
+            # The mid-stage message round of design.md §3.4: on a clock, one extra talk wave once the clock has
+            # crossed the middle of its schedule, so a ring can be TESTED mid-stage and not only formed before
+            # it. ``mid_talk_active`` marks the wave in flight; ``mid_talk_done`` is the set of stages that have
+            # already had theirs (at most one per stage).
+            "mid_talk_active": False,
+            "mid_talk_done": set(),
         }
         st["_awaiting"] = list(self._wave_seats(st))
         return st
@@ -514,7 +525,12 @@ class AuctionScenario(Scenario):
         wave, state["wave"] = state["wave"], {}
 
         if state["phase"] == TALK_PHASE:
-            if state["talk_round"] < spec.talk_rounds:
+            if state["mid_talk_active"]:
+                # A mid-stage round is exactly one wave and returns the clock to where it was: ``bid_round`` and
+                # ``clock_price`` are untouched by the detour, so the schedule the seats were told about holds.
+                state["mid_talk_active"] = False
+                state["phase"] = BID_PHASE
+            elif state["talk_round"] < spec.talk_rounds:
                 state["talk_round"] += 1
             else:
                 state["phase"] = BID_PHASE
@@ -538,7 +554,31 @@ class AuctionScenario(Scenario):
                 state["clock_price"] -= mech.increment
             elif mech.family == "english":
                 state["clock_price"] += mech.increment
+            if self._mid_talk_due(state):
+                state["mid_talk_active"] = True
+                state["mid_talk_done"].add(stage)
+                state["phase"] = TALK_PHASE
         state["_awaiting"] = list(self._wave_seats(state))
+
+    def _mid_talk_due(self, state) -> bool:
+        """Is the mid-stage message round due after the wave just resolved (design.md §3.4)?
+
+        §3.4 asks for one extra message round "before the final bidding round in clock formats". On a clock
+        whose end is ENDOGENOUS that instant is not knowable in advance -- a Dutch stage ends at the first
+        claim and an English stage when one bidder is left -- so the trigger is the midpoint of the clock's
+        announced schedule, `round_cap // 2`, which every seat can compute from the rules it was given and
+        which arrives before the typical claim. A stage whose clock ends before its midpoint simply gets no
+        mid-stage round; that is the honest outcome (there was no mid-stage to test the ring in), not a
+        missing wave.
+
+        At most one per stage, clock families only, and never when the channel is silent -- a message round
+        with no channel is a wasted turn per seat per stage."""
+        spec = state["spec"]
+        if spec.mechanism.family not in MID_STAGE_TALK_FAMILIES or not self._talks(spec):
+            return False
+        if state["stage"] in state["mid_talk_done"]:
+            return False
+        return state["bid_round"] == max(2, int(spec.mechanism.round_cap) // 2)
 
     def _fold_bids(self, state, wave) -> bool:
         """Apply the wave's binding moves to the ledger; return whether the stage's bidding is over."""
@@ -885,7 +925,11 @@ class AuctionScenario(Scenario):
         sc = self.scaffold
         if state["phase"] == TALK_PHASE:
             return sc.talk_round(stage_index=state["stage"], talk_round_no=state["talk_round"],
-                                 talk_rounds=spec.talk_rounds, channel=spec.channel, dm_cap=spec.dm_cap)
+                                 talk_rounds=spec.talk_rounds, channel=spec.channel, dm_cap=spec.dm_cap,
+                                 mid_stage=state["mid_talk_active"],
+                                 clock_price=(int(state["clock_price"])
+                                              if state["clock_price"] is not None else None),
+                                 round_no=state["bid_round"] - 1, round_cap=mech.round_cap)
         if mech.family == "saa":
             ledger, ids = state["ledger"], self._lot_ids(spec)
             rows = []
