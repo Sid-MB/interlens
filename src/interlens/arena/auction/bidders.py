@@ -272,10 +272,14 @@ class AuctionPolicy(ABC):
         mech = state.spec.mechanism
         if mech.family == "sealed_single":
             return Bid(item=0, amount=self._afford(state, self.bid_for(state, 0)))
+        # The clock decisions go through ``_afford`` for the same reason the sealed bid does: a payment must be
+        # collectible, so a policy never stays in (or claims) above its budget. Without the clamp a seat whose
+        # budget sits below its valuation emits a move the mechanism rejects as a legality error, which turns a
+        # decision-rule arm into a parse-hygiene artifact.
         if mech.family == "english":
-            return Stay() if (state.clock_price or 0) <= self.bid_for(state, 0) else Exit()
+            return Stay() if (state.clock_price or 0) <= self._afford(state, self.bid_for(state, 0)) else Exit()
         if mech.family == "dutch":
-            return Claim() if (state.clock_price or 0) <= self.bid_for(state, 0) else Wait()
+            return Claim() if (state.clock_price or 0) <= self._afford(state, self.bid_for(state, 0)) else Wait()
         if mech.family == "saa":
             return self._saa_move(state)
         if mech.family == "uniform_price":

@@ -308,3 +308,98 @@ def test_eligibility_ratchet_closes_a_lot_permanently():
         if k == 0:
             assert state["ledger"].eligible(0, 0, 1), "a pass must not bind before the round closes"
     assert not state["ledger"].eligible(0, 0, 1)
+
+
+# --------------------------------------------------------------------------------------------------------- #
+# Computable seats.
+# --------------------------------------------------------------------------------------------------------- #
+def policy_table(scn, state, inst, information: str):
+    """A SeatRouter of computable seats, the free `all_rational` / `all_oracle` arms."""
+    from interlens.arena.scenarios.auction_policy import AuctionPolicyParticipant
+    from interlens.arena.table import SeatRouter
+    spec = state["spec"]
+    return SeatRouter({state["seat_names"][i]: AuctionPolicyParticipant(
+        f"{information}#{i}", spec=spec, seat=i, information=information,
+        instance_id=inst.instance_id) for i in range(spec.n_bidders)}, name=f"all_{information}")
+
+
+@pytest.mark.parametrize("family", ["sealed_second", "dutch", "english", "saa3"])
+@pytest.mark.parametrize("information", ["private", "oracle"])
+def test_free_computable_arms_play_every_format(family, information):
+    """`all_rational` and `all_oracle` are pure Python and cost nothing, so they run in every cell
+    unconditionally — which only holds if they actually complete every format."""
+    scn = AuctionScenario()
+    policies = {i: ("oracle" if information == "oracle" else "rational") for i in range(5)}
+    make, n_items = FAMILIES[family]
+    mech = make(n_items)
+    inst = scn.generate_instance(0, 21, mechanism=mech, horizon=8)
+    state = scn.make_state(inst, f"all_{information}", 0,
+                           {"mechanism": mech.to_json(), "horizon": 2, "channel": "dm",
+                            "policy_seats": policies})
+    table = policy_table(scn, state, inst, information)
+    guard = 0
+    while not state["done"]:
+        guard += 1
+        assert guard < 4000
+        reqs = scn.next_requests(state)
+        if not reqs:
+            break
+        for req in reqs:
+            msg = table.generate(req.view, seat=req.seat)
+            assert scn.apply(state, req, msg.content) is None, "a computable seat must never need a retry"
+    out = scn.score(state)
+    assert out["success"] and out["parse_ok_rate"] == 1.0
+    assert out["syntax_errors"] == 0 and out["legality_errors"] == 0
+
+
+def test_policy_seat_view_carries_no_prose_and_no_rival_draws():
+    """A computable seat reads a structured state block, not prose; and a PRIVATE-information seat's block
+    carries no rival's realized values at all."""
+    scn = AuctionScenario()
+    make, _ = FAMILIES["saa3"]
+    mech = make(3)
+    inst = scn.generate_instance(0, 21, mechanism=mech, horizon=8)
+    state = scn.make_state(inst, "one_rational", 0,
+                           {"mechanism": mech.to_json(), "horizon": 1, "channel": "dm",
+                            "policy_seats": {0: "rational"}})
+    req = [r for r in scn.next_requests(state) if r.meta["seat_index"] == 0][0]
+    assert "```auction_state" in req.view[0]["content"]
+    assert "You are the bidding agent" not in req.view[0]["content"]
+    block = scn.state_block(state, 0)
+    assert "oracle_values" not in block
+    assert scn.state_block(scn.make_state(inst, "one_oracle", 0,
+                                          {"mechanism": mech.to_json(), "horizon": 1, "channel": "dm",
+                                           "policy_seats": {0: "oracle"}}), 0)["oracle_values"]
+
+
+def test_oracle_and_rational_seats_emit_identical_message_templates():
+    """The oracle's templates are identical to the rational seat's: an oracle that spoke from full information
+    would leak every other seat's private draws through the channel."""
+    from interlens.arena.scenarios.auction_policy import AuctionPolicyParticipant
+    scn = AuctionScenario()
+    make, _ = FAMILIES["saa3"]
+    mech = make(3)
+    inst = scn.generate_instance(0, 21, mechanism=mech, horizon=8)
+    texts = []
+    for info in ("private", "oracle"):
+        state = scn.make_state(inst, f"all_{info}", 0,
+                              {"mechanism": mech.to_json(), "horizon": 1, "channel": "dm",
+                               "policy_seats": {i: ("oracle" if info == "oracle" else "rational")
+                                                for i in range(5)}})
+        part = AuctionPolicyParticipant(f"p#{0}", spec=state["spec"], seat=0, information=info,
+                                        instance_id=inst.instance_id)
+        req = scn.next_requests(state)[0]
+        texts.append(json.loads(part.generate(req.view, seat=req.seat).content
+                                .strip("`json\n ").split("\n```")[0])["message"])
+    assert texts[0] == texts[1]
+
+
+def test_surface_variants_are_reproducible_and_arm_invariant():
+    """The templated variant is seeded from the frozen instance, seat, stage and template id, so it is stable
+    across processes and identical in every arm — a variant that moved between arms would confound Q5."""
+    from interlens.arena.auction import policy_text
+    a = policy_text.variant_index("inst-1", 2, 3, "dm_initiate", 3)
+    b = policy_text.variant_index("inst-1", 2, 3, "dm_initiate", 3)
+    c = policy_text.variant_index("inst-1", 2, 4, "dm_initiate", 3)
+    assert a == b
+    assert 0 <= a < 3 and 0 <= c < 3

@@ -57,7 +57,7 @@ from ..auction.metrics import StageOutcome, stage_metrics
 from ..auction.spec import AuctionSpec, Mechanism
 from ..scenario import Scenario
 from ..schema import Instance, SeatRequest
-from . import auction_prompts as P
+from . import auction_policy, auction_prompts as P
 from .auction_prompts import DEFAULT_AUCTION_SCAFFOLD, AuctionPromptScaffold
 
 #: Phases the scenario emits, recorded on every ``TurnRecord`` so the analysis can split message turns from
@@ -92,6 +92,20 @@ def clock_round_cap(spec) -> int:
     """Number of clock rounds needed to walk from the start price to the reserve (or back), inclusive."""
     mech = spec.mechanism
     return int((clock_start(spec) - int(mech.reserve)) // int(mech.increment)) + 1
+
+
+def opening_clock_price(spec) -> int:
+    """Where a clock family's price starts in each stage.
+
+    The two clocks run in opposite directions and start at opposite ends: a DESCENDING (Dutch) clock starts
+    above every realized valuation and falls, while an ASCENDING (English) clock starts at the RESERVE and
+    rises. Deriving both from :func:`clock_start` without the direction was a real bug — it opened the English
+    clock above every value, so every seat exited in the first round and the stage ended before any price
+    discovery happened at all."""
+    mech = spec.mechanism
+    if not mech.is_clock:
+        return None
+    return int(mech.reserve) if mech.family == "english" else clock_start(spec)
 
 
 # --------------------------------------------------------------------------------------------------------- #
@@ -159,13 +173,14 @@ class AuctionScenario(Scenario):
             "stage_results": [],              # one published result dict per settled stage
             "own_results": [],                # per stage: {seat: {"lots", "paid", "surplus"}}
             "outcomes": [],                   # per stage: the StageOutcome json + metrics
-            "clock_price": clock_start(spec) if spec.mechanism.is_clock else None,
+            "clock_price": opening_clock_price(spec),
             "exits": {},                      # stage -> {seat: exit price}
             "pass_round": {},                 # (stage, seat, item) -> round the seat ratcheted out
             "wave": {},                       # seat -> the action recorded this wave
             "_awaiting": list(range(spec.n_bidders)),
             "_views": {},                     # seat -> the view built for the current wave
             "_r": set(), "_last_parse": (None, False),
+            "policy_seats": {int(k): v for k, v in (cfg.get("policy_seats") or {}).items()},
             "hygiene": Counter(),
             "clock_ceiling_stages": [],
         }
@@ -236,8 +251,12 @@ class AuctionScenario(Scenario):
         for seat in seats:
             view = state["_views"].get(seat)
             if view is None:
-                view = [{"role": "system", "content": self.system_prompt(state, seat)},
-                        {"role": "user", "content": self.turn_prompt(state, seat)}]
+                if seat in state["policy_seats"]:
+                    view = [{"role": "user", "content": auction_policy.state_block(
+                        self.state_block(state, seat))}]
+                else:
+                    view = [{"role": "system", "content": self.system_prompt(state, seat)},
+                            {"role": "user", "content": self.turn_prompt(state, seat)}]
                 state["_views"][seat] = view
             out.append(SeatRequest(episode_id="", seat=state["seat_names"][seat], view=list(view),
                                    phase=state["phase"], round=self._global_round(state),
@@ -504,7 +523,7 @@ class AuctionScenario(Scenario):
             state["stage"] = stage + 1
             state["phase"] = TALK_PHASE if self._talks(spec) else BID_PHASE
             state["talk_round"], state["bid_round"] = 1, 1
-            state["clock_price"] = clock_start(spec) if mech.is_clock else None
+            state["clock_price"] = opening_clock_price(spec)
         else:
             state["bid_round"] += 1
             if mech.family == "dutch":
@@ -877,9 +896,43 @@ class AuctionScenario(Scenario):
         return sc.round_ask(family=mech.family, round_no=state["bid_round"], round_cap=mech.round_cap,
                             clock_price=state["clock_price"])
 
+    def state_block(self, state: dict, seat: int) -> dict:
+        """The machine-readable turn state a computable seat reads in place of the prose turn prompt.
+
+        Carries this seat's OWN draws and the public round state. A rival's realized values appear only under
+        ``oracle_values``, and only for an oracle seat — an explicitly named field, so reading it is a
+        deliberate act the policy's own information gate controls rather than an accident of serialization."""
+        spec = state["spec"]
+        draw = spec.stage(state["stage"])
+        name = state["seat_names"][seat]
+        ledger = state["ledger"]
+        stage = state["stage"]
+        block = {
+            "stage": stage, "round": state["bid_round"], "phase": state["phase"], "seat": seat,
+            "seat_id": name, "channel": spec.channel, "dm_cap": spec.dm_cap,
+            "values": [int(v) for v in draw.values[seat]],
+            "budget": self._remaining_budget(state, seat),
+            "synergy_target": list(draw.synergy_target[seat] or ()) or None,
+            "signals": [int(v) for v in draw.signals[seat]] if draw.signals is not None else None,
+            "standing": ledger.standing_prices(stage, reserve=spec.mechanism.reserve),
+            "standing_winner": ledger.standing_winners(stage),
+            "clock_price": state["clock_price"],
+            "active": [i for i in range(spec.n_bidders) if i not in state["exits"].get(stage, {})],
+            "exits": {str(s): p for s, p in state["exits"].get(stage, {}).items()},
+            "inbox": [{"sender": r.sender, "text": r.text, "stage": r.stage, "round": r.round,
+                       "recipient_seat": seat}
+                      for r in state["dm"].inbox(name, stage=stage)],
+        }
+        if state["policy_seats"].get(seat) == "oracle":
+            block["oracle_values"] = [[int(v) for v in row] for row in draw.values]
+        return block
+
     def seat_framings(self, state: dict) -> dict:
-        """``{seat_name: system prompt}`` for the episode record."""
-        return {state["seat_names"][i]: self.system_prompt(state, i)
+        """``{seat_name: system prompt}`` for the episode record. A computable seat has no prose framing, so
+        it records the name of its decision rule instead of a prompt it never reads."""
+        return {state["seat_names"][i]:
+                (f"[computable seat: {state['policy_seats'][i]}]" if i in state["policy_seats"]
+                 else self.system_prompt(state, i))
                 for i in range(state["spec"].n_bidders)}
 
     # -- budgets -------------------------------------------------------------------------------------------
@@ -927,6 +980,7 @@ class AuctionScenario(Scenario):
             "dm_dropped": int(state["dm"].dropped),
             "broadcasts": int(hy["broadcasts"]),
             "transfers": state["transfers"].to_json()["declared"],
+            "policy_seats": {str(k): v for k, v in state["policy_seats"].items()},
             "channel": spec.channel, "family": spec.mechanism.family, "n_items": spec.n_items,
             "value_structure": spec.value_structure,
         }
