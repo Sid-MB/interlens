@@ -153,6 +153,16 @@ class TurnRecord:
 	# ``terminal`` one is a turn no model produced and is counted as silence, so the two must never be pooled.
 	refusal_recovery: dict | None = None
 
+	@classmethod
+	def from_json(cls, d: dict) -> "TurnRecord":
+		"""Rebuild a turn from its stored dict, ignoring fields this version does not know.
+
+		Forward-compatible on purpose: a record written by a newer schema carries keys this dataclass has no
+		field for, and dropping them is the only way an older reader can load a newer file at all. Missing
+		keys fall back to the field defaults, which is what makes pre-v1.2 episodes load unchanged."""
+		fields = {f.name for f in dataclasses.fields(cls)}
+		return cls(**{k: v for k, v in d.items() if k in fields})
+
 
 @dataclass
 class Episode:
@@ -188,6 +198,22 @@ class Episode:
 
 	def to_json(self) -> dict:
 		return dataclasses.asdict(self)
+
+	@classmethod
+	def from_json(cls, d: dict) -> "Episode":
+		"""Rebuild an episode from a stored record — the inverse of :meth:`to_json`.
+
+		``to_json`` is ``dataclasses.asdict``, so ``turns`` comes back as plain dicts and is rehydrated through
+		:meth:`TurnRecord.from_json`; ``round_checkpoints`` is stored as dicts by design and stays that way.
+		Unknown keys are dropped and missing ones take their defaults, so an episode written by a different
+		schema version loads rather than raising. This exists because anything that reads episodes back — a
+		post-hoc analysis, or a driver that collected episodes in worker processes and has to reassemble them —
+		otherwise re-derives the dataclass shape by hand and drifts from it."""
+		fields = {f.name for f in dataclasses.fields(cls)}
+		kwargs = {k: v for k, v in d.items() if k in fields}
+		kwargs["turns"] = [t if isinstance(t, TurnRecord) else TurnRecord.from_json(t)
+		                   for t in (d.get("turns") or [])]
+		return cls(**kwargs)
 
 	def usage(self) -> dict:
 		"""This episode's usage summary: tokens in/out (total and per seat) and dollar cost."""
