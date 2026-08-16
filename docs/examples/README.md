@@ -1,5 +1,5 @@
 <!-- [interp-refactor] session f80ef917 — examples index for interlens -->
-# `interlens` — examples
+# Examples
 
 Worked examples for the multi-model conversation + interpretability harness, ordered simple → advanced. Every snippet assumes you import the package as a library:
 
