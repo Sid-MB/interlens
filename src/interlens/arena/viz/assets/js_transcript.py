@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # [rational_agents: viz-ux] 2026-08-03
+# [implement: live-play/laneD] 2026-08-16
 
 """Browser layer, part 3: the transcript — turn cards, the scrubber, and lazy prompt bodies.
 
@@ -474,6 +475,23 @@ function infoLink(label, enabled) {
     title="${E(label)}">i</button>`;
 }
 
+/* WHO played this turn, when that is not the obvious answer. Live play stamps every turn with its occupant
+   (`TurnRecord.occupant`); nothing that ran before live play carries the field at all, so a batch episode's card
+   is unchanged. The badge marks a DEPARTURE — a person, or a seat that has changed hands — against
+   `opts.occupantDefaults` (seat -> the occupant it started under), which the live page derives from the payload
+   and passes in. Without that map only a human turn badges, which is the conservative half of the rule: a
+   default is exactly what tells a routine occupant from a swapped one. */
+function occupantBadge(t, defaults) {
+  const occupant = t.occupant;
+  if (!occupant) return "";
+  const human = String(occupant).indexOf("human:") === 0;
+  const dflt = (defaults || {})[t.seat];
+  if (!human && (dflt === undefined || dflt === occupant)) return "";
+  const label = human ? String(occupant).slice("human:".length) : occupant;
+  return ` <span class="badge occupant${human ? " human" : ""}" title="this turn was played by ${E(occupant)}">${
+    human ? "played by " : "now "}${E(label)}</span>`;
+}
+
 function turnCard(t, game, oracle, opts) {
   const a = t.action || {};
   const k = actKind(a.atype);
@@ -520,7 +538,7 @@ function turnCard(t, game, oracle, opts) {
    <div class="turnhd" role="button" tabindex="0" aria-label="turn ${t.idx}, ${E(t.seat)}, ${E(k.word)}${
      t.silent ? ", published nothing" : ""}">
      <span class="who"><span class="idx">${t.idx}</span> ${E(t.seat)}
-       <span class="badge ${E(t.kind)}">${E(t.kind)}</span>
+       <span class="badge ${E(t.kind)}">${E(t.kind)}</span>${occupantBadge(t, opts.occupantDefaults)}
        <span class="kind ${k.cls}">${k.glyph} ${E(k.word)}</span>${
        t.gen_failed ? ` <span class="badge fabricated" title="${E(t.gen_failure || "")}">NOT GENERATED</span>` : ""}${
        t.silent && !t.gen_failed ? ` <span class="badge silent" title="generation succeeded but published no
@@ -539,9 +557,11 @@ function turnCard(t, game, oracle, opts) {
      ${oracleColumn(t, game, oracle, opts.infoLinks)}</div>
      ${referenceGrid(t, game)}`
     : `<div class="act">${E(a.label || a.atype)}</div>${dealLink}`}
+   ${t.human_note ? `<div class="reasoning human"><div class="reasoninghd"><b>Scratchpad [the player's own note]</b></div>
+      <div class="reasoningbody">${E(t.human_note).replace(/\r?\n/g, "<br>")}</div></div>` : ""}
    ${t.reasoning ? `<div class="reasoning"><div class="reasoninghd"><b>Reasoning / scratchpad [${E(reasoningLabel(t))}]</b></div>
       <div class="reasoningbody">${E(t.reasoning).replace(/\r?\n/g, "<br>")}</div></div>`
-     : `<div class="sub muted">No reasoning recorded (provenance ${E(t.reasoning_provenance)}). Do not impute it.</div>`}
+     : (t.human_note ? "" : `<div class="sub muted">No reasoning recorded (provenance ${E(t.reasoning_provenance)}). Do not impute it.</div>`)}
    ${a.message ? `<div class="msg">${E(a.message)}</div>` : ""}
    ${a.syntax_error ? `<div class="gap neg">syntax error: ${E(a.syntax_error)}</div>` : ""}
    ${viewPanel(t)}

@@ -16,6 +16,7 @@
 # [rational_agents: viz] 2026-07-29
 # [rational_agents: viz-ux] 2026-08-03
 # [rational_agents: viz-sidebar] 2026-08-03
+# [implement: live-play/laneD] 2026-08-16
 
 """HTML assembly: a payload in, one self-contained interactive page out.
 
@@ -338,19 +339,55 @@ def _action_chip(turn: dict) -> str:
     return ""
 
 
-def _chat_bubble(payload: dict, t: dict) -> str:
+def occupant_defaults(payload: dict) -> dict:
+    """Each seat's DEFAULT occupant: the one it played its first recorded turn under.
+
+    Batch episodes carry no occupant at all and get an empty map. Live play stamps every turn with who held the
+    seat (``TurnRecord.occupant``), and a seat that never changed hands would otherwise wear the same badge on
+    every one of its turns — so the badge marks a DEPARTURE from this map, which is what a reader wants to see.
+    Derived from the payload rather than stored anywhere, so it always describes the transcript being rendered.
+    """
+    out: dict = {}
+    for t in payload.get("turns") or []:
+        if t.get("occupant") and t.get("seat") not in out:
+            out[t["seat"]] = t["occupant"]
+    return out
+
+
+def _occupant_badge(t: dict, defaults: dict) -> str:
+    """The "who actually played this turn" badge, for the turns where that is not the obvious answer.
+
+    Emitted only when the turn carries an ``occupant`` (nothing pre-live-play does) AND either a person played it
+    or the seat had changed hands by then. Everything else stays byte-identical to what the page rendered before
+    the field existed."""
+    occupant = t.get("occupant")
+    if not occupant:
+        return ""
+    human = str(occupant).startswith("human:")
+    if not human and defaults.get(t.get("seat")) in (None, occupant):
+        return ""
+    label = str(occupant).split(":", 1)[1] if human else occupant
+    return (f"<span class='badge occupant{' human' if human else ''}' "
+            f"title='this turn was played by {_e(occupant)}'>"
+            f"{'played by ' if human else 'now '}{_e(label)}</span>")
+
+
+def _chat_bubble(payload: dict, t: dict, defaults: dict | None = None) -> str:
     """One published turn as a chat bubble — the per-turn unit :func:`_chat_bubbles` joins over.
 
     Split out from the list so a live page can render a single arriving turn with the SAME code the static page
     renders the whole transcript with (``arena.live.payload.bubble_html``): one bubble renderer, so a streamed
-    bubble can never drift from the one a reload rebuilds. ``payload`` is read only for the seat table, so the
-    caller may pass a payload whose ``turns`` do not yet contain ``t``."""
+    bubble can never drift from the one a reload rebuilds. ``payload`` is read only for the seat table and (when
+    ``defaults`` is not supplied) the occupant map, so the caller may pass a payload whose ``turns`` do not yet
+    contain ``t``. ``defaults`` is :func:`occupant_defaults`, passed in by the list renderer so it is derived once
+    per transcript rather than once per bubble."""
     seats = {s.get("name"): s for s in payload.get("seats") or []}
     seat = t.get("seat")
     party = (seats.get(seat) or {}).get("party")
     message = (t.get("action") or {}).get("message")
     chip = _action_chip(t)
-    body = [f"<div class='who'><span class='pidx'>{_e(party)}</span> {_e(seat)}"
+    badge = _occupant_badge(t, occupant_defaults(payload) if defaults is None else defaults)
+    body = [f"<div class='who'><span class='pidx'>{_e(party)}</span> {_e(seat)}{badge}"
             f"<span class='at'>turn {_e(t.get('idx'))} · round {_e(t.get('round'))}</span></div>"]
     if message:
         body.append(f"<div class='body'>{_e(message)}</div>")
@@ -382,7 +419,8 @@ def _chat_bubbles(payload: dict) -> str:
     rows = [t for t in payload.get("turns") or [] if t.get("published", True)]
     if not rows:
         return "<div class='gap'>This episode published no turns.</div>"
-    return f"<div class='chatlog' id='chatlog'>{''.join(_chat_bubble(payload, t) for t in rows)}</div>"
+    defaults = occupant_defaults(payload)
+    return f"<div class='chatlog' id='chatlog'>{''.join(_chat_bubble(payload, t, defaults) for t in rows)}</div>"
 
 
 def _issue_bars_svg(game: dict, party: int) -> str:
