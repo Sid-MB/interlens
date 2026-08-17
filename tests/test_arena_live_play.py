@@ -97,16 +97,22 @@ def _snapshot(payload, awaiting=None, occupants=None):
 
 
 def _awaiting(payload):
-    """An ``awaiting_human`` event for seat 0, with the two live offers it may vote on."""
+    """An ``awaiting_human`` event for seat 0, with the two live offers it may vote on.
+
+    The legal block is built through the protocol's own builder, so this fixture carries exactly the keys a real
+    event carries — including any ratified later — rather than a hand-written subset that would let the page
+    tests pass against a shape the browser never actually receives."""
+    from interlens.arena.live import events
     sheet = payload["game"]["sheets"][0]
-    return {"seat": payload["seats"][0]["name"], "seat_idx": 0, "turn_idx": 9, "round": 2, "phase": "proposal",
-            "state": {"offers": {"P1": [0, 0, 0], "P2": [1, 2, 0]}, "standing": "P2", "round": 2},
-            "sheet": {"values": sheet["values"], "threshold": sheet["threshold"]},
-            # Accept and reject are separate lists on purpose: on a forced-final vote an offer is acceptable and
-            # not rejectable, so the dock cannot read one from the other.
-            "legal": {"can_accept": ["P1", "P2"], "can_reject": ["P2"], "can_offer": True, "can_walk": True,
-                      "can_pass": False},
-            "deadline": 6}
+    # Accept and reject are separate lists on purpose: the forced-final proposal turn permits accept and NOT
+    # reject, so the dock cannot read one from the other. P2 is rejectable here, P1 is not.
+    _type, data = events.awaiting_human(
+        seat=payload["seats"][0]["name"], seat_idx=0, turn_idx=9, round_=2, phase="proposal",
+        state={"offers": {"P1": [0, 0, 0], "P2": [1, 2, 0]}, "standing": "P2", "round": 2},
+        sheet={"values": sheet["values"], "threshold": sheet["threshold"]},
+        legal={"can_accept": ["P1", "P2"], "can_reject": ["P2"], "can_offer": True, "can_walk": True},
+        deadline=6)
+    return data
 
 
 # ------------------------------------------------------------------------------- the page --
@@ -338,6 +344,19 @@ def test_accept_and_reject_are_gated_from_their_own_lists():
     from interlens.arena.live.assets import JS_LIVE
     assert "legal.can_reject || []" in JS_LIVE
     assert "accept.indexOf(id) >= 0, reject.indexOf(id) >= 0" in JS_LIVE
+
+
+def test_the_dock_draws_a_control_from_every_ratified_capability():
+    """Every key of the contract's ``LEGAL_ACTION_DEFAULTS`` is read by the dock.
+
+    Iterated from the constant rather than listed here, so a capability ratified into the protocol and never
+    wired to a control fails THIS test instead of shipping as a move the player is silently never offered — the
+    exact failure ``can_reject`` was, caught by hand. The fixture's own legal block is held to the same key set,
+    so a lane that later synthesizes the event by hand cannot quietly drop one either."""
+    from interlens.arena.live import events
+    from interlens.arena.live.assets import JS_LIVE
+    unread = [key for key in events.LEGAL_ACTION_DEFAULTS if f"legal.{key}" not in JS_LIVE]
+    assert not unread, f"capabilities the dock offers no control for: {unread}"
 
 
 def test_a_talk_turn_cannot_be_submitted_empty():
