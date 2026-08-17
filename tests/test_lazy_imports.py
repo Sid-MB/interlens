@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # [rational_agents: lazy-imports] 2026-07-31
+# [implement: live-play/laneE] 2026-08-17
 
 """Pins the lazy public API of ``interlens`` (PEP 562 ``__getattr__`` over an explicit export table).
 
@@ -51,8 +52,11 @@ LEGACY_EXPORTS = (
 	"AutoModelParticipant", "ModelLike",
 )
 
-# Entry points that only read JSON / write HTML and must stay free of the model stack.
-CPU_ONLY_MODULES = ("interlens", "interlens.arena.viz", "interlens.arena.negotiation.analysis")
+# Entry points that only read JSON / write HTML and must stay free of the model stack. ``arena.live`` belongs
+# here for the same reason the visualizer does and one more: its lobby is opened on whatever machine is at hand,
+# and importing torch to render a page of pickers would cost ten seconds on a host with no GPU to use anyway.
+CPU_ONLY_MODULES = ("interlens", "interlens.arena.viz", "interlens.arena.negotiation.analysis",
+                    "interlens.arena.live")
 
 
 def in_fresh_process(code: str) -> str:

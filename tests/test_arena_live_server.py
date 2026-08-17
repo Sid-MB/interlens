@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # [implement: live-play/laneB] 2026-08-16
+# [implement: live-play/laneE] 2026-08-17
 """The live server over a real socket: the route table, and the event stream as a browser reads it.
 
 Nothing is mocked. Each test binds the real ``make_live_server`` on an ephemeral port, runs it on a thread, and
@@ -33,6 +34,7 @@ import contextlib
 import http.client
 import json
 import threading
+import time
 
 import pytest
 
@@ -40,14 +42,11 @@ from interlens.arena.live import events
 from interlens.arena.live.server import make_live_server
 from interlens.arena.live.provider import SeatConfig
 
-from .test_arena_live_session import StubProvider, lane_a_ready, wait_for
+from .test_arena_live_session import StubProvider, wait_for
 
 # Every socket operation is bounded: a live server test that hangs is far worse than one that fails, because it
 # takes the whole suite with it.
 TIMEOUT = 20.0
-
-needs_lane_a = pytest.mark.skipif(not lane_a_ready(),
-                                  reason="lane A's SeatConfig.occupant_label has not landed yet")
 
 RATIONAL = {"kind": "rational", "policy": "bayes-rational"}
 
@@ -183,7 +182,6 @@ def test_unknown_routes_and_sessions_are_404(tmp_path, method, path):
 
 
 # -------------------------------------------------------------------------------------- the stream --
-@needs_lane_a
 def test_the_stream_opens_with_hello_and_replays_the_whole_game(tmp_path):
     """A browser that attaches after a fast game still receives all of it: ``hello`` first, then every logged
     event in order. This is the same code path a mid-episode reload takes, which is why replay is not an
@@ -205,7 +203,6 @@ def test_the_stream_opens_with_hello_and_replays_the_whole_game(tmp_path):
     assert frames[-1][2]["status"] == "done"
 
 
-@needs_lane_a
 def test_hello_never_consumes_a_sequence_number(tmp_path):
     """``hello`` is connection metadata, not a logged event, so it is framed with the id the client already has.
     If it took an id of its own, a reconnect echoing it would skip a real event."""
@@ -218,7 +215,6 @@ def test_hello_never_consumes_a_sequence_number(tmp_path):
         assert [seq for seq, _, _ in frames[1:]] == list(range(1, len(frames)))
 
 
-@needs_lane_a
 def test_a_reconnect_delivers_exactly_the_tail_it_missed(tmp_path):
     """The reload guarantee. A browser that reconnects with ``Last-Event-ID`` gets everything after it and
     nothing it already had — which is what makes a reload mid-episode lossless rather than a re-render that
@@ -236,7 +232,6 @@ def test_a_reconnect_delivers_exactly_the_tail_it_missed(tmp_path):
     assert tail[1:] == whole[4:], "a reconnect must replay the tail byte for byte"
 
 
-@needs_lane_a
 def test_the_stream_sends_the_headers_that_stop_a_proxy_buffering_it(tmp_path):
     """Without ``X-Accel-Buffering: no`` a proxy holds the stream until it has a bufferful, which for an event
     stream means the page shows nothing for a minute and then the whole game at once."""
@@ -250,7 +245,6 @@ def test_the_stream_sends_the_headers_that_stop_a_proxy_buffering_it(tmp_path):
             read_frames(response, until=events.EPISODE_DONE)
 
 
-@needs_lane_a
 def test_two_browsers_watch_the_same_game(tmp_path):
     """Fanout: a second subscriber is a second queue over one log, so both see the same session identically."""
     with serving(tmp_path) as server:
@@ -262,7 +256,6 @@ def test_two_browsers_watch_the_same_game(tmp_path):
 
 
 # ----------------------------------------------------------------------------- snapshot vs the stream --
-@needs_lane_a
 def test_a_reloaded_page_and_a_streamed_one_show_the_same_game(tmp_path):
     """The zero-drift guarantee at the HTTP boundary: the turn rows a client accumulated from the stream are the
     rows ``/state`` hands a page that just reloaded. One payload code path, asserted as an identity."""
@@ -279,7 +272,6 @@ def test_a_reloaded_page_and_a_streamed_one_show_the_same_game(tmp_path):
 
 
 # ------------------------------------------------------------------------------ playing a seat by hand --
-@needs_lane_a
 def test_a_person_plays_a_seat_over_http(tmp_path):
     """The act endpoint end to end: the seat blocks, the browser is told what it may legally do, a POST becomes
     the move, and the turn is recorded as the person's."""
@@ -303,7 +295,6 @@ def test_a_person_plays_a_seat_over_http(tmp_path):
     assert first["action"]["atype"] == "propose"
 
 
-@needs_lane_a
 def test_an_illegal_move_is_a_400_and_tells_every_watcher_why(tmp_path):
     """A rejection is not private. The person who typed it is not necessarily the only one watching, the seat is
     still blocked, and the form has to stay open with the reason attached — so it answers 400 AND broadcasts."""
@@ -328,7 +319,6 @@ def test_an_illegal_move_is_a_400_and_tells_every_watcher_why(tmp_path):
         played_out(server, sid)
 
 
-@needs_lane_a
 @pytest.mark.parametrize("key", ["seat", "seat_config"])
 def test_a_seat_can_be_reassigned_mid_game_over_http(tmp_path, key):
     """The swap endpoint, and the occupant map a page badges seats from.
@@ -346,7 +336,6 @@ def test_a_seat_can_be_reassigned_mid_game_over_http(tmp_path, key):
                                                         policy="bayes-rational").occupant_label()
 
 
-@needs_lane_a
 def test_the_snapshots_lobby_carries_what_the_swap_dock_offers(tmp_path):
     """The play page's swap dock reuses the lobby's seat editor, so it needs the same choices the lobby has —
     from the snapshot it already fetched, not a second round trip to ``/api/lobby``."""
@@ -360,7 +349,6 @@ def test_the_snapshots_lobby_carries_what_the_swap_dock_offers(tmp_path):
     assert {m["model_id"] for m in lobby["models"]} == {"stub-free", "stub-paid", "stub-gone"}
 
 
-@needs_lane_a
 def test_stop_ends_the_session_and_reset_returns_to_the_lobby(tmp_path):
     """Two clicks that have to work at any moment: a stop mid-game, and a reset that clears the way for the next
     lineup without restarting the server."""
@@ -380,15 +368,12 @@ def test_stop_ends_the_session_and_reset_returns_to_the_lobby(tmp_path):
 
 # ------------------------------------------------------------------------------------------ the pages --
 def test_the_lobby_page_is_served_at_the_root(tmp_path):
-    """The one page a person opens by hand. Skipped until lane C's renderer lands."""
+    """The one page a person opens by hand."""
     with serving(tmp_path) as server:
         status, body = call(server, "GET", "/")
-        if status == 500 and "NotImplementedError" in str(body):
-            pytest.skip("lane C's render_lobby_html has not landed yet")
         assert status == 200 and body.lstrip().startswith("<!")
 
 
-@needs_lane_a
 def test_the_live_page_needs_a_running_game(tmp_path):
     """``/play`` renders from a snapshot, so with no session there is nothing to render — and saying so is more
     useful than an empty page that silently never updates."""
@@ -397,6 +382,80 @@ def test_the_live_page_needs_a_running_game(tmp_path):
         sid = start_game(server, [RATIONAL] * 3)
         played_out(server, sid)
         status, body = call(server, "GET", "/play")
-        if status == 500 and "NotImplementedError" in str(body):
-            pytest.skip("lane D's render_live_html has not landed yet")
         assert status == 200 and body.lstrip().startswith("<!")
+
+
+# ------------------------------------------------------------------------------- the whole thing, offline --
+def unacceptable_deal(spec) -> dict:
+    """The deal that leaves the OTHER seats worst off, as ``{issue: option}``.
+
+    Used to make the human's opening offer one no rational seat will take, so the game does not close on the
+    first turn and the person gets a second prompt — which is the only way to drive an offer AND an accept from
+    the same seat without the test depending on how a policy happens to feel about an arbitrary package."""
+    surplus = spec.surplus_matrix()
+    worst = min(range(surplus.shape[0]), key=lambda idx: min(surplus[idx][1:]))
+    return spec.space.named(spec.space.deal_at(worst))
+
+
+def play_by_hand(server, sid: str, spec) -> list[str]:
+    """Play seat 0 through the HTTP endpoints until the game ends; returns the actions submitted, in order.
+
+    Deliberately written the way the browser drives it: read ``/state``, and when it says a move is wanted, read
+    off it what is legal right now and POST one. Accepts a live offer when there is one and opens with the
+    package nobody wants when there is not.
+
+    A prompt is identified by its TURN INDEX rather than by the phase, because the snapshot's ``awaiting`` outlives
+    the answer: a submitted move unblocks the seat immediately but ``awaiting`` is only cleared when the engine's
+    next event lands, so re-reading the phase (or the form) right after a POST shows a prompt that has already been
+    answered — and posting to it again is a 400. A browser has the same problem and solves it the same way."""
+    actions: list[str] = []
+    answered = -1
+    give_up = time.time() + TIMEOUT
+    while time.time() < give_up:
+        state = call(server, "GET", f"/api/session/{sid}/state")[1]
+        if state["phase"] == "done":
+            return actions
+        awaiting = state["awaiting"]
+        if awaiting is None or int(awaiting["turn_idx"]) <= answered:
+            time.sleep(0.02)                             # a seat is playing, or our last move is still landing
+            continue
+        answered = int(awaiting["turn_idx"])
+        offers = awaiting["legal"]["can_accept"]
+        move = ({"action": "accept", "offer_id": offers[0], "message": "Good enough. Done."} if offers else
+                {"action": "propose", "deal": unacceptable_deal(spec), "message": "My opening package.",
+                 "note": "anchoring high"})
+        status, body = call(server, "POST", f"/api/session/{sid}/act", {"seat": awaiting["seat"], **move})
+        assert status == 200, body
+        actions.append(move["action"])
+    pytest.fail(f"the game neither finished nor asked for a move within {TIMEOUT}s; played {actions}")
+
+
+def test_a_whole_game_is_configured_started_played_and_watched_over_http(tmp_path):
+    """The gate: everything the four lanes built, exercised end to end through the routes a browser uses, with
+    no network and no model.
+
+    One person in seat 0 (an opening offer, then an accept), computable policies in the others; the episode has
+    to reach ``done`` with a deal, land on disk, badge every turn with who played it, and hand a page that
+    reloads at the end exactly the turns a page that streamed from the start accumulated."""
+    with serving(tmp_path) as server:
+        status, lobby = call(server, "POST", "/api/lobby",
+                             {"seats": [{"kind": "human", "display_name": "sid"}, RATIONAL, RATIONAL],
+                              "budget_usd": None})
+        assert status == 200 and [s["kind"] for s in lobby["seats"]] == ["human", "rational", "rational"]
+
+        status, started = call(server, "POST", "/api/start", {})
+        assert status == 200 and started["episode_id"] is None, "the engine mints the id later; key off sid"
+        sid = started["sid"]
+
+        actions = play_by_hand(server, sid, server.manager.provider.spec)
+        snapshot = played_out(server, sid)
+        with stream(server, sid) as response:
+            frames = read_frames(response, until=events.EPISODE_DONE)
+
+    assert actions[0] == "propose" and "accept" in actions[1:], "the person offered, then accepted"
+    turns = snapshot["payload"]["turns"]
+    assert snapshot["payload"]["outcome"]["success"] is True and snapshot["payload"]["outcome"]["deal"] is True
+    assert {t["occupant"] for t in turns} == {"human:sid", "policy:bayes-rational"}, "every turn is badged"
+    assert turns[0]["occupant"] == "human:sid" and turns[0]["human_note"] == "anchoring high"
+    assert [data["turn"] for _, kind, data in frames if kind == events.TURN_APPENDED] == turns
+    assert list(tmp_path.rglob("*.json")), "the episode JSON is the durable artifact the stream is a view of"

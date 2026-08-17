@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # [implement: live-play/laneB] 2026-08-16
+# [implement: live-play/laneE] 2026-08-17
 """``LiveSession`` and ``SessionManager``: lobby to table, and the stream a live game emits.
 
 Every test here plays a REAL episode through the real engine — a two-issue, three-seat scorable negotiation with
@@ -59,21 +60,6 @@ ARM = "moves_chat"
 # How long a test waits for a two-issue game of computable seats to play out. It takes milliseconds; the timeout
 # exists only so a genuinely stuck engine thread fails the test instead of hanging the suite.
 TIMEOUT = 20.0
-
-
-def lane_a_ready() -> bool:
-    """Whether lane A's ``SeatConfig.occupant_label`` has landed. A session cannot build a table without it (the
-    router stamps the label on every turn), so the tests that start one are skipped until it does rather than
-    failing with a lane-attribution error that says nothing about this lane's code."""
-    try:
-        SeatConfig(kind="rational", policy="bayes-rational").occupant_label()
-        return True
-    except NotImplementedError:
-        return False
-
-
-needs_lane_a = pytest.mark.skipif(not lane_a_ready(),
-                                  reason="lane A's SeatConfig.occupant_label has not landed yet")
 
 
 @functools.lru_cache(maxsize=None)
@@ -214,7 +200,6 @@ def test_the_lobby_state_carries_every_key_its_three_readers_need(tmp_path):
     assert state["running"] is False and state["sid"] is None and state["error"] == ""
 
 
-@needs_lane_a
 def test_the_lobby_names_the_running_session_so_the_page_can_link_to_it(tmp_path):
     """Every per-session route is keyed by ``sid``, and the lobby is where a page that did not start the game
     finds it."""
@@ -278,7 +263,6 @@ def test_a_short_lineup_is_padded_to_the_games_actual_seat_count(tmp_path):
 
 
 # ----------------------------------------------------------------------------- lobby -> a real table --
-@needs_lane_a
 def test_each_seat_kind_becomes_the_participant_it_names(tmp_path):
     """The one translation the whole feature rests on: a lobby row becomes a participant of the right type, and
     ``rational`` versus ``oracle`` differ by exactly what the seat is allowed to know."""
@@ -293,7 +277,6 @@ def test_each_seat_kind_becomes_the_participant_it_names(tmp_path):
     play_out(session)
 
 
-@needs_lane_a
 def test_a_model_seat_is_built_by_the_provider_with_the_sessions_meter(tmp_path):
     """interlens never learns how to build a model seat. It hands the provider the thinking mode, the session's
     meter (so the cap actually binds) and the seat's private instructions, and takes back a participant."""
@@ -307,7 +290,6 @@ def test_a_model_seat_is_built_by_the_provider_with_the_sessions_meter(tmp_path)
     play_out(session)
 
 
-@needs_lane_a
 def test_private_instructions_land_in_the_seats_own_private_context(tmp_path):
     """One labelled segment, folded in where the seat's own private material already goes — so the operator can
     recognize their override in the transcript and no scaffold had to be edited to add it."""
@@ -334,7 +316,6 @@ def test_an_empty_override_adds_no_segment():
     assert apply_private_instructions(seat, "   ").private_context == ()
 
 
-@needs_lane_a
 def test_the_budget_cap_becomes_the_sessions_meter(tmp_path):
     """The cap the lobby typed is the ledger every metered participant charges, and the number the ``usage``
     event reports against."""
@@ -366,7 +347,6 @@ def test_an_unavailable_model_cannot_start(tmp_path):
         manager.start()
 
 
-@needs_lane_a
 def test_a_second_session_is_refused_while_one_is_running(tmp_path):
     """v1 holds one game at a time: budgets are per session, and a second concurrent game would double an API
     bill with no way to tell whose it was."""
@@ -380,7 +360,6 @@ def test_a_second_session_is_refused_while_one_is_running(tmp_path):
 
 
 # ------------------------------------------------------------------------------------ the event log --
-@needs_lane_a
 def test_the_log_is_a_monotonic_sequence_in_protocol_order(tmp_path):
     """The stream's shape: the episode is announced before any turn is committed, every turn lands, and the
     episode closes exactly once.
@@ -406,7 +385,6 @@ def test_the_log_is_a_monotonic_sequence_in_protocol_order(tmp_path):
     assert started == [r["seat"] for r in session._rows]
 
 
-@needs_lane_a
 def test_a_subscriber_replays_from_where_it_left_off(tmp_path):
     """The reconnect guarantee, at the session level: subscribing with a sequence number delivers everything
     after it and nothing before, which is what makes a reload mid-episode lossless."""
@@ -420,7 +398,6 @@ def test_a_subscriber_replays_from_where_it_left_off(tmp_path):
     session.unsubscribe(q)
 
 
-@needs_lane_a
 def test_a_stalled_subscriber_is_dropped_rather_than_stalling_the_game(tmp_path):
     """``broadcast`` runs on the engine thread, so a reader whose queue filled up must be droppable. A game that
     could be stalled by a browser that stopped reading is not a live game."""
@@ -435,7 +412,6 @@ def test_a_stalled_subscriber_is_dropped_rather_than_stalling_the_game(tmp_path)
 
 
 # ------------------------------------------------------------------------------- the zero-drift gate --
-@needs_lane_a
 def test_the_streamed_rows_are_exactly_what_a_reload_rebuilds(tmp_path):
     """THE gate. The rows the session accumulated one turn at a time must equal, key for key, the rows a full
     ``episode_payload`` rebuild produces — which is what lets a live page push a streamed turn straight onto
@@ -449,7 +425,6 @@ def test_the_streamed_rows_are_exactly_what_a_reload_rebuilds(tmp_path):
         assert row == rebuilt[i], f"streamed turn {i} differs from the row a reload rebuilds"
 
 
-@needs_lane_a
 def test_every_streamed_turn_carried_the_row_the_snapshot_holds(tmp_path):
     """And the rows actually went over the wire: the ``turn_appended`` events carry the same dicts, so a client
     that merged the stream holds what a reloading one fetches."""
@@ -466,7 +441,6 @@ def test_every_streamed_turn_carried_the_row_the_snapshot_holds(tmp_path):
     assert bubbles and all(b in transcript for b in bubbles)
 
 
-@needs_lane_a
 def test_the_snapshot_is_renderable_before_a_single_turn_exists(tmp_path):
     """A human seat can be asked to move before any turn is played, and its dock needs the game — so ``/state``
     has to render from the moment the session starts, not from the first wave."""
@@ -520,7 +494,6 @@ def test_a_streamed_bubble_badges_a_swapped_seat_the_way_a_full_render_does():
 
 
 # ------------------------------------------------------------------------------- a person at the table --
-@needs_lane_a
 def test_a_human_seat_blocks_the_game_and_plays_the_move_it_is_given(tmp_path):
     """The whole human path end to end: the seat blocks, the session announces what may legally be done, a POST
     body becomes a move, and the turn is recorded as the person's — indistinguishable in FORM from a model's,
@@ -543,7 +516,6 @@ def test_a_human_seat_blocks_the_game_and_plays_the_move_it_is_given(tmp_path):
     assert session._rows[0]["action"]["atype"] == "propose"
 
 
-@needs_lane_a
 @pytest.mark.parametrize("display_name, occupant", [("sid", "human:sid"), ("", "human:player")])
 def test_a_human_seat_is_built_under_the_name_its_occupant_label_uses(tmp_path, display_name, occupant):
     """A ``HumanParticipant`` stamps ``human:<its own name>`` on the turns it plays and the router does not
@@ -561,7 +533,6 @@ def test_a_human_seat_is_built_under_the_name_its_occupant_label_uses(tmp_path, 
     play_out(session)
 
 
-@needs_lane_a
 def test_an_illegal_move_is_refused_and_the_seat_stays_blocked(tmp_path):
     """Nothing is enqueued on a rejection. The engine reads empty content as a well-formed no-op turn, so a
     submission that slipped through unvalidated would silently become the player passing."""
@@ -581,7 +552,6 @@ def test_an_illegal_move_is_refused_and_the_seat_stays_blocked(tmp_path):
     play_out(session)
 
 
-@needs_lane_a
 def test_a_seat_cannot_change_hands_while_its_player_is_deciding(tmp_path):
     """v1 applies swaps between turns only. The person is already answering and the turn is theirs — taking it
     away mid-decision would either lose their move or play it under somebody else's occupant stamp."""
@@ -594,7 +564,6 @@ def test_a_seat_cannot_change_hands_while_its_player_is_deciding(tmp_path):
     play_out(session)
 
 
-@needs_lane_a
 def test_a_seat_that_is_not_waiting_can_be_swapped_and_the_swap_is_announced(tmp_path):
     """The other half of the same rule, and the event a page badges the new occupant from."""
     manager = make_manager(tmp_path)
@@ -607,7 +576,6 @@ def test_a_seat_that_is_not_waiting_can_be_swapped_and_the_swap_is_announced(tmp
     assert session._router.seats["Blake"].tables is not None
 
 
-@needs_lane_a
 def test_stopping_releases_a_waiting_player_and_is_idempotent(tmp_path):
     """A double-click on Stop must not raise, and a blocked seat must be released — otherwise the engine thread
     outlives the session forever, holding a person's turn open on a game nobody is watching."""
@@ -621,7 +589,6 @@ def test_stopping_releases_a_waiting_player_and_is_idempotent(tmp_path):
     assert len(done) == 1 and done[0]["status"] == "stopped"
 
 
-@needs_lane_a
 def test_the_engine_thread_never_leaves_a_session_hanging(tmp_path):
     """Whatever route the episode ends by — played out, stopped, or an exception nobody predicted — the session
     closes itself out. A browser that only ever hears about waves would otherwise sit on a spinner forever."""
@@ -633,7 +600,6 @@ def test_the_engine_thread_never_leaves_a_session_hanging(tmp_path):
     assert session.phase == "done" and session.episode_id
 
 
-@needs_lane_a
 def test_the_episode_is_on_disk_and_the_stream_never_ran_ahead_of_it(tmp_path):
     """The stream is a view of the file, never a replacement for it: the run directory holds the episode, with
     every turn the stream reported."""
@@ -649,7 +615,6 @@ def test_the_episode_is_on_disk_and_the_stream_never_ran_ahead_of_it(tmp_path):
     assert [t["idx"] for t in rebuilt["turns"]] == [r["idx"] for r in session._rows]
 
 
-@needs_lane_a
 def test_two_sessions_do_not_share_a_lock_or_a_log(tmp_path):
     """Sessions are independent by construction — the manager holds one at a time, but the objects must not have
     started sharing state through a mutable default."""
@@ -664,7 +629,6 @@ def test_two_sessions_do_not_share_a_lock_or_a_log(tmp_path):
     assert first.episode_id != second.episode_id
 
 
-@needs_lane_a
 def test_broadcast_is_safe_to_call_from_several_threads(tmp_path):
     """``broadcast`` is called from the engine thread while HTTP threads subscribe and unsubscribe, so the
     sequence numbering has to hold under contention: no duplicates, no gaps."""
