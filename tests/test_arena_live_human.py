@@ -41,6 +41,7 @@ import pytest
 
 from interlens.arena.actions import Accept, Pass, Propose, Walk, action_message, parse_action
 from interlens.arena.engine import EpisodePool
+from interlens.arena.live import events
 from interlens.arena.live.human import (FINAL_PROPOSAL, FINAL_VOTE, TURN, HumanParticipant, PendingRequest,
                                         SessionStopped, build_human_message, legal_actions, phase_of)
 from interlens.arena.negotiation.sheets import GameSpec, ScoreSheet
@@ -122,6 +123,10 @@ def test_the_seat_publishes_everything_the_form_needs():
     assert kind == "awaiting_human"
     assert data["seat"] == request.seat == PERSONAS[1] and data["seat_idx"] == 1
     assert data["round"] == 1 and data["phase"] == TURN and data["deadline"] == spec.rounds
+    # the participant cannot know the episode's turn count, so it publishes the sentinel and the session — which
+    # counts the rows it has streamed — stamps the real index. Pinned on the PRODUCING side, so a participant
+    # that started guessing a turn index would be caught here rather than as a wrong number in the dock.
+    assert data["turn_idx"] == events.UNKNOWN_TURN_IDX
     # the private sheet — this seat's, and only this seat's
     assert data["sheet"]["threshold"] == spec.sheets[1].threshold
     assert data["sheet"]["values"] == [list(v) for v in spec.sheets[1].values]
@@ -332,7 +337,7 @@ def test_the_final_vote_is_only_on_the_offer_under_vote():
 def test_a_move_the_phase_forbids_is_refused(phase_kwargs, form, match):
     spec = two_party_game()
     state = _state(spec, **phase_kwargs)
-    pending = PendingRequest(seat=PERSONAS[1], seat_idx=1, turn_idx=-1, round=state.round,
+    pending = PendingRequest(seat=PERSONAS[1], seat_idx=1, turn_idx=events.UNKNOWN_TURN_IDX, round=state.round,
                              phase=phase_of(state), state=state, legal=legal_actions(state))
     with pytest.raises(ValueError, match=match):
         build_human_message(form, name="sid", space=spec.space, pending=pending)

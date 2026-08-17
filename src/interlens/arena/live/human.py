@@ -240,7 +240,8 @@ class HumanParticipant(Participant):
         Raises on any interp request, exactly as ``PolicyParticipant`` does: there is no model here to steer,
         capture, patch or read logprobs from, and silently ignoring the request would corrupt an experiment.
 
-        ``turn_idx`` on the published request is ``-1``: the participant does not know the episode's turn count
+        ``turn_idx`` on the published request is :data:`events.UNKNOWN_TURN_IDX`: the participant does not know
+        the episode's turn count
         (the engine passes ``turn`` only alongside a capture request), and the SESSION does — it stamps the real
         index on the event before broadcasting, the same way it supplies ``turn_idx`` for ``turn_started``,
         which the router cannot know either.
@@ -284,7 +285,8 @@ class HumanParticipant(Participant):
         block.setdefault("seat", self.seat)
         block.setdefault("deadline", self.deadline)
         state = NegotiationState.from_block(block, sheet=self.sheet, space=self.space, seat=self.seat)
-        return PendingRequest(seat=seat or self.name, seat_idx=state.seat, turn_idx=-1, round=state.round,
+        return PendingRequest(seat=seat or self.name, seat_idx=state.seat,
+                              turn_idx=events.UNKNOWN_TURN_IDX, round=state.round,
                               phase=phase_of(state), state=state, view=[dict(s) for s in (view or [])],
                               legal=legal_actions(state), block=block)
 
