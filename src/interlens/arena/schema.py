@@ -152,6 +152,19 @@ class TurnRecord:
 	# A ``recovered`` turn IS model behaviour — it conditions on the same content, re-rendered — while a
 	# ``terminal`` one is a turn no model produced and is counted as silence, so the two must never be pooled.
 	refusal_recovery: dict | None = None
+	# WHO actually played this seat on this turn, when that is not fixed for the episode. Live play lets a seat be
+	# reconfigured mid-game (an API model handed to a human, a human handed to a computable policy), so "the seat's
+	# participant" is a property of the TURN, not of the episode's seat list, and a transcript that read the lineup
+	# off ``Episode.seats`` alone would attribute every turn to whoever happened to hold the seat last. Labels are
+	# ``kind:detail`` — ``api:claude-…``, ``policy:bayes-rational``, ``oracle:…``, ``human:<name>``, ``scripted:…``.
+	# ``None`` on every batch-run episode (one occupant throughout, recorded in ``seats``), so old episodes and the
+	# headless path are unchanged.
+	occupant: str | None = None
+	# A human seat's private scratchpad for this turn: reasoning the person wrote for themselves, which was NOT
+	# published to the other seats (the published text is ``content``). The human counterpart of ``reasoning`` —
+	# recorded so a live-play transcript carries the same private-deliberation evidence an LLM seat's thinking
+	# trace does. ``None`` for every non-human turn.
+	human_note: str | None = None
 
 	@classmethod
 	def from_json(cls, d: dict) -> "TurnRecord":

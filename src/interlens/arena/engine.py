@@ -284,6 +284,20 @@ def _gen_provenance(participant) -> dict:
 	return out
 
 
+def _notify(callback: Callable[[Episode], None] | None, episode: Episode) -> None:
+	"""Call an episode observer (``EpisodePool.run_episode(on_wave=...)``) without letting it break the episode.
+
+	Observers are viewers — a live SSE broadcaster, a progress printer — and a viewer that raises must not take a
+	running episode down with it, so the exception is logged (with the episode id, or the traceback would name only
+	the callback) and swallowed. ``None`` is the common case and does nothing at all."""
+	if callback is None:
+		return
+	try:
+		callback(episode)
+	except Exception:
+		logger.exception("episode observer raised on episode %s; ignored", episode.episode_id)
+
+
 class EpisodeRun:
 	"""Per-episode bookkeeping shared by both drivers: state stepping, turn recording, budget checks,
 	retries, and finalization. Driver-agnostic — it never talks to a participant itself."""
@@ -391,6 +405,11 @@ class EpisodeRun:
 			gen_failed=bool(message.metadata.get(GEN_FAILED_KEY)),
 			gen_failure=message.metadata.get(GEN_FAILURE_KEY),
 			refusal_recovery=message.metadata.get(REFUSAL_RECOVERY_KEY),
+			# Who played this seat on this turn, and (human seats only) the private note they wrote. Both are
+			# stamped by the participant that produced the message — a live table's router stamps the occupant,
+			# a HumanParticipant the note — so the engine records them without knowing anything about live play.
+			occupant=message.metadata.get("occupant"),
+			human_note=message.metadata.get("human_note"),
 		))
 		self._turn_idx += 1
 		self.ep.tokens_in += tokens_in
@@ -575,7 +594,8 @@ class EpisodePool:
 	                      budget: StopCondition | list | None = None,
 	                      estimated_cost: float | None = None,
 	                      capture=None, steering=None, patch=None,
-	                      gate: Callable[[], bool] | None = None) -> Episode | None:
+	                      gate: Callable[[], bool] | None = None,
+	                      on_wave: Callable[[Episode], None] | None = None) -> Episode | None:
 		"""Play one episode to completion. Returns the ``Episode`` (status ``done`` or ``error``), or ``None``
 		when the episode never started: its cost reservation didn't fit under the meter's budget, the meter was
 		already exhausted, or ``gate()`` returned True. The launch gates are evaluated once the episode acquires
@@ -585,7 +605,14 @@ class EpisodePool:
 		``capture`` / ``steering`` / ``patch`` are per-turn interp hooks threaded into every committed
 		generation (local ``ModelParticipant`` only — API/scripted participants raise on interp requests);
 		``capture`` (a ``CaptureRequest``) tags activations by this episode's turn index, so per-turn activation
-		capture *inside* a structured episode works. Forked provisional probes are left clean (no capture/steer)."""
+		capture *inside* a structured episode works. Forked provisional probes are left clean (no capture/steer).
+
+		``on_wave(episode)`` is an observer called with the live ``Episode`` after every wave is persisted and once
+		more after ``finalize()`` — the seam a live viewer streams from (``arena.live``). It fires AFTER ``save()``
+		on purpose: an observer can then never show a turn that is not yet on disk, so a reader who reloads mid-
+		episode sees at least what was streamed to them. It is an OBSERVER, not a hook — its return value is
+		ignored and any exception it raises is logged and swallowed, because a broken viewer must not be able to
+		kill a running episode. Leave it ``None`` (the default) and the episode is byte-for-byte what it was."""
 		async with self._sem:
 			if gate is not None and gate():
 				return None
@@ -643,14 +670,21 @@ class EpisodePool:
 							parsed, score = run.score_provisional(message)
 							run.record_provisional(provisional, message, parsed, score)
 						run.save()
-					return run.finalize()
+						_notify(on_wave, run.ep)
+					episode = run.finalize()
+					_notify(on_wave, episode)
+					return episode
 				except Exception:
 					# NOT a silent swallow: the episode is finalized with status="error" and the traceback, so it
 					# is legible in the store and excluded by any "done" filter. Logged as well, because a run of
 					# 120 episodes where a third errored should say so while it is running, not only on inspection.
 					logger.exception("episode %s (%s, seat model %s) failed and is recorded as status=error",
 					                 run.ep.episode_id, run.ep.arm, run.ep.model)
-					return run.finalize(error=traceback.format_exc()[-2000:])
+					episode = run.finalize(error=traceback.format_exc()[-2000:])
+					# The observer hears about a failed episode too — a live viewer that only ever saw waves would
+					# otherwise sit on a half-played transcript forever with no idea the episode had ended.
+					_notify(on_wave, episode)
+					return episode
 			finally:
 				if self.meter is not None and estimated_cost is not None:
 					self.meter.settle(estimated_cost)
