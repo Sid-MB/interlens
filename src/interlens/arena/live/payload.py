@@ -89,7 +89,15 @@ def bubble_html(payload: dict, turn: dict) -> str:
 
     Rendered server-side rather than reimplemented in JS for the same reason the static page renders it there:
     there would otherwise be two bubble renderers to keep in step, and the browser copy would be the one that
-    quietly went stale. ``payload`` is read only for its seat table, so a payload not yet containing ``turn`` is
-    fine.
+    quietly went stale.
+
+    ``payload`` must carry BOTH the seat table and the transcript so far (``{"seats": [...], "turns": [...]}``),
+    and ``turn`` should already be among those turns. The seats are the obvious half; the turns are the half that
+    is easy to skip and silently wrong to omit. ``_chat_bubble`` derives each seat's DEFAULT occupant from the
+    transcript and badges a turn only when it DEPARTS from that default — so against an empty ``turns`` no seat
+    has a known default, every badge suppresses itself, and a transcript renders as though no seat had ever
+    changed hands. That is not a degraded bubble, it is the swap badge silently doing nothing, which is the one
+    thing a live transcript shows that a static one cannot. Passing the accumulated rows is also what makes the
+    bubble byte-identical to the one a reload rebuilds, since a reload derives the same map from the same rows.
     """
     return _chat_bubble(payload, turn)
