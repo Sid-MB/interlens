@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import dataclasses
 import inspect
 import json
 import re
@@ -378,6 +379,40 @@ def test_the_payload_carries_the_occupant_through_to_the_page(episode):
     assert rendered["turns"][0]["occupant"] == "human:sid"
     assert rendered["turns"][0]["human_note"] == "private"
     assert all(t["occupant"] is None for t in rendered["turns"][1:])
+
+
+# ------------------------------------------------------------------------- the prepared-game contract --
+def test_a_prepared_game_must_name_its_arm_and_deadline():
+    """Neither has a defensible default, so neither gets one — the provider is made to decide.
+
+    ``arm`` is validated by the scenario and a value it does not know is fatal on the first wave; there is no arm
+    every scenario accepts, so any default would be one that works for one scenario and kills the session for the
+    next. ``deadline`` is worse because it fails SILENTLY: it binds every computable seat's concession schedule
+    and the human's round counter, so a default disagreeing with the game is a table playing to the wrong clock
+    with nothing raised anywhere."""
+    from interlens.arena.live import PreparedGame
+
+    with pytest.raises(TypeError):
+        PreparedGame(instance=object(), scenario=object(), game=object())
+
+    fields = {f.name: f for f in dataclasses.fields(PreparedGame)}
+    for name in ("arm", "deadline"):
+        f = fields[name]
+        assert f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING, \
+            f"PreparedGame.{name} has a default again; it must be a decision the provider makes"
+
+
+def test_the_negotiation_arms_a_provider_may_name_are_what_the_scenario_accepts():
+    """The docstring tells a provider which arms exist. Pinned against the scenario's own list so the advice
+    cannot rot into naming an arm that stopped being valid."""
+    from interlens.arena.live import PreparedGame
+    from interlens.arena.scenarios.scorable import ARMS
+
+    doc = PreparedGame.__doc__
+    assert "moves_chat" in doc and "moves_chat" in ARMS
+    for arm in ARMS:
+        assert arm in doc, f"the docstring does not mention the {arm!r} arm the scenario accepts"
+    assert "live" not in ARMS      # the old default, and the reason this contract changed
 
 
 # ------------------------------------------------------------------------------------ the skeleton --

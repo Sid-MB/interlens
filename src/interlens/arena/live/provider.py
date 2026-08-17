@@ -220,12 +220,21 @@ class PreparedGame:
     game : Any
         The ``GameSpec`` behind the instance — the source of the private score sheets, the deal space and the
         discount. The human dock reads its seat's sheet from here, and computable seats are bound against it.
+    arm : str
+        The arm the episode is played under, recorded on it and passed to ``scenario.make_state``. REQUIRED, and
+        deliberately without a default: the scenario validates it and a value it does not know is fatal on the
+        first wave (``ScorableNegotiation`` accepts ``moves_chat`` / ``moves_only`` / ``team`` / ``solo``, or any
+        ``team``-prefixed variant, and raises ``unknown arm`` otherwise). There is no arm every scenario would
+        accept, so any default here would be a value that happens to work for one scenario and kills the session
+        for the next — better to make the provider name one. ``moves_chat`` is the usual choice for live
+        negotiation, since a live game with no talk channel gives a human nothing to do but submit moves.
+    deadline : int
+        Total rounds ``T``. REQUIRED for the same reason: it is bound into every computable seat's concession
+        schedule (``policy_seat(deadline=...)``) and shown to the human as the round they are deciding under, so
+        a deadline that disagrees with the game is not a cosmetic default but a table playing to the wrong clock
+        — and silently, unlike a bad ``arm``. Read it off the game (``spec.rounds``) rather than restating it.
     cfg : dict
         The episode ``cfg`` (cell id and sweep configuration) passed to ``run_episode``.
-    arm : str
-        The arm label recorded on the episode (``"live"`` and its variants).
-    deadline : int
-        Total rounds ``T``. Bound into every computable seat and shown to the human.
     seat_names : tuple[str, ...]
         Seat display names in seat order (``arena.schema.PERSONAS`` for negotiation). The routing key.
     instance_json : dict
@@ -241,9 +250,9 @@ class PreparedGame:
     instance: Any
     scenario: Any
     game: Any
+    arm: str
+    deadline: int
     cfg: dict = field(default_factory=dict)
-    arm: str = "live"
-    deadline: int = 8
     seat_names: tuple[str, ...] = ()
     instance_json: dict = field(default_factory=dict)
     scaffold: Any = None
