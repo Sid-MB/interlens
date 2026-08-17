@@ -249,6 +249,41 @@ def test_every_builder_returns_a_declared_type_and_a_json_safe_body(builder, arg
     json.loads(events.format_sse(1, kind, data).decode().split("data: ", 1)[1])
 
 
+def test_awaiting_human_always_carries_every_legal_action_key():
+    """The dock reads ``legal.can_reject`` (and friends) directly, so every key must be present on every event.
+
+    A capability the caller forgot to compute has to fail CLOSED — the control is simply not offered — rather
+    than arriving as ``undefined`` and rendering a button that 400s when pressed."""
+    _, data = events.awaiting_human("Avery", 0, 0, 1, "propose", {}, {}, {"can_offer": True}, 8)
+    assert set(data["legal"]) == set(events.LEGAL_ACTION_DEFAULTS)
+    assert data["legal"]["can_offer"] is True
+    assert data["legal"]["can_accept"] == [] and data["legal"]["can_reject"] == []
+    assert data["legal"]["can_walk"] is False and data["legal"]["can_pass"] is False
+
+
+def test_accept_and_reject_are_independent_offer_id_lists():
+    """Both moves name the offer they act on, and the two lists genuinely differ: the scenario's
+    ``_PHASE_ALLOWED`` permits accept but NOT reject on the forced-final proposal turn. A dock that derived one
+    from the other would offer a move the scenario scores as a legality error, burning a real turn."""
+    from interlens.arena.scenarios.scorable import _PHASE_ALLOWED
+
+    assert "accept" in _PHASE_ALLOWED["final_proposal"] and "reject" not in _PHASE_ALLOWED["final_proposal"]
+    assert {"accept", "reject"} <= _PHASE_ALLOWED["final_vote"]
+    for key in ("can_accept", "can_reject"):
+        assert events.LEGAL_ACTION_DEFAULTS[key] == [], f"{key} is a list of offer ids, not a flag"
+
+    _, data = events.awaiting_human("Avery", 0, 0, 1, "final_proposal", {}, {},
+                                    {"can_accept": ["P1", "P2"], "can_reject": [], "can_offer": True}, 8)
+    assert data["legal"]["can_accept"] == ["P1", "P2"] and data["legal"]["can_reject"] == []
+
+
+def test_an_unknown_legal_key_travels_untouched():
+    """Forward compatible: a later move type reaches the page without this builder being changed for it."""
+    _, data = events.awaiting_human("Avery", 0, 0, 1, "propose", {}, {}, {"can_bribe": ["P1"]}, 8)
+    assert data["legal"]["can_bribe"] == ["P1"]
+    assert set(events.LEGAL_ACTION_DEFAULTS) <= set(data["legal"])
+
+
 def test_the_protocol_has_a_builder_for_every_event_type():
     """One source of truth means no event type without a builder — a hand-built dict is how the two halves of
     the protocol start to drift."""

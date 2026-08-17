@@ -80,6 +80,19 @@ EVENT_TYPES = (HELLO, LOBBY_STATE, EPISODE_STARTED, TURN_STARTED, TURN_APPENDED,
 KEEPALIVE_SECONDS = 15
 KEEPALIVE_FRAME = b": ping\n\n"
 
+# The ``legal`` block of an ``awaiting_human`` event: every key the human dock may render a control from, with
+# the value meaning "this move is not available". Frozen here because it is a contract between three lanes — the
+# participant computes it, the server validates against it, the browser draws buttons from it — and a key that
+# exists in only two of the three is a control that either never appears or 400s when pressed.
+#
+# ``can_accept`` and ``can_reject`` are LISTS of live offer ids, not booleans, because both moves name the offer
+# they act on (``Accept(offer_id)`` / ``Reject(offer_id)``), and the dock renders one button per live offer.
+# They are also genuinely independent: ``ScorableNegotiation._PHASE_ALLOWED`` permits accept but NOT reject on
+# the forced-final proposal turn, so a dock that derived one from the other would offer a move the scenario
+# scores as a legality error and burn a real turn on it.
+LEGAL_ACTION_DEFAULTS = {"can_accept": [], "can_reject": [], "can_offer": False, "can_walk": False,
+                         "can_pass": False}
+
 # The response headers an SSE endpoint must send. ``X-Accel-Buffering`` is the nginx directive that turns off
 # response buffering — without it a proxy happily holds the stream until it has a bufferful, which for an event
 # stream means the page shows nothing for a minute and then everything at once.
@@ -159,13 +172,19 @@ def awaiting_human(seat: str, seat_idx: int, turn_idx: int, round_: int, phase: 
     ``state`` is the machine-readable ``negotiation_state`` block parsed out of the seat's own view (the offer
     registry, the standing offer, the round), so the UI reads the same state the seat was conditioned on rather
     than scraping the prompt. ``sheet`` is that seat's PRIVATE score sheet (``{values, threshold}``) — it is
-    private to this seat and to this browser, which is the point of playing it. ``legal`` is the server's
-    verdict on what may be submitted now (``{can_accept: [offer_ids], can_offer: bool, can_walk: bool,
-    can_pass: bool}``): the server validates anyway, but the form should not offer a move that will be refused.
-    ``deadline`` is the game's total round count ``T``, for the "round r of T" the human is deciding under."""
+    private to this seat and to this browser, which is the point of playing it. ``legal`` is the verdict on what
+    may be submitted now (:data:`LEGAL_ACTION_DEFAULTS` names the keys): the server validates anyway, but the
+    form should not offer a move that will be refused. ``deadline`` is the game's total round count ``T``, for
+    the "round r of T" the human is deciding under.
+
+    ``legal`` is NORMALIZED here — every key in :data:`LEGAL_ACTION_DEFAULTS` is present in the emitted event,
+    missing ones taking their "not available" default. So the browser can read ``legal.can_reject`` directly
+    instead of guarding for undefined, and a capability a caller forgot to compute fails CLOSED (the control is
+    not offered) rather than rendering a button that 400s. Extra keys are passed through untouched, so a later
+    move type does not need this builder changed to reach the page."""
     return AWAITING_HUMAN, {"seat": seat, "seat_idx": int(seat_idx), "turn_idx": int(turn_idx),
                             "round": int(round_), "phase": phase, "state": state, "sheet": sheet,
-                            "legal": legal, "deadline": int(deadline)}
+                            "legal": {**LEGAL_ACTION_DEFAULTS, **(legal or {})}, "deadline": int(deadline)}
 
 
 def input_rejected(seat: str, reason: str) -> tuple[str, dict]:
