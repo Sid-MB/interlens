@@ -408,11 +408,19 @@ def _chat_bubble(payload: dict, t: dict, defaults: dict | None = None) -> str:
 def _chat_bubbles(payload: dict) -> str:
     """The public conversation as chat bubbles, one per PUBLISHED turn, in order.
 
-    This is the transcript as a *seat* experienced it, so it carries only what the engine published to the other
-    parties: the free-text message and the formal action. The scratchpad, the reasoning trace, the prompt, and the
-    oracle verdicts are all private or post-hoc and are deliberately absent — a conversation view that leaked any
-    of them would misrepresent what the other seats could possibly have been reacting to. Turns that were first
-    attempts at a slot the seat later retried are absent too, because the engine never published them.
+    This is the transcript as a *seat* experienced it, so its CONTENT is only what the engine published to the
+    other parties: the free-text message and the formal action. The scratchpad, the reasoning trace, the prompt,
+    and the oracle verdicts are all private or post-hoc and are deliberately absent — a conversation view that
+    leaked any of them would misrepresent what the other seats could possibly have been reacting to. Turns that
+    were first attempts at a slot the seat later retried are absent too, because the engine never published them.
+
+    Three ANNOTATIONS are exceptions, and they are exceptions of a different kind: the ``NOT GENERATED`` and
+    ``SAID NOTHING`` hazard tags, and the occupant badge on a turn a person played or a seat that changed hands.
+    None of the three was published to the table, and each is marked as an annotation rather than set in the
+    bubble's body. They are admissible where a leaked scratchpad is not because they describe the PROVENANCE of a
+    turn — whether it was generated at all, and by whom — rather than adding content another seat could have been
+    reacting to. Omitting them is the more misleading choice: an engine placeholder would read as a deliberate
+    pass, and a seat that changed hands mid-game would read as one continuous player.
 
     Every bubble carries its speaker's seat, so the browser can re-anchor the whole list to whichever seat is in
     view (that seat's own bubbles move to the right) without re-rendering anything."""
@@ -576,7 +584,9 @@ def _info_pane(payload: dict) -> str:
 </section>
 <section class='infosection' id='info-sidebar'>
  <h2>Conversation and issue views</h2>
- <p><b>Conversation</b> contains only published messages and formal moves. It excludes private scratchpads,
+ <p><b>Conversation</b> contains only published messages and formal moves, plus a few provenance annotations that
+ were never published to the table: a turn the engine did not generate, a turn that published nothing, and a turn
+ played by somebody other than the seat's usual occupant. It excludes private scratchpads,
  prompts, failed attempts that were retried, and post-hoc oracle verdicts. <b>Issues</b> is an analyst's view of
  a seat's score sheet; in a private-information game, other seats could not see it while negotiating. Both views
  follow the turn currently in the transcript.</p>
@@ -610,9 +620,11 @@ def _sidebar(payload: dict) -> str:
                              "draw.</div>")
     panes = {
         "game": _game_cards(payload),
-        "chat": ("<div class='sub'>The public record only: each seat's free text and the formal move it published. "
-                 "Scratchpads, prompts, and oracle verdicts are private or post-hoc and are not here. The seat in "
-                 "view speaks on the right.</div>" + _chat_bubbles(payload)),
+        "chat": ("<div class='sub'>The public record: each seat's free text and the formal move it published, "
+                 "plus provenance badges for a turn the engine did not generate, one that published nothing, or "
+                 "one played by somebody other than the seat's usual occupant. Scratchpads, prompts, and oracle "
+                 "verdicts are private or post-hoc and are not here. The seat in view speaks on the right.</div>"
+                 + _chat_bubbles(payload)),
         "frontier": frontier,
         "issues": _issue_pane(payload),
         "info": _info_pane(payload),

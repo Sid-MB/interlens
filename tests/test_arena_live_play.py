@@ -281,6 +281,23 @@ def test_the_badge_is_absent_from_every_episode_recorded_before_occupants_existe
     assert viz_page.occupant_defaults(payload) == {}
 
 
+def test_the_conversation_view_does_not_claim_to_carry_only_published_content(stamped):
+    """The badge is an annotation on a view that four different sentences described as published content only.
+
+    Who holds a seat was never published to the table, so the badge is admissible for the same reason the
+    ``NOT GENERATED`` tag is — it describes the turn's provenance rather than adding content another seat could
+    have reacted to — but the prose had to stop saying otherwise. Pinned because a docstring cannot fail a test
+    on its own, and a stale description is what licenses the next reader to reintroduce the bug it describes."""
+    page_source = viz_page._chat_bubbles.__doc__ or ""
+    assert "occupant badge" in page_source and "PROVENANCE" in page_source
+    # The two USER-FACING copies, which a reader sees next to the badge itself.
+    payload, _handed_over = stamped
+    guide = viz_page._info_pane(payload) + viz_page._sidebar(payload)
+    assert "contains only published messages and formal moves." not in guide
+    assert "The public record only:" not in guide
+    assert guide.count("usual occupant") >= 2
+
+
 def test_a_bubble_rendered_alone_agrees_with_the_bubble_rendered_in_the_list(stamped):
     """The live server renders ONE arriving bubble (``live.payload.bubble_html`` -> ``_chat_bubble``) while a
     reload renders the whole list. They must be the same bytes, badge included — which is why the defaults map
