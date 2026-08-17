@@ -262,12 +262,17 @@ function paintValue() {
 
 /* An offer already on the table, priced on the player's own sheet, so accepting is a decision rather than a
    guess. `state.offers` is the scenario's own registry (offer id -> option-index list) as the seat was
-   conditioned on it, which is why the ids here are the ids the engine will accept. */
-function offerRow(id, deal, sheet) {
+   conditioned on it, which is why the ids here are the ids the engine will accept.
+
+   Accept and reject are gated SEPARATELY, each from its own list in the server's verdict, because they are not
+   two halves of one permission: on the forced-final vote an offer can be acceptable and not rejectable. Reading
+   one from the other — or from the phase string — would offer a move the server is about to refuse. */
+function offerRow(id, deal, sheet, canAccept, canReject) {
   const u = (deal || []).reduce((acc, o, j) => acc + Number((((sheet || {}).values || [])[j] || [])[o] || 0), 0);
   const surplus = u - Number((sheet || {}).threshold || 0);
-  return `<div class="offerrow"><button class="act-accept" data-accept="${E(id)}">Accept ${E(id)}</button>
-    <button class="act-reject" data-reject="${E(id)}">Reject</button>
+  return `<div class="offerrow">${
+    canAccept ? `<button class="act-accept" data-accept="${E(id)}">Accept ${E(id)}</button>` : ""}${
+    canReject ? `<button class="act-reject" data-reject="${E(id)}">Reject ${E(id)}</button>` : ""}
     <span class="sub">${E(G ? dealSummary(G, dealIndexOf(deal)) : "")}</span>
     <span class="pill">your score <b>${N(u, 1)}</b></span>
     <span class="pill">surplus <b class="${CLS(surplus)}">${SIGN(surplus, 1)}</b></span></div>`;
@@ -277,13 +282,16 @@ function paintOffers() {
   const host = $("dock-offers");
   if (!host) return;
   const state = (PENDING || {}).state || {}, legal = (PENDING || {}).legal || {};
-  const offers = state.offers || {}, can = legal.can_accept || [];
-  if (!can.length) {
+  const offers = state.offers || {};
+  const accept = legal.can_accept || [], reject = legal.can_reject || [];
+  const ids = accept.concat(reject.filter(id => accept.indexOf(id) < 0));
+  if (!ids.length) {
     host.innerHTML = "<div class='sub muted'>No offer on the table is yours to vote on right now.</div>";
     return;
   }
   const sheet = dockSheet();
-  host.innerHTML = can.map(id => offerRow(id, offers[id] || [], sheet)).join("");
+  host.innerHTML = ids.map(id => offerRow(id, offers[id] || [], sheet,
+                                          accept.indexOf(id) >= 0, reject.indexOf(id) >= 0)).join("");
   host.querySelectorAll("[data-accept]").forEach(b =>
     b.addEventListener("click", () => submit({ action: "accept", offer_id: b.dataset.accept })));
   host.querySelectorAll("[data-reject]").forEach(b =>
@@ -304,7 +312,21 @@ function setDockOpen(open) {
   gate("dock-propose", legal.can_offer);
   gate("dock-walk", legal.can_walk);
   gate("dock-pass", legal.can_pass);
-  gate("dock-talk", legal.can_offer || legal.can_pass);
+  gateTalk();
+}
+
+/* Talk is a PASS carrying a message — the same turn a policy seat standing pat produces, which is the property
+   that keeps a human's talk-only turn parsing like everyone else's. So an EMPTY talk is not a quiet no-op: the
+   engine reads empty content as a well-formed pass, and the player would have said nothing while believing they
+   spoke. The server refuses it; the button refuses to offer it. */
+function gateTalk() {
+  const btn = $("dock-talk"), msg = $("dock-msg"), dock = $("dock");
+  if (!btn) return;
+  const open = Boolean(dock && dock.classList.contains("open"));
+  const legal = (PENDING || {}).legal || {};
+  const said = Boolean(msg && msg.value.trim());
+  btn.disabled = !(open && said && (legal.can_offer || legal.can_pass));
+  btn.title = said ? "" : "type a message first — a talk turn with nothing in it is a pass";
 }
 
 function openDock(evt) {
@@ -355,6 +377,8 @@ function submit(move) {
   const dock = $("dock");
   if (!dock) return;
   dock.querySelectorAll("#dock-offer [data-issue]").forEach(s => s.addEventListener("change", paintValue));
+  const msg = $("dock-msg");
+  if (msg) msg.addEventListener("input", gateTalk);   // talk becomes available the moment there is something to say
   const on = (id, move) => { const n = $(id); if (n) n.addEventListener("click", () => submit(move())); };
   on("dock-propose", () => ({ action: "propose", deal: builtDeal() }));
   on("dock-walk", () => ({ action: "walk" }));

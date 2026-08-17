@@ -102,7 +102,10 @@ def _awaiting(payload):
     return {"seat": payload["seats"][0]["name"], "seat_idx": 0, "turn_idx": 9, "round": 2, "phase": "proposal",
             "state": {"offers": {"P1": [0, 0, 0], "P2": [1, 2, 0]}, "standing": "P2", "round": 2},
             "sheet": {"values": sheet["values"], "threshold": sheet["threshold"]},
-            "legal": {"can_accept": ["P1", "P2"], "can_offer": True, "can_walk": True, "can_pass": False},
+            # Accept and reject are separate lists on purpose: on a forced-final vote an offer is acceptable and
+            # not rejectable, so the dock cannot read one from the other.
+            "legal": {"can_accept": ["P1", "P2"], "can_reject": ["P2"], "can_offer": True, "can_walk": True,
+                      "can_pass": False},
             "deadline": 6}
 
 
@@ -326,6 +329,25 @@ def test_a_retried_turn_resynchronises_instead_of_being_merged():
     # Rate-limited across the reload itself — a guard held in a page variable would be wiped by the very thing it
     # limits, which is how a resync becomes a reload loop.
     assert "sessionStorage.setItem(RESYNC_KEY" in JS_LIVE
+
+
+def test_accept_and_reject_are_gated_from_their_own_lists():
+    """Not two halves of one permission: on the forced-final vote an offer can be acceptable and not rejectable.
+    Deriving reject from accept — or from the phase string — offers a move the server is about to refuse, which
+    costs the player a turn and teaches them the wrong rules."""
+    from interlens.arena.live.assets import JS_LIVE
+    assert "legal.can_reject || []" in JS_LIVE
+    assert "accept.indexOf(id) >= 0, reject.indexOf(id) >= 0" in JS_LIVE
+
+
+def test_a_talk_turn_cannot_be_submitted_empty():
+    """Talk is a PASS carrying a message, so an empty one is not a quiet no-op — the engine reads it as a
+    well-formed pass and the player would have said nothing while believing they spoke. The server refuses it;
+    the button does not offer it until there is something to say."""
+    from interlens.arena.live.assets import JS_LIVE
+    assert "const said = Boolean(msg && msg.value.trim());" in JS_LIVE
+    assert "btn.disabled = !(open && said && (legal.can_offer || legal.can_pass));" in JS_LIVE
+    assert 'msg.addEventListener("input", gateTalk)' in JS_LIVE
 
 
 def test_the_chart_trajectory_grows_with_the_game():
