@@ -192,6 +192,35 @@ def test_a_submitted_move_is_byte_identical_to_a_policy_seat_turn(form, expected
         assert parsed.ok and parsed.action == expected
 
 
+def test_talking_without_moving_is_the_same_wire_form_as_a_pass():
+    """The dock calls it "talk" and a policy seat calls it ``Pass``, but the scenario has no third category —
+    both are ``{"action": "none"}`` with a message — so a talk-only human turn must not parse differently from a
+    policy seat standing pat."""
+    spec = two_party_game()
+    scen, st, request = with_one_offer(spec)
+    human = human_for(spec, request.meta["si"], [])
+    thread, out = ask(human, request)
+    answer(human, {"action": "talk", "message": "Give me a moment to think."}, spec.space)
+    thread.join(2)
+    assert out[0].content == action_message(Pass(), spec.space, message="Give me a moment to think.")
+    assert out[0].metadata["action"] == {"action": "none"}
+
+
+def test_talking_with_nothing_to_say_is_refused():
+    """A "talk" carrying no message is an empty turn, and the engine reads an empty turn as a well-formed no-op —
+    so it is refused here rather than silently becoming the player passing."""
+    spec = two_party_game()
+    scen, st, request = with_one_offer(spec)
+    human = human_for(spec, request.meta["si"], [])
+    thread, out = ask(human, request)
+    with pytest.raises(ValueError, match="Say something"):
+        build_human_message({"action": "talk", "message": "  "}, name=human.name, space=spec.space,
+                            pending=human.pending)
+    assert human.pending is not None and not out
+    human.unblock()
+    thread.join(2)
+
+
 def test_a_proposed_deal_is_rendered_by_name_like_every_other_seat():
     spec = two_party_game()
     scen, st, request = with_one_offer(spec)

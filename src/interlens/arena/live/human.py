@@ -363,9 +363,14 @@ def build_human_message(form: dict, *, name: str, space: Any, pending: PendingRe
         if not legal.get("can_walk"):
             raise ValueError("Walking away is not available on this turn.")
         action = Walk()
-    elif kind in (Pass.kind, "pass"):
+    elif kind in (Pass.kind, "pass", "talk"):
+        # "talk" is the dock's name for a turn that speaks without moving. It is the SAME wire form as a pass
+        # ({"action": "none"} plus a message) — the scenario has no third category — so it must not become a
+        # separate action kind here, or a talk-only turn would parse differently from a policy seat's Pass.
         if not legal.get("can_pass"):
             raise ValueError(f"You must take a formal action on a {pending.phase.replace('_', ' ')} turn.")
+        if kind == "talk" and not public:
+            raise ValueError("Say something, or choose a formal action.")
         action = Pass()
     else:
         raise ValueError(f'Unknown action "{kind}". Use propose, accept, reject, walk or pass.')
