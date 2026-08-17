@@ -31,6 +31,7 @@ rather than against a golden string, so it keeps holding as the pages evolve.
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 import inspect
 import json
@@ -339,17 +340,65 @@ def test_the_live_package_imports_without_the_model_stack():
     assert out.stdout.strip() == "[]", out.stdout
 
 
+def _stub_raises(source: str) -> list[tuple[str, str]]:
+    """Every STUB in ``source``, as ``(function name, the NotImplementedError's message)``.
+
+    A stub is identified structurally: a function whose entire body is an optional docstring followed by one
+    ``raise NotImplementedError``. That definition is the point of doing this over the AST instead of grepping
+    for the string — a live-play module also raises ``NotImplementedError`` for real, and permanently. A seat
+    with no model behind it must refuse an interp request rather than ignore it (``HumanParticipant.generate``,
+    mirroring ``PolicyParticipant``), and that raise is a CONTRACT, not an unwritten function: it sits inside an
+    ``if``, so it is never a body's only statement and is never mistaken for a stub. No opt-out marker for an
+    implementing lane to remember, and nothing to go stale as the stubs are filled in.
+    """
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = [s for s in node.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)
+                                             and isinstance(s.value.value, str))]
+        if len(body) != 1 or not isinstance(body[0], ast.Raise):
+            continue
+        exc = body[0].exc
+        if not (isinstance(exc, ast.Call) and getattr(exc.func, "id", None) == "NotImplementedError"):
+            continue
+        message = exc.args[0].value if exc.args and isinstance(exc.args[0], ast.Constant) else ""
+        found.append((node.name, message))
+    return found
+
+
+def test_the_stub_detector_tells_an_unwritten_function_from_a_real_refusal():
+    """The detector's own contract, pinned against a synthetic module so it holds however many stubs are left.
+
+    The distinction it has to make is the one that matters to an implementing lane: a seat with no model behind
+    it refuses an interp request permanently, and that raise must not be read as unfinished work."""
+    detected = _stub_raises(
+        "def unwritten():\n"
+        "    raise NotImplementedError('live-play lane Z')\n"
+        "def documented():\n"
+        "    '''A docstring, then the raise.'''\n"
+        "    raise NotImplementedError('live-play lane Z')\n"
+        "def guard(steering=None):\n"
+        "    '''A real, permanent refusal — nested, so never a body's only statement.'''\n"
+        "    if steering is not None:\n"
+        "        raise NotImplementedError('no model here: steering is unavailable')\n"
+        "    return 1\n")
+    assert [name for name, _ in detected] == ["unwritten", "documented"]
+
+
 def test_every_stub_names_the_lane_that_owns_it():
     """The skeleton exists to keep four parallel lanes off each other's files, so an unimplemented entry point
     must say WHOSE it is — a bare ``NotImplementedError`` in a package four people are building at once tells a
-    reader nothing about who to ask."""
+    reader nothing about who to ask.
+
+    Only unwritten functions are checked (see :func:`_stub_raises`), so a lane's legitimate runtime refusals are
+    left alone and this goes green on its own as the stubs are replaced with real code — ending, correctly, with
+    nothing left to check."""
     from interlens.arena import live
     from interlens.arena.live import human, lobby_page, payload, play_page, provider, router, server, session
 
-    unnamed = []
-    for module in (live, provider, human, router, session, server, payload, lobby_page, play_page):
-        for line in inspect.getsource(module).splitlines():
-            if "raise NotImplementedError" in line and not re.search(r'NotImplementedError\("live-play lane \w',
-                                                                     line):
-                unnamed.append(f"{module.__name__}: {line.strip()}")
-    assert not unnamed, unnamed
+    modules = (live, provider, human, router, session, server, payload, lobby_page, play_page)
+    unnamed = [(m.__name__, name, msg)
+               for m in modules for name, msg in _stub_raises(inspect.getsource(m))
+               if not re.match(r"live-play lane \w", msg)]
+    assert not unnamed, f"stubs that do not name their lane: {unnamed}"
