@@ -348,6 +348,38 @@ def test_the_page_is_self_contained():
     assert not re.search(r"""(src\s*=|<link\b|@import|https?://(?!www\.gnu))""", html)
 
 
+def test_it_renders_from_the_state_the_server_actually_hands_over():
+    """The fixtures above are hand-built, which is exactly how a page keeps passing its own tests while
+    disagreeing with the server. This one renders from a real ``SessionManager.lobby_state()`` — the same object
+    ``GET /api/lobby`` returns — so a key the session renames is caught here rather than in a browser."""
+    from .test_arena_live_session import make_manager
+
+    import tempfile
+    from pathlib import Path
+
+    manager = make_manager(Path(tempfile.mkdtemp()))
+    state = manager.lobby_state()
+    html = render_lobby_html(state)
+    assert html.startswith("<!doctype html>")
+    assert html.count("class='seatcard'") == len(state["seats"])
+    # The opening lineup is all computable seats, so the first click is free: nothing blocks it.
+    assert _problems(state) == [] and _notices(state) == []
+    # An unavailable model is listed with its reason rather than omitted.
+    gone = next(m for m in state["models"] if not m["available"])
+    assert gone["unavailable_reason"] in html
+
+    # And a lineup that violates both rules produces one blocker and one notice, not two of either.
+    metered = next(m for m in state["models"] if m["available"] and m["metered"])
+    manager.update_lobby({"seats": [SeatConfig(kind="human").to_json(),
+                                    SeatConfig(kind="llm", model_id=metered["model_id"]).to_json(),
+                                    SeatConfig(kind="oracle", policy="bayes-rational").to_json()],
+                          "budget_usd": None})
+    edited = manager.lobby_state()
+    assert _problems(edited) == ["A budget cap above $0 is required while a metered model is seated."]
+    assert len(_notices(edited)) == 1 and "human:player" in _notices(edited)[0]
+    assert "disabled" in render_lobby_html(edited).split("id='lobby-start'")[1].split(">")[0]
+
+
 def test_every_label_points_at_a_control_that_exists():
     """A ``for`` that names nothing is a label a screen reader cannot attach and a click that does not focus."""
     html = render_lobby_html(_state())
