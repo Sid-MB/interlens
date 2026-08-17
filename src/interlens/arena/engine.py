@@ -305,7 +305,8 @@ class EpisodeRun:
 	def __init__(self, scenario: Scenario, instance: Instance, arm: str, participant, seed: int,
 	             store: EpisodeStore | None, *, cfg: dict | None = None, gen_config: dict | None = None,
 	             budget: StopCondition | list | None = None,
-	             capture=None, steering=None, patch=None, record_views: bool = True):
+	             capture=None, steering=None, patch=None, record_views: bool = True,
+	             prefix: tuple[dict, int | None] | None = None):
 		self.scenario = scenario
 		self.instance = instance
 		self.participant = participant
@@ -337,6 +338,18 @@ class EpisodeRun:
 		self.ledger = _BudgetLedger()
 		self.retries: set[tuple] = set()
 		self._turn_idx = 0
+		# Branch/resume: replay a stored episode's turns into the fresh state before play begins.
+		# ``prefix = (parent_episode_json, upto_turn_idx)`` — turns with idx < upto are applied (None = all), so
+		# this run continues the parent's game from that exact node with whatever participant it was given. The
+		# prefix turns are NOT re-recorded (they are the parent's record, not this run's behaviour); provenance
+		# lives in ``cell_cfg`` under whatever key the caller stamps (the branch experiments use ``"branch"``).
+		# ``_turn_idx`` starts past the prefix so this record's TurnRecord.idx values continue the parent's
+		# global numbering — a branch turn and its parent counterpart share an idx, never collide with siblings.
+		if prefix is not None:
+			from .replay import apply_prefix
+			parent, upto = prefix
+			applied = apply_prefix(scenario, self.state, parent, upto)
+			self._turn_idx = int(upto) if upto is not None else applied
 
 	@staticmethod
 	def _resolve_budget(budget) -> StopCondition | None:
@@ -595,7 +608,8 @@ class EpisodePool:
 	                      estimated_cost: float | None = None,
 	                      capture=None, steering=None, patch=None,
 	                      gate: Callable[[], bool] | None = None,
-	                      on_wave: Callable[[Episode], None] | None = None) -> Episode | None:
+	                      on_wave: Callable[[Episode], None] | None = None,
+	                      prefix: tuple[dict, int | None] | None = None) -> Episode | None:
 		"""Play one episode to completion. Returns the ``Episode`` (status ``done`` or ``error``), or ``None``
 		when the episode never started: its cost reservation didn't fit under the meter's budget, the meter was
 		already exhausted, or ``gate()`` returned True. The launch gates are evaluated once the episode acquires
@@ -612,7 +626,12 @@ class EpisodePool:
 		on purpose: an observer can then never show a turn that is not yet on disk, so a reader who reloads mid-
 		episode sees at least what was streamed to them. It is an OBSERVER, not a hook — its return value is
 		ignored and any exception it raises is logged and swallowed, because a broken viewer must not be able to
-		kill a running episode. Leave it ``None`` (the default) and the episode is byte-for-byte what it was."""
+		kill a running episode. Leave it ``None`` (the default) and the episode is byte-for-byte what it was.
+
+		``prefix = (parent_episode_json, upto_turn_idx)`` resumes a stored episode from mid-game: the parent's
+		turns with ``idx < upto`` are replayed into the fresh state (``interlens.arena.replay.apply_prefix``)
+		before the first generation, so this episode continues that game from that exact node. The same key on a
+		``run_episodes``/``run_pool`` job dict does the same thing."""
 		async with self._sem:
 			if gate is not None and gate():
 				return None
@@ -625,7 +644,7 @@ class EpisodePool:
 				run = EpisodeRun(scenario, instance, arm, participant, seed, self.store,
 				                 cfg=cfg, gen_config=gen_config, budget=budget,
 				                 capture=capture, steering=steering, patch=patch,
-				                 record_views=self.record_views)
+				                 record_views=self.record_views, prefix=prefix)
 				try:
 					while True:
 						requests = run.pending()
@@ -767,7 +786,7 @@ class BatchedEpisodePool:
 		runs = [EpisodeRun(j["scenario"], j["instance"], j["arm"], j["participant"],
 		                   j.get("seed", 0), self.store, cfg=j.get("cfg"),
 		                   gen_config=j.get("gen_config"), budget=j.get("budget"),
-		                   record_views=self.record_views) for j in jobs]
+		                   record_views=self.record_views, prefix=j.get("prefix")) for j in jobs]
 		live = {r.ep.episode_id: r for r in runs}
 		self._abort_runs = runs
 		tick = 0
