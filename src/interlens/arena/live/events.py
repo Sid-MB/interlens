@@ -93,6 +93,11 @@ KEEPALIVE_FRAME = b": ping\n\n"
 LEGAL_ACTION_DEFAULTS = {"can_accept": [], "can_reject": [], "can_offer": False, "can_walk": False,
                          "can_pass": False}
 
+# The ``turn_idx`` a participant publishes on ``awaiting_human`` when it cannot know the real one — see that
+# builder's docstring. Negative so it can never be mistaken for a valid index, and named so the participant that
+# writes it and the session that replaces it agree on the sentinel rather than both spelling ``-1``.
+UNKNOWN_TURN_IDX = -1
+
 # The response headers an SSE endpoint must send. ``X-Accel-Buffering`` is the nginx directive that turns off
 # response buffering — without it a proxy happily holds the stream until it has a bufferful, which for an event
 # stream means the page shows nothing for a minute and then everything at once.
@@ -181,7 +186,15 @@ def awaiting_human(seat: str, seat_idx: int, turn_idx: int, round_: int, phase: 
     missing ones taking their "not available" default. So the browser can read ``legal.can_reject`` directly
     instead of guarding for undefined, and a capability a caller forgot to compute fails CLOSED (the control is
     not offered) rather than rendering a button that 400s. Extra keys are passed through untouched, so a later
-    move type does not need this builder changed to reach the page."""
+    move type does not need this builder changed to reach the page.
+
+    ``turn_idx`` is the one field a PARTICIPANT cannot fill in. The engine passes ``turn`` to ``generate`` only
+    alongside a capture request (``EpisodePool._generate_once`` puts it in the kwargs inside the
+    ``if capture is not None`` branch), and live play never captures — so a human seat does not know the
+    episode's turn index and publishes :data:`UNKNOWN_TURN_IDX`. The SESSION, which counts the turns it has
+    streamed, stamps the real index before the frame goes out, exactly as it does for ``turn_started``. Anything
+    else publishing this event owes the same fix-up: a negative ``turn_idx`` reaching the browser would point
+    the dock's "your move on turn N" at a turn that does not exist."""
     return AWAITING_HUMAN, {"seat": seat, "seat_idx": int(seat_idx), "turn_idx": int(turn_idx),
                             "round": int(round_), "phase": phase, "state": state, "sheet": sheet,
                             "legal": {**LEGAL_ACTION_DEFAULTS, **(legal or {})}, "deadline": int(deadline)}

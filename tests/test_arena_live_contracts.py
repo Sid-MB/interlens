@@ -277,6 +277,22 @@ def test_accept_and_reject_are_independent_offer_id_lists():
     assert data["legal"]["can_accept"] == ["P1", "P2"] and data["legal"]["can_reject"] == []
 
 
+def test_the_unknown_turn_sentinel_is_negative_and_matches_what_the_engine_forces():
+    """A human seat cannot know its own turn index — the engine passes ``turn`` to ``generate`` ONLY alongside a
+    capture request, and live play never captures — so it publishes a sentinel the session replaces.
+
+    Pinned here rather than left in two lanes' comments: the participant that writes the sentinel and the session
+    that replaces it must agree on it, and it must be negative so it can never pass for a real index."""
+    assert events.UNKNOWN_TURN_IDX < 0
+    source = inspect.getsource(EpisodePool._generate_once)
+    capture_branch = source.split("if capture is not None:")[1]
+    assert 'kwargs["turn"] = turn' in capture_branch, \
+        "the engine now passes `turn` outside the capture branch — a human seat may be able to fill it in itself"
+
+    _, data = events.awaiting_human("Avery", 0, events.UNKNOWN_TURN_IDX, 1, "propose", {}, {}, {}, 8)
+    assert data["turn_idx"] == events.UNKNOWN_TURN_IDX     # passed through, for the session to stamp
+
+
 def test_an_unknown_legal_key_travels_untouched():
     """Forward compatible: a later move type reaches the page without this builder being changed for it."""
     _, data = events.awaiting_human("Avery", 0, 0, 1, "propose", {}, {}, {"can_bribe": ["P1"]}, 8)
