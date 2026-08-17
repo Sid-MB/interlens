@@ -718,3 +718,57 @@ def test_replay_integrity_reproduces_a_computable_seat_and_catches_a_tampered_mo
         pytest.skip("no priced move to tamper with in this family")
     caught = replay_integrity(tampered, bank)
     assert not caught["pass"] and caught["mismatches"], "a tampered move slipped past the gate"
+
+
+# --- the NON-FROZEN instructed-ring probe (docs/templates/ring_block.md) ------------------------------------
+@pytest.mark.parametrize("channel", ["dm_transfers", "dm"])
+def test_instructed_ring_reaches_members_only_and_leaves_the_frozen_prefix_intact(channel):
+    """The two properties the whole probe rests on: the OUTSIDER is never told an agreement exists, and a ring
+    member's system prompt is the outsider's plus one suffix — so ring-vs-neutral is one block and not a
+    reworded scaffold. Also pins the per-channel side-payment semantics, since "a promise is words" versus
+    "the auctioneer executes it" is the McAfee-McMillan strong/weak-cartel switch itself."""
+    scn = AuctionScenario()
+    make, n_items = FAMILIES["sealed_second"]
+    mech = make(n_items)
+    inst = scn.generate_instance(0, 7, mechanism=mech, horizon=8)
+    base = {"mechanism": mech.to_json(), "horizon": 2, "channel": channel, "value_structure": "apv"}
+    neutral = scn.make_state(inst, "all_llm", 0, base)
+    ringed = scn.make_state(inst, "all_llm", 0,
+                            dict(base, ring={"members": [0, 1, 2, 3], "instructed": True}))
+    members, outsider = (0, 1, 2, 3), 4
+    for seat in members:
+        member = scn.system_prompt(ringed, seat)
+        assert member.startswith(scn.system_prompt(neutral, seat).rsplit("\n\nReply with ONLY", 1)[0])
+        assert "## Coordination agreement" in member
+        assert "divide the lots between them" in member
+        for other in members:
+            assert f"`{ringed['spec'].bidders[other].persona_id}`" in member
+        if channel == "dm_transfers":
+            assert "executed by the auctioneer at settlement" in member
+        else:
+            assert "There is no transfer field" in member
+        # No script: the probe measures the division, the price, and the punishment, so it supplies none.
+        assert "rotate" not in member.lower() and "retaliat" not in member.lower()
+    assert scn.system_prompt(ringed, outsider) == scn.system_prompt(neutral, outsider)
+
+
+def test_designated_but_uninstructed_ring_changes_no_prompt():
+    """``instructed=False`` records a ring the ANALYSIS designated for a counterfactual. It must be inert on
+    the prompt surface, or a counterfactual would silently become a treatment."""
+    scn = AuctionScenario()
+    make, n_items = FAMILIES["sealed_second"]
+    mech = make(n_items)
+    inst = scn.generate_instance(0, 7, mechanism=mech, horizon=8)
+    base = {"mechanism": mech.to_json(), "horizon": 2, "channel": "dm", "value_structure": "apv"}
+    neutral = scn.make_state(inst, "all_llm", 0, base)
+    designated = scn.make_state(inst, "all_llm", 0,
+                                dict(base, ring={"members": [0, 1, 2, 3], "instructed": False}))
+    assert designated["spec"].ring.members == (0, 1, 2, 3)
+    for seat in range(neutral["spec"].n_bidders):
+        assert scn.system_prompt(designated, seat) == scn.system_prompt(neutral, seat)
+
+
+def test_instructed_ring_refuses_a_silent_cell():
+    """An agreement printed into a cell with no channel is an instruction the seats cannot act on."""
+    with pytest.raises(ValueError, match="channel to coordinate in"):
+        P.AuctionPromptScaffold().ring_block(channel="silent", member_ids=["a", "b"], n_bidders=5)

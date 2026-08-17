@@ -54,7 +54,7 @@ from ..auction import priors
 from ..auction.allocation import Allocation, ValueModel, sealed_single_outcome
 from ..auction.benchmarks import stage_benchmark
 from ..auction.metrics import StageOutcome, stage_metrics
-from ..auction.spec import AuctionSpec, Mechanism, card_scramble_seed, scramble_public_cards
+from ..auction.spec import AuctionSpec, Mechanism, RingSpec, card_scramble_seed, scramble_public_cards
 from ..engine import EMPTY_TURN_PLACEHOLDER
 from ..scenario import Scenario
 from ..schema import Instance, SeatRequest
@@ -211,7 +211,11 @@ class AuctionScenario(Scenario):
         a derangement seeded from the INSTANCE ID, so X1 and its matched real-persona cell O1 read the same
         frozen draws and the same scramble in every rerun (:func:`~interlens.arena.auction.spec
         .scramble_public_cards`). It is applied last, after the mechanism, horizon and channel, so a scrambled
-        cell differs from its reference cell in the cards and in nothing else."""
+        cell differs from its reference cell in the cards and in nothing else.
+
+        ``cfg["ring"]`` is a :class:`~interlens.arena.auction.spec.RingSpec` (or its JSON) for the NON-FROZEN
+        instructed-ring probe. It sets membership on the spec only; whether the members are TOLD is
+        ``RingSpec.instructed``, read in :meth:`_ring_block`."""
         payload = instance.payload
         vs = cfg.get("value_structure", "apv")
         spec = AuctionSpec.from_json(payload["specs"][vs] if "specs" in payload else payload["spec"])
@@ -231,6 +235,9 @@ class AuctionScenario(Scenario):
         for key in ("channel", "talk_rounds", "dm_cap", "framing"):
             if key in cfg:
                 spec = _replace(spec, **{key: cfg[key]})
+        if cfg.get("ring") is not None:
+            ring = cfg["ring"]
+            spec = _replace(spec, ring=ring if isinstance(ring, RingSpec) else RingSpec.from_json(ring))
         if cfg.get("scramble_cards"):
             spec = scramble_public_cards(spec, seed=card_scramble_seed(instance.instance_id))
         return spec
@@ -849,7 +856,23 @@ class AuctionScenario(Scenario):
                                   reserve=mech.reserve, round_cap=mech.round_cap),
             envelope=sc.envelope(family=mech.family, channel=spec.channel, dm_cap=spec.dm_cap,
                                  other_seat_ids=[x.persona_id for x in spec.bidders if x.seat != seat]),
-            conduct=sc.conduct(family=mech.family, channel=spec.channel))
+            conduct=sc.conduct(family=mech.family, channel=spec.channel),
+            ring=self._ring_block(spec, seat))
+
+    def _ring_block(self, spec, seat: int) -> str | None:
+        """The NON-FROZEN instructed-ring suffix for ``seat``, or ``None``.
+
+        ``None`` unless ``spec.ring`` exists, is ``instructed``, and lists this seat — so a designated-but-not-
+        instructed ring (the analysis-side counterfactual) and the OUTSIDER both read the frozen neutral
+        prompt with no addition of any kind, which is what keeps "the outsider was never told" a property of
+        the code rather than of the operator's care."""
+        ring = spec.ring
+        if ring is None or not ring.instructed or seat not in ring.members:
+            return None
+        by_seat = {b.seat: b.persona_id for b in spec.bidders}
+        return self.scaffold.ring_block(channel=spec.channel,
+                                       member_ids=[by_seat[m] for m in sorted(ring.members)],
+                                       n_bidders=spec.n_bidders)
 
     def turn_prompt(self, state: dict, seat: int) -> str:
         """One turn view: the stage catalogue, the carried-history digest, this seat's private block, and the
