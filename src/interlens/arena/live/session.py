@@ -50,7 +50,7 @@ from typing import Any
 
 from ...usage import CostBudget, UsageMeter
 from ..engine import EpisodePool
-from ..schema import EpisodeStore
+from ..schema import PERSONAS, EpisodeStore
 from ..table import POLICY_FACTORIES, policy_seat
 from ..viz.episode import episode_payload, seat_kinds
 from ..viz.geometry import GameGeometry
@@ -254,7 +254,10 @@ class LiveSession:
             return policy_seat(config.policy or "bayes-rational", idx, game, deadline=self.game.deadline,
                                full_info=(config.kind == "oracle"))
         if config.kind == "human":
-            participant = HumanParticipant(name=config.display_name or f"player{idx}", seat=idx,
+            # The name MUST be ``occupant_detail()``. A HumanParticipant stamps ``human:<its own name>`` on the
+            # turns it plays and the router deliberately does not overwrite a self-stamp, so any other spelling
+            # here would make one seat report two occupants and its timeline unreadable.
+            participant = HumanParticipant(name=config.occupant_detail(), seat=idx,
                                            sheet=game.sheets[idx], space=game.space,
                                            deadline=self.game.deadline, publisher=self.broadcast)
             self._humans[self.game.seat_names[idx]] = participant
@@ -446,11 +449,17 @@ class LiveSession:
                     "lobby": self.lobby()}
 
     def lobby(self) -> dict:
-        """This session's own configuration, in the shape the ``lobby_state`` event carries."""
-        return {"seats": [s.to_json() for s in self.seats], "budget_usd": self.budget_usd,
+        """This session's own configuration, in the shape the ``lobby_state`` event carries.
+
+        Carries the provider's ``models`` and ``policies`` listings as well as the current lineup, because the
+        live page's swap dock reuses the lobby's seat editor and must be able to offer the same choices without a
+        second round trip to ``/api/lobby``."""
+        return {"sid": self.sid, "seats": [s.to_json() for s in self.seats], "budget_usd": self.budget_usd,
                 "seat_names": list(self.game.seat_names), "arm": self.game.arm,
-                "instance_id": (self.game.instance_json or {}).get("instance_id"),
-                "deadline": self.game.deadline}
+                "instance_id": (self.game.instance_json or {}).get("instance_id") or "",
+                "deadline": self.game.deadline,
+                "models": [m.to_json() for m in self.provider.list_models()],
+                "policies": sorted(POLICY_FACTORIES), "seat_kinds": list(SEAT_KINDS)}
 
     def _on_turn_start(self, seat: str, occupant: str | None) -> None:
         """The router's pre-generation hook: announce who is about to move.
@@ -505,10 +514,17 @@ class LiveSession:
             logger.exception("live session %s: broadcasting a wave failed", self.sid)
 
     def _bubble_payload(self) -> dict:
-        """The minimum a bubble renders against: the seat table. ``_chat_bubble`` reads nothing else, which is
-        what lets a turn be rendered before it joins the payload."""
-        return {"seats": [{"name": s.get("name"), "party": i}
-                          for i, s in enumerate(self._episode_json.get("seats") or [])]}
+        """What a bubble renders against: the seat table and the transcript so far.
+
+        The turns are not decoration. ``_chat_bubble`` derives each seat's DEFAULT occupant from them
+        (``viz.page.occupant_defaults``) and badges only a turn that departs from it, so a bubble rendered
+        against a payload with no turns would silently drop the "now oracle:…" badge on every turn after a swap —
+        the one case the badge exists for. The rows are the session's accumulated ones and the row being
+        rendered is already among them, which is exactly the prefix a reload would rebuild from."""
+        kinds = self._kinds["kinds"]
+        return {"seats": [{"name": s.get("name"), "party": i, "kind": kinds.get(s.get("name"), "llm")}
+                          for i, s in enumerate(self._episode_json.get("seats") or [])],
+                "turns": self._rows}
 
     def _over_budget(self) -> bool:
         """Whether this session's spend has reached its cap — the meter's own gate, or the episode's recorded
@@ -551,6 +567,9 @@ class SessionManager:
             "budget_usd": DEFAULT_BUDGET_USD,
             "seats": [s.to_json() for s in self._default_seats(banks[0].n_parties if banks else 2)],
             "overrides": {},
+            # The last refused edit, shown in the lobby's status strip. Kept HERE rather than only raised,
+            # because a page that re-renders from the state it was handed has nowhere else to read it from.
+            "error": "",
         }
 
     @staticmethod
@@ -612,62 +631,98 @@ class SessionManager:
             session.stop()
 
     def lobby_state(self) -> dict:
-        """The current lobby configuration plus the provider's listings — what the lobby page renders from."""
+        """The current lobby configuration plus the provider's listings — what the lobby page renders from.
+
+        The complete set of keys, since three things render from this one dict (the lobby page, ``GET
+        /api/lobby``, and the ``lobby_state`` event) and a key that exists in only two of them is a drift waiting
+        to happen:
+
+        - ``banks`` / ``framings`` / ``models`` — the provider's listings, as their ``to_json()`` dicts. An
+          unavailable model is LISTED with its ``unavailable_reason``, never filtered out.
+        - ``policies`` — the names in ``table.POLICY_FACTORIES``, for the rational/oracle picker.
+        - ``seat_kinds`` — the kinds a seat may take (:data:`~interlens.arena.live.provider.SEAT_KINDS`).
+        - ``seat_names`` — seat order for the chosen bank, so the cards can be labelled before a game exists.
+        - ``bank`` / ``framing`` / ``instance_id`` / ``seats`` / ``budget_usd`` — the current selection.
+          ``instance_id`` is ``""`` for "let the provider choose", which is also what the lobby may post back.
+        - ``running`` / ``sid`` / ``phase`` / ``episode_id`` — whether a session is live and how to reach it.
+          ``running`` is a plain bool so a page can branch on it; ``sid`` is what ``/play`` is keyed by.
+        - ``error`` — the last refused edit's message, ``""`` when the last one was accepted.
+        """
         with self._lock:
             active = self._active
+            banks = {b.bank_id: b for b in self.provider.list_banks()}
+            n_parties = getattr(banks.get(self._lobby["bank"]), "n_parties", None) or len(self._lobby["seats"])
             return {
                 **self._lobby,
-                "banks": [b.to_json() for b in self.provider.list_banks()],
+                "instance_id": self._lobby["instance_id"] or "",
+                "banks": [b.to_json() for b in banks.values()],
                 "framings": list(self.provider.list_framings()),
                 "models": [m.to_json() for m in self.provider.list_models()],
                 "policies": sorted(POLICY_FACTORIES),
                 "seat_kinds": list(SEAT_KINDS),
-                "running": None if active is None else {"sid": active.sid, "phase": active.phase,
-                                                        "episode_id": active.episode_id},
+                "seat_names": list(PERSONAS[:int(n_parties)]),
+                "running": active is not None and active.phase != "done",
+                "sid": None if active is None else active.sid,
+                "phase": None if active is None else active.phase,
+                "episode_id": None if active is None else active.episode_id,
             }
 
     def update_lobby(self, patch: dict) -> dict:
         """Merge a partial lobby edit (one changed seat, a new bank) and return the updated state. Validates
         against the provider's listings so an unknown model or policy is refused at edit time, not at start.
 
-        ``seats`` may be the whole list or a single ``{"index": i, "seat": {...}}`` edit, which is what the seat
-        cards send: a lobby with six seats should not have to round-trip all six to change one.
+        Recognized keys: ``bank``, ``framing``, ``instance_id`` (``""`` = let the provider choose),
+        ``budget_usd`` (``null`` = uncapped, which only a lineup with no metered seat may start),
+        ``overrides``, and the seats. ``seats`` is the whole list; a single-card edit may instead send
+        ``{"seat_idx": i, "seat": {...}}`` (``index`` is accepted as a synonym), so a lobby with six seats does
+        not have to round-trip all six to change one. Both forms are supported — send whichever the page finds
+        simpler.
         """
         with self._lock:
-            patch = dict(patch or {})
-            if "bank" in patch:
-                banks = {b.bank_id: b for b in self.provider.list_banks()}
-                if patch["bank"] not in banks:
-                    raise ValueError(f"unknown bank {patch['bank']!r}; have {sorted(banks)}")
-                if patch["bank"] != self._lobby["bank"]:
-                    # A different bank can seat a different number of parties, and an instance id from the old
-                    # bank means nothing in the new one — so both are re-defaulted rather than carried over.
-                    self._lobby["instance_id"] = None
-                    self._lobby["seats"] = [s.to_json() for s in self._default_seats(banks[patch["bank"]].n_parties)]
-                self._lobby["bank"] = patch["bank"]
-            if "framing" in patch:
-                framings = {f.get("framing_id") for f in self.provider.list_framings()}
-                if patch["framing"] not in framings:
-                    raise ValueError(f"unknown framing {patch['framing']!r}; have {sorted(f for f in framings)}")
-                self._lobby["framing"] = patch["framing"]
-            if "instance_id" in patch:
-                self._lobby["instance_id"] = patch["instance_id"] or None
-            if "budget_usd" in patch:
-                budget = patch["budget_usd"]
-                self._lobby["budget_usd"] = None if budget in (None, "") else float(budget)
-            if "overrides" in patch:
-                self._lobby["overrides"] = dict(patch["overrides"] or {})
-            if "seats" in patch:
-                self._lobby["seats"] = [self._validated(SeatConfig.from_json(s)).to_json()
-                                        for s in patch["seats"]]
-            if "seat" in patch:
-                idx = int(patch.get("index", 0))
-                seats = list(self._lobby["seats"])
-                while len(seats) <= idx:
-                    seats.append(SeatConfig(kind="rational", policy="bayes-rational").to_json())
-                seats[idx] = self._validated(SeatConfig.from_json(patch["seat"])).to_json()
-                self._lobby["seats"] = seats
-            return self.lobby_state()
+            try:
+                return self._apply_lobby_patch(dict(patch or {}))
+            except ValueError as exc:
+                # Recorded as well as raised: the caller answers 400 with this message, but a page that
+                # re-renders from the state it was handed has nowhere else to read the refusal from.
+                self._lobby["error"] = str(exc)
+                raise
+
+    def _apply_lobby_patch(self, patch: dict) -> dict:
+        """Apply one validated lobby patch under the lock. Raises ``ValueError`` before mutating anything the
+        rejected field owns, so a refused edit never leaves the lobby half-changed."""
+        if "bank" in patch:
+            banks = {b.bank_id: b for b in self.provider.list_banks()}
+            if patch["bank"] not in banks:
+                raise ValueError(f"unknown bank {patch['bank']!r}; have {sorted(banks)}")
+            if patch["bank"] != self._lobby["bank"]:
+                # A different bank can seat a different number of parties, and an instance id from the old
+                # bank means nothing in the new one — so both are re-defaulted rather than carried over.
+                self._lobby["instance_id"] = None
+                self._lobby["seats"] = [s.to_json() for s in self._default_seats(banks[patch["bank"]].n_parties)]
+            self._lobby["bank"] = patch["bank"]
+        if "framing" in patch:
+            framings = {f.get("framing_id") for f in self.provider.list_framings()}
+            if patch["framing"] not in framings:
+                raise ValueError(f"unknown framing {patch['framing']!r}; have {sorted(f for f in framings)}")
+            self._lobby["framing"] = patch["framing"]
+        if "instance_id" in patch:
+            self._lobby["instance_id"] = patch["instance_id"] or None
+        if "budget_usd" in patch:
+            budget = patch["budget_usd"]
+            self._lobby["budget_usd"] = None if budget in (None, "") else float(budget)
+        if "overrides" in patch:
+            self._lobby["overrides"] = dict(patch["overrides"] or {})
+        if "seats" in patch:
+            self._lobby["seats"] = [self._validated(SeatConfig.from_json(s)).to_json() for s in patch["seats"]]
+        if "seat" in patch:
+            idx = int(patch.get("seat_idx", patch.get("index", 0)))
+            seats = list(self._lobby["seats"])
+            while len(seats) <= idx:
+                seats.append(SeatConfig(kind="rational", policy="bayes-rational").to_json())
+            seats[idx] = self._validated(SeatConfig.from_json(patch["seat"])).to_json()
+            self._lobby["seats"] = seats
+        self._lobby["error"] = ""
+        return self.lobby_state()
 
     def _validated(self, config: SeatConfig) -> SeatConfig:
         """One seat config checked against what this provider can actually seat. Existence only — availability

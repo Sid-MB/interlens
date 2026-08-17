@@ -329,16 +329,35 @@ def test_an_illegal_move_is_a_400_and_tells_every_watcher_why(tmp_path):
 
 
 @needs_lane_a
-def test_a_seat_can_be_reassigned_mid_game_over_http(tmp_path):
-    """The swap endpoint, and the occupant map a page badges seats from."""
+@pytest.mark.parametrize("key", ["seat", "seat_config"])
+def test_a_seat_can_be_reassigned_mid_game_over_http(tmp_path, key):
+    """The swap endpoint, and the occupant map a page badges seats from.
+
+    The config arrives under ``seat`` from the lobby's seat editor and under ``seat_config`` from the play
+    page's swap dock. They carry the same dataclass, so both are read rather than making one page rename a
+    field to match the other."""
     with serving(tmp_path) as server:
         sid = start_game(server, [RATIONAL] * 3)
         played_out(server, sid)
         status, body = call(server, "POST", f"/api/session/{sid}/swap",
-                            {"seat_idx": 1, "seat": {"kind": "oracle", "policy": "bayes-rational"}})
+                            {"seat_idx": 1, key: {"kind": "oracle", "policy": "bayes-rational"}})
         assert status == 200
         assert body["occupants"]["Blake"] == SeatConfig(kind="oracle",
                                                         policy="bayes-rational").occupant_label()
+
+
+@needs_lane_a
+def test_the_snapshots_lobby_carries_what_the_swap_dock_offers(tmp_path):
+    """The play page's swap dock reuses the lobby's seat editor, so it needs the same choices the lobby has —
+    from the snapshot it already fetched, not a second round trip to ``/api/lobby``."""
+    with serving(tmp_path) as server:
+        sid = start_game(server, [RATIONAL] * 3)
+        snapshot = played_out(server, sid)
+    lobby = snapshot["lobby"]
+    assert snapshot["sid"] == sid == lobby["sid"]
+    assert [s["kind"] for s in lobby["seats"]] == ["rational"] * 3
+    assert "bayes-rational" in lobby["policies"]
+    assert {m["model_id"] for m in lobby["models"]} == {"stub-free", "stub-paid", "stub-gone"}
 
 
 @needs_lane_a
@@ -354,7 +373,7 @@ def test_stop_ends_the_session_and_reset_returns_to_the_lobby(tmp_path):
         played_out(server, sid)
 
         status, lobby = call(server, "POST", "/api/reset", {})
-        assert status == 200 and lobby["running"] is None
+        assert status == 200 and lobby["running"] is False and lobby["sid"] is None
         # and the server is ready to play again, with the lineup it was left with
         assert call(server, "POST", "/api/start", {})[0] == 200
 

@@ -47,6 +47,7 @@ from interlens.arena.negotiation.policy_participant import PolicyParticipant
 from interlens.arena.negotiation.sheets import GameSpec
 from interlens.arena.schema import PERSONAS
 from interlens.arena.scenarios.scorable import ScorableNegotiation
+from interlens.arena.viz import page as viz_page
 from interlens.arena.viz.episode import episode_payload
 from interlens.message import Message
 from interlens.participant.participants.scripted_participant import ScriptedParticipant
@@ -186,7 +187,7 @@ def test_the_lobby_opens_on_a_configuration_that_costs_nothing(tmp_path):
     assert state["bank"] == "stub" and state["framing"] == "plain"
     assert [s["kind"] for s in state["seats"]] == ["rational"] * 3
     assert state["budget_usd"] == DEFAULT_BUDGET_USD
-    assert state["running"] is None
+    assert state["running"] is False
 
 
 def test_the_lobby_carries_the_providers_listings_and_the_policy_zoo(tmp_path):
@@ -198,6 +199,51 @@ def test_the_lobby_carries_the_providers_listings_and_the_policy_zoo(tmp_path):
     gone = next(m for m in state["models"] if m["model_id"] == "stub-gone")
     assert gone["available"] is False and "STUB_API_KEY" in gone["unavailable_reason"]
     assert "bayes-rational" in state["policies"] and "human" in state["seat_kinds"]
+
+
+def test_the_lobby_state_carries_every_key_its_three_readers_need(tmp_path):
+    """Three things render from this one dict — the lobby page, ``GET /api/lobby`` and the ``lobby_state``
+    event — so a key present for only two of them is a drift waiting to happen. Pinned as a set, not spot
+    checks, because the failure mode is a key quietly disappearing rather than one holding a wrong value."""
+    state = make_manager(tmp_path).lobby_state()
+    assert {"banks", "framings", "models", "policies", "seat_kinds", "seat_names", "bank", "framing",
+            "instance_id", "seats", "budget_usd", "running", "sid", "phase", "episode_id",
+            "error"} <= set(state)
+    assert state["seat_names"] == list(PERSONAS[:3])
+    assert state["instance_id"] == "", '"" is how the lobby says "let the provider choose"'
+    assert state["running"] is False and state["sid"] is None and state["error"] == ""
+
+
+@needs_lane_a
+def test_the_lobby_names_the_running_session_so_the_page_can_link_to_it(tmp_path):
+    """Every per-session route is keyed by ``sid``, and the lobby is where a page that did not start the game
+    finds it."""
+    manager = make_manager(tmp_path)
+    session = start(manager, kinds("rational", "rational", "rational"))
+    running = manager.lobby_state()
+    assert running["running"] is True and running["sid"] == session.sid
+    play_out(session)
+    assert manager.lobby_state()["running"] is False, "a finished session is not in the way of the next one"
+
+
+def test_a_refused_edit_is_recorded_as_well_as_raised(tmp_path):
+    """The caller answers 400 with the message, but a page that re-renders from the state it was handed has
+    nowhere else to read the refusal from — so it rides along until the next edit is accepted."""
+    manager = make_manager(tmp_path)
+    with pytest.raises(ValueError):
+        manager.update_lobby({"framing": "nope"})
+    assert "unknown framing" in manager.lobby_state()["error"]
+    assert manager.update_lobby({"budget_usd": 4.0})["error"] == ""
+
+
+def test_a_single_seat_edit_takes_either_spelling_of_its_index(tmp_path):
+    """``seat_idx`` is what the play page's swap dock calls it and ``index`` what the lobby calls it; both name
+    the same seat, so both are read rather than making one page rename a field to match the other."""
+    manager = make_manager(tmp_path)
+    by_idx = manager.update_lobby({"seat_idx": 1, "seat": {"kind": "oracle", "policy": "bayes-rational"}})
+    assert by_idx["seats"][1]["kind"] == "oracle"
+    by_index = manager.update_lobby({"index": 2, "seat": {"kind": "oracle", "policy": "bayes-rational"}})
+    assert by_index["seats"][2]["kind"] == "oracle"
 
 
 def test_one_seat_can_be_edited_without_resending_the_lineup(tmp_path):
@@ -410,10 +456,14 @@ def test_every_streamed_turn_carried_the_row_the_snapshot_holds(tmp_path):
     manager = make_manager(tmp_path)
     session = start(manager, kinds("rational", "rational", "rational"))
     play_out(session)
+    snapshot = session.snapshot()
     streamed = [d["turn"] for _, k, d in session._log if k == events.TURN_APPENDED]
-    assert streamed == session.snapshot()["payload"]["turns"]
+    assert streamed == snapshot["payload"]["turns"]
+    # and every bubble that was streamed is character for character the one the reloaded page renders in that
+    # slot — the same guarantee as the rows, for the half of the transcript that is server-rendered HTML
+    transcript = viz_page._chat_bubbles(snapshot["payload"])
     bubbles = [d["bubble_html"] for _, k, d in session._log if k == events.TURN_APPENDED]
-    assert all(b.startswith("<div class='bubble") for b in bubbles)
+    assert bubbles and all(b in transcript for b in bubbles)
 
 
 @needs_lane_a
@@ -453,6 +503,22 @@ def test_a_bubble_renders_from_the_seat_table_alone():
     assert "hello" in html and "Avery" in html and "data-turnidx='0'" in html
 
 
+def test_a_streamed_bubble_badges_a_swapped_seat_the_way_a_full_render_does():
+    """The occupant badge marks a DEPARTURE from the seat's first recorded occupant, so the renderer derives
+    that default from the transcript — which is why the session hands it the rows it has accumulated. Rendered
+    against no transcript, every post-swap badge silently disappears, and the one thing a live page adds over a
+    static one (you can see the seat changed hands) is gone."""
+    rows = [{"idx": 0, "round": 1, "seat": "Avery", "occupant": "policy:bayes-rational",
+             "action": {"atype": "none", "message": "mine"}},
+            {"idx": 1, "round": 2, "seat": "Avery", "occupant": "oracle:bayes-rational",
+             "action": {"atype": "none", "message": "now mine"}}]
+    payload = {"seats": [{"name": "Avery", "party": 0}], "turns": rows}
+    swapped = bubble_html(payload, rows[1])
+    assert "now oracle:bayes-rational" in swapped
+    assert swapped in viz_page._chat_bubbles(payload), "a streamed bubble must be the one a reload rebuilds"
+    assert "now oracle" not in bubble_html({"seats": payload["seats"], "turns": []}, rows[1])
+
+
 # ------------------------------------------------------------------------------- a person at the table --
 @needs_lane_a
 def test_a_human_seat_blocks_the_game_and_plays_the_move_it_is_given(tmp_path):
@@ -475,6 +541,24 @@ def test_a_human_seat_blocks_the_game_and_plays_the_move_it_is_given(tmp_path):
     assert session._rows[0]["occupant"] == "human:sid"
     assert session._rows[0]["human_note"] == "opening high"
     assert session._rows[0]["action"]["atype"] == "propose"
+
+
+@needs_lane_a
+@pytest.mark.parametrize("display_name, occupant", [("sid", "human:sid"), ("", "human:player")])
+def test_a_human_seat_is_built_under_the_name_its_occupant_label_uses(tmp_path, display_name, occupant):
+    """A ``HumanParticipant`` stamps ``human:<its own name>`` on the turns it plays and the router does not
+    overwrite a self-stamp, so the session MUST construct it with ``SeatConfig.occupant_detail()``. Any other
+    spelling — including a plausible ``player{idx}`` fallback — makes one seat report two different occupants
+    and its timeline unreadable. Pinned for the named case AND the unnamed one, since the fallback is exactly
+    where the two spellings would drift apart."""
+    manager = make_manager(tmp_path)
+    config = SeatConfig(kind="human", display_name=display_name)
+    session = start(manager, [config, *kinds("rational", "rational")])
+    wait_for(lambda: session.phase == "awaiting_human", what="the human seat to be asked")
+    assert session._router.seats["Avery"].occupant == config.occupant_label() == occupant
+    assert session.occupants["Avery"] == occupant
+    session.stop()
+    play_out(session)
 
 
 @needs_lane_a

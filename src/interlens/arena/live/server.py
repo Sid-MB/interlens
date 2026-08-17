@@ -165,8 +165,12 @@ class LiveHandler(BaseHTTPRequestHandler):
                 return self._send_json({"error": str(exc)}, status=400)
             return self._send_json({"ok": True})
         if action == "swap":
-            session.swap_seat(int(body.get("seat_idx", -1)), SeatConfig.from_json(body.get("seat") or {}))
-            return self._send_json({"ok": True, "occupants": session.snapshot()["occupants"]})
+            # ``seat_config`` is what the play page's swap dock sends and ``seat`` what the lobby's seat editor
+            # sends; they carry the same SeatConfig, so both are read rather than making one page rename a field
+            # to match the other.
+            config = body.get("seat_config") if body.get("seat_config") is not None else body.get("seat")
+            session.swap_seat(int(body.get("seat_idx", -1)), SeatConfig.from_json(config or {}))
+            return self._send_json({"ok": True, "occupants": session.occupants})
         if action == "stop":
             session.stop()
             return self._send_json({"ok": True, "phase": session.phase})
