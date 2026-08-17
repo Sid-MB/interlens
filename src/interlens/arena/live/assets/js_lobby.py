@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # [implement: live-play/lane0] 2026-08-16
+# [implement: live-play/laneC] 2026-08-16
 """The lobby's browser layer: edit the seat lineup, then start the game.
 
 Every edit is POSTed to ``/api/lobby`` and the server's response is what the page re-renders from — the server
@@ -24,11 +25,320 @@ does it accept this thinking mode) happens where the provider is.
 ``/api/start`` returns the session id; the page then navigates to ``/play``, which is rendered server-side from
 the session's snapshot.
 
+Three things are worth knowing before reading the script:
+
+**It edits controls, it does not build them.** Seat cards are rendered once, in Python
+(``lobby_page._seat_card``). This layer sets values, toggles ``disabled``, and rebuilds two option lists that
+genuinely depend on another choice — the thinking modes a newly picked model allows, and the instances a newly
+picked bank contains. When an edit changes the page's SHAPE (a bank with a different party count, so a different
+number of cards) it reloads and lets the server render it. A JavaScript copy of the card markup is the fast way
+to end up with two lobbies that disagree about what a seat is.
+
+**Field names live in one map.** :js:data:`SEAT_FIELDS` and :js:data:`LOBBY_FIELDS` are the only place this file
+spells a state key, and they are exactly the ``data-field`` / ``data-lobby`` attributes the markup carries and
+exactly ``SeatConfig``'s dataclass fields. The lobby test pins all three to each other, so a renamed field fails
+a test instead of silently editing nothing.
+
+**Validation here is a courtesy.** ``validate`` mirrors the server's two rules so Start is disabled before it is
+clicked rather than after — the click that costs money should not be the thing that discovers the budget cap is
+missing. The server checks again and is the one that refuses.
+
 Owned by lane C.
 """
 from __future__ import annotations
 
+from ...viz.assets import JS_SHELL, JS_UTIL
+
 # The lobby page's inline script. See ``lobby_page.render_lobby_html`` for the DOM it drives.
 JS_LOBBY = r"""
-// live-play lane C
+/* ---- the wire vocabulary: route paths, event names, and the state keys the controls edit ---- */
+
+/* Every key of SeatConfig, in one place. These strings are the `data-field` attribute on each seat control AND
+   the JSON keys the server reads, so the mapping between a control and a field is an attribute lookup rather
+   than a switch that can fall out of step. */
+const SEAT_FIELDS = ["kind", "model_id", "policy", "thinking", "instructions", "display_name"];
+/* The game-level keys, carried on `data-lobby`. `budget_usd` is the only numeric one. */
+const LOBBY_FIELDS = ["bank", "framing", "instance_id", "budget_usd"];
+/* Seat kinds whose participant reads no prose — the private-instruction box is greyed for these. Mirrors
+   `lobby_page.NO_INSTRUCTION_KINDS`. */
+const NO_INSTRUCTION_KINDS = ["rational", "oracle"];
+const POLICY_KINDS = ["rational", "oracle"];
+
+const ROUTES = {
+  lobby: "/api/lobby",
+  start: "/api/start",
+  reset: "/api/reset",
+  play: "/play",
+  events: (sid) => "/api/session/" + encodeURIComponent(sid) + "/events",
+};
+/* Event names mirrored from `live/events.py`. Mirrored only — this page never invents one. */
+const EV = { lobby_state: "lobby_state", episode_started: "episode_started", error: "error" };
+
+/* The lobby state, embedded by the server as an inert JSON tag. This object is the page's single copy: every
+   control is read out of it and written back into it, and the server's response replaces it wholesale. */
+let STATE = JSON.parse($("lobby-state").textContent);
+let postTimer = null, source = null;
+
+/* ---------------------------------------------------------------- reading the state --- */
+function seats() { return STATE.seats || []; }
+function models() { return STATE.models || []; }
+function modelById(id) { return models().find(m => m.model_id === id) || null; }
+function bankById(id) { return (STATE.banks || []).find(b => b.bank_id === id) || null; }
+function seatName(i) { return (STATE.seat_names || [])[i] || ("seat " + i); }
+
+/* Whether a seat spends money: a model seat whose model is metered. A provider that omits `metered` is assumed
+   to charge — the assumption that costs a wasted cap is better than the one that costs a bill. */
+function isMetered(seat) {
+  if (seat.kind !== "llm") return false;
+  const m = modelById(seat.model_id);
+  return !m || m.metered !== false;
+}
+function meteredCount() { return seats().filter(isMetered).length; }
+
+/* The server's rules, checked here so Start is disabled before it is clicked. Kept in the same order and the
+   same words as `lobby_page._problems`. */
+function validate() {
+  const out = [];
+  if (!(STATE.banks || []).length) out.push("This provider offers no instance banks.");
+  if (!seats().length) out.push("No seats are configured yet.");
+  const cap = STATE.budget_usd;
+  if (meteredCount() > 0 && !(typeof cap === "number" && isFinite(cap) && cap > 0))
+    out.push("A budget cap above $0 is required while a metered model is seated.");
+  seats().forEach((s, i) => {
+    if (s.kind === "human" && !String(s.display_name || "").trim())
+      out.push("Seat " + i + " (" + seatName(i) + ") is played by you and needs a display name.");
+    if (s.kind === "llm" && !s.model_id)
+      out.push("Seat " + i + " (" + seatName(i) + ") is a model seat with no model chosen.");
+  });
+  return out;
+}
+
+/* ---------------------------------------------------------------- painting --- */
+function status(msg, bad) {
+  const el = $("lobby-status");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = bad ? "sub neg" : "sub muted";
+}
+
+function setStat(id, value) { const el = $(id); if (el) el.textContent = value; }
+
+/* Everything on the page that is derived rather than typed: the strip, the problem list, whether Start is live,
+   and which seat controls apply to which kind. Called after every edit and after every server response. */
+function paint() {
+  const problems = validate();
+  const list = $("lobby-problems");
+  if (list) list.innerHTML = problems.map(p => "<li>" + E(p) + "</li>").join("");
+  const start = $("lobby-start");
+  if (start) start.disabled = problems.length > 0 || !!STATE.running;
+  const cap = STATE.budget_usd;
+  setStat("lobby-stat-phase", STATE.phase || (STATE.running ? "running" : "lobby"));
+  setStat("lobby-stat-seats", String(seats().length));
+  setStat("lobby-stat-metered", String(meteredCount()));
+  setStat("lobby-stat-budget", (typeof cap === "number" && isFinite(cap)) ? "$" + cap.toFixed(2) : "—");
+  const budget = $("lobby-budget");
+  if (budget) budget.required = meteredCount() > 0;
+  seats().forEach((s, i) => paintSeatKind(i));
+}
+
+/* Which of a seat card's controls apply to its current kind. The controls stay in the document and are
+   disabled rather than removed, so cycling a kind never changes the card's shape. */
+function paintSeatKind(idx) {
+  const seat = seats()[idx];
+  if (!seat) return;
+  const off = {
+    kind: false,
+    model_id: seat.kind !== "llm",
+    thinking: seat.kind !== "llm",
+    policy: POLICY_KINDS.indexOf(seat.kind) < 0,
+    instructions: NO_INSTRUCTION_KINDS.indexOf(seat.kind) >= 0,
+    display_name: false,
+  };
+  SEAT_FIELDS.forEach(f => {
+    const control = control_(idx, f);
+    if (control) control.disabled = !!off[f];
+    const field = document.querySelector(
+      '.field[data-seat="' + idx + '"][data-field-for="' + f + '"]');
+    if (field) field.classList.toggle("off", !!off[f]);
+  });
+}
+
+function control_(idx, field) {
+  return document.querySelector('[data-seat="' + idx + '"][data-field="' + field + '"]');
+}
+
+/* Set a control's value from the state, unless the person is typing in it — resetting the caret mid-sentence
+   because a broadcast arrived is the classic way a collaborative form becomes unusable. */
+function setValue(control, value) {
+  if (!control || control === document.activeElement) return;
+  control.value = value === null || value === undefined ? "" : String(value);
+}
+
+function options(pairs, selected) {
+  return pairs.map(([value, label, disabled]) =>
+    "<option value=\"" + E(value) + "\"" + (String(value) === String(selected ?? "") ? " selected" : "")
+    + (disabled ? " disabled" : "") + ">" + E(label) + "</option>").join("");
+}
+
+/* The two option lists that depend on another choice. Everything else is rendered once by the server. */
+function syncThinking(idx) {
+  const seat = seats()[idx], control = control_(idx, "thinking");
+  if (!seat || !control) return;
+  const modes = (modelById(seat.model_id) || {}).thinking_modes || ["off"];
+  if (modes.indexOf(seat.thinking) < 0) seat.thinking = modes[0];
+  control.innerHTML = options(modes.map(m => [m, m, false]), seat.thinking);
+  const hint = $("hint-" + idx + "-thinking");
+  if (hint) hint.textContent = modes.length < 2 ? "this model has one thinking mode"
+                                                : "only the modes this model accepts are offered";
+}
+
+function syncInstances() {
+  const control = $("lobby-instance"), bank = bankById(STATE.bank);
+  if (!control) return;
+  const ids = (bank || {}).instance_ids || [];
+  const pairs = [["", "random — let the provider choose", false]].concat(ids.map(i => [i, i, false]));
+  if (ids.indexOf(STATE.instance_id) < 0) STATE.instance_id = "";
+  control.innerHTML = options(pairs, STATE.instance_id);
+}
+
+/* Push the whole state into the controls that already exist. */
+function syncControls() {
+  LOBBY_FIELDS.forEach(k => {
+    const control = document.querySelector('[data-lobby="' + k + '"]');
+    if (control) setValue(control, STATE[k]);
+  });
+  syncInstances();
+  seats().forEach((s, i) => {
+    syncThinking(i);
+    SEAT_FIELDS.forEach(f => setValue(control_(i, f), s[f]));
+  });
+}
+
+/* ---------------------------------------------------------------- editing --- */
+function onEdit(ev) {
+  const t = ev.target;
+  if (!t || !t.dataset) return;
+  if (t.dataset.field && t.dataset.seat !== undefined) {
+    const seat = seats()[Number(t.dataset.seat)];
+    if (!seat || SEAT_FIELDS.indexOf(t.dataset.field) < 0) return;
+    seat[t.dataset.field] = t.value;
+    if (t.dataset.field === "model_id") syncThinking(Number(t.dataset.seat));
+  } else if (t.dataset.lobby) {
+    const key = t.dataset.lobby;
+    if (LOBBY_FIELDS.indexOf(key) < 0) return;
+    STATE[key] = key === "budget_usd" ? (t.value === "" ? null : Number(t.value)) : t.value;
+    if (key === "bank") syncInstances();
+  } else return;
+  paint();
+  schedulePost();
+}
+
+/* Debounced so typing into the instructions box is one POST at the end of a sentence rather than one per
+   keystroke; the state on the page is already correct, this only catches the server up. */
+function schedulePost() {
+  if (postTimer) clearTimeout(postTimer);
+  postTimer = setTimeout(push, 350);
+}
+
+async function push() {
+  postTimer = null;
+  const patch = { seats: seats() };
+  LOBBY_FIELDS.forEach(k => { patch[k] = STATE[k] === undefined ? null : STATE[k]; });
+  try {
+    const r = await fetch(ROUTES.lobby, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) { status(body.error || ("lobby edit refused (" + r.status + ")"), true); return; }
+    status("saved", false);
+    applyState(body);
+  } catch (e) {
+    status("could not reach the server: " + e, true);
+  }
+}
+
+/* The server's answer replaces the page's state. A response with a different number of seats is a SHAPE change
+   — a bank with a different party count — and the server renders those cards, so the page reloads rather than
+   growing a second card builder here. */
+function applyState(next) {
+  if (!next || !Array.isArray(next.seats)) return;
+  if (next.seats.length !== seats().length) { location.reload(); return; }
+  STATE = Object.assign({}, STATE, next);
+  syncControls();
+  paint();
+}
+
+async function refresh() {
+  try {
+    const r = await fetch(ROUTES.lobby, { headers: { "Accept": "application/json" } });
+    if (r.ok) applyState(await r.json());
+  } catch (e) { /* the server is gone; the page keeps what it has rather than blanking */ }
+}
+
+/* ---------------------------------------------------------------- starting --- */
+async function start() {
+  const problems = validate();
+  if (problems.length) { status(problems[0], true); return; }
+  const btn = $("lobby-start");
+  if (btn) btn.disabled = true;
+  status("starting…", false);
+  try {
+    const r = await fetch(ROUTES.start, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) { status(body.error || ("could not start (" + r.status + ")"), true); paint(); return; }
+    location.href = ROUTES.play;
+  } catch (e) {
+    status("could not reach the server: " + e, true);
+    paint();
+  }
+}
+
+async function reset() {
+  status("ending the session…", false);
+  try {
+    await fetch(ROUTES.reset, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  } catch (e) { /* fall through to the reload, which shows whatever actually happened */ }
+  location.reload();
+}
+
+/* ---------------------------------------------------------------- the stream --- */
+/* Only a running session has a stream, so this attaches when one exists: a `lobby_state` broadcast keeps a
+   second tab's lineup honest, and `episode_started` is how a tab that did not click Start still follows the
+   game to the live page. */
+function subscribe(sid) {
+  if (!sid || source || typeof EventSource === "undefined") return;
+  source = new EventSource(ROUTES.events(sid));
+  source.addEventListener(EV.lobby_state, (ev) => {
+    try { applyState(JSON.parse(ev.data)); } catch (e) { /* a malformed frame must not blank the lobby */ }
+  });
+  source.addEventListener(EV.episode_started, () => { location.href = ROUTES.play; });
+  source.addEventListener(EV.error, (ev) => {
+    try { status(JSON.parse(ev.data).message, true); } catch (e) { /* unparseable: nothing useful to show */ }
+  });
+}
+
+/* ---------------------------------------------------------------- wiring --- */
+document.addEventListener("change", onEdit);
+document.addEventListener("input", onEdit);
+const startBtn = $("lobby-start");
+if (startBtn) startBtn.addEventListener("click", start);
+const resetBtn = $("lobby-reset");
+if (resetBtn) resetBtn.addEventListener("click", reset);
+/* No polling: a lobby with no session has nothing to stream, so a tab catches up when it is looked at again. */
+window.addEventListener("focus", refresh);
+subscribe(STATE.sid);
+if (STATE.error) status(STATE.error, true);
+paint();
+
+registerKeys([
+  { keys: ["v"], what: "open the live page", run: () => { location.href = ROUTES.play; } },
+  { keys: ["r"], what: "reload the lineup from the server", run: refresh },
+  { keys: ["?"], what: "show or hide this help", run: () => { const h = $("help"); if (h) h.hidden = !h.hidden; } },
+  { keys: ["Escape"], what: "", run: () => { const h = $("help"); if (h) h.hidden = true; } },
+]);
 """
+
+#: The lobby page's complete script: the visualizer's formatting helpers and its page shell (theme toggle,
+#: keyboard bindings, help overlay), then this page's wiring. Composed the way ``viz.assets.JS_INDEX_PAGE`` is —
+#: the lobby carries no episode payload, so none of the chart, hover, transcript or sidebar layers are loaded.
+JS_LOBBY_PAGE = "\n".join((JS_UTIL, JS_SHELL, JS_LOBBY))
