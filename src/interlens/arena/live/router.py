@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # [implement: live-play/lane0] 2026-08-16
+# [implement: live-play/laneA] 2026-08-16
 """``LiveSeatRouter``: a seat table whose occupants can change while the episode is running.
 
 ``SeatRouter`` already presents a heterogeneous lineup to the engine as one participant. This subclass adds the
@@ -39,10 +40,14 @@ Owned by lane A.
 """
 from __future__ import annotations
 
+import logging
+import threading
 from typing import Any, Callable
 
 from ...message import Message
 from ..table import SeatRouter
+
+logger = logging.getLogger(__name__)
 
 
 class LiveSeatRouter(SeatRouter):
@@ -63,12 +68,26 @@ class LiveSeatRouter(SeatRouter):
         reach the engine — a broken indicator cannot be allowed to kill a game.
     name : str
         Identifier within the conversation.
+
+    Notes
+    -----
+    Drive a live table with ``EpisodePool``, never ``BatchedEpisodePool``. The batched pool resolves a
+    pure-dispatch table (one declaring ``participant_for``, which this inherits) to its sub-participants and
+    addresses them directly — which would bypass this class's ``generate`` and with it the occupant stamp, so a
+    hot-swapped episode would come back with no record of who played what. Live play issues one request per wave
+    anyway, so there is nothing to batch.
     """
 
     def __init__(self, seats: dict[str, Any], labels: dict[str, str] | None = None,
                  on_turn_start: Callable[[str, str | None], None] | None = None,
                  name: str = "live_table"):
-        raise NotImplementedError("live-play lane A")
+        super().__init__(seats, name=name)
+        self.labels = dict(labels or {})
+        self.on_turn_start = on_turn_start
+        # Guards the (seats, labels) pair — read together in ``generate``, written together in ``swap``. Held
+        # for two dict lookups and nothing else: generation happens outside it, or a swap would queue behind an
+        # API call.
+        self._lock = threading.Lock()
 
     def generate(self, view, *, seat: str | None = None, **kwargs) -> Message:
         """Snapshot (participant, label) for ``seat`` under the lock, fire ``on_turn_start``, generate outside the
@@ -76,7 +95,18 @@ class LiveSeatRouter(SeatRouter):
 
         The label is stamped only when the participant did not set one itself, so a participant that knows better
         than the table who it is (a human seat naming the player) keeps its own attribution."""
-        raise NotImplementedError("live-play lane A")
+        with self._lock:
+            participant = self.participant_for(seat)
+            label = self.labels.get(seat)
+        if self.on_turn_start is not None:
+            try:
+                self.on_turn_start(seat, label)
+            except Exception:
+                logger.exception("live-play: on_turn_start raised for seat %s (ignored)", seat)
+        message = participant.generate(view, seat=seat, **kwargs)
+        if label is not None and not message.metadata.get("occupant"):
+            message.metadata["occupant"] = label
+        return message
 
     def swap(self, seat: str, participant: Any, label: str) -> str | None:
         """Install ``participant`` as ``seat``'s occupant from the next turn on. Returns the label of the
@@ -86,9 +116,19 @@ class LiveSeatRouter(SeatRouter):
         Raises ``KeyError`` for an unknown seat. Does NOT check whether a human prompt is open on that seat — the
         session enforces that, because it is the half that knows the session's phase.
         """
-        raise NotImplementedError("live-play lane A")
+        with self._lock:
+            if seat not in self.seats:
+                raise KeyError(f"no seat {seat!r} at this table (have {sorted(self.seats)})")
+            previous = self.labels.get(seat)
+            self.seats[seat] = participant
+            if label is None:
+                self.labels.pop(seat, None)
+            else:
+                self.labels[seat] = label
+        return previous
 
     def occupants(self) -> dict[str, str | None]:
         """The current seat -> occupant-label map, read under the lock. What ``hello`` reports so a page that
         just connected badges seats correctly without replaying the whole swap history."""
-        raise NotImplementedError("live-play lane A")
+        with self._lock:
+            return {seat: self.labels.get(seat) for seat in self.seats}
