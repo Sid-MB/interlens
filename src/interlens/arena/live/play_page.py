@@ -52,6 +52,7 @@ from ..viz.chrome import _e, _num, quick_stats, summary_strip, topbar
 from ..viz.page import _document, _legend, _reference_table, _sidebar, _threshold
 from .assets import JS_LIVE
 from .provider import SEAT_KINDS
+from .style import CSS_LIVE
 
 __all__ = ["render_live_html"]
 
@@ -272,7 +273,8 @@ def render_live_html(snapshot: dict) -> str:
   played, in that oracle's units. It fills in as the game goes; on a private-information game it is an omniscient
   hindsight gap, not regret against a policy the seat could have implemented.</div>
  <div class='bar'>{selector}</div><div id='regret'></div></section>""" if oracles else "")
-    body = f"""<h1>{_e(ep.get('scenario') or lobby.get('instance_id') or 'live game')} —
+    body = f"""<style>{CSS_LIVE}</style>
+<h1>{_e(ep.get('scenario') or lobby.get('instance_id') or 'live game')} —
  <code>{_e(ep.get('episode_id'))}</code></h1>
 {_status_strips()}
 {summary_strip(payload)}

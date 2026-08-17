@@ -15,6 +15,7 @@
 #
 # [implement: live-play/lane0] 2026-08-16
 # [implement: live-play/laneD] 2026-08-16
+# [implement: live-play/laneE] 2026-08-17
 """The live page's browser layer: subscribe, merge, redraw, and take the player's move.
 
 The merge rule is one line and worth stating exactly, because everything else follows from it: a
@@ -63,15 +64,10 @@ PAYLOAD.seatNames = (P.seats || []).map(s => s.name);
 let ORACLE = (P.counterfactual_oracles[0] || P.oracle_names[0] || "");
 let CHART = null, PINNED = null, CURRENT_TURN = null;
 
-/* Which occupant a seat is considered to be HELD BY by default: the first one it played under. A turn whose
-   occupant differs from it changed hands (or is a person), and only those get badged — a seat played start to
-   finish by one model would otherwise wear the same badge on all thirty of its turns. Derived from the payload
-   rather than stored, so it follows the transcript the page is actually showing. */
-function occupantDefaults(turns) {
-  const out = {};
-  (turns || []).forEach(t => { if (t.occupant && !(t.seat in out)) out[t.seat] = t.occupant; });
-  return out;
-}
+/* Which occupant a seat is held by by default (``occupantDefaults``, from the shared transcript module): a turn
+   whose occupant differs from it changed hands, or is a person, and only those get badged — a seat played start
+   to finish by one model would otherwise wear the same badge on all thirty of its turns. Recomputed as turns
+   arrive, since the first turn a seat plays is what defines its default. */
 let OCCUPANT_DEFAULTS = occupantDefaults(P.turns);
 
 function buildMarks() {

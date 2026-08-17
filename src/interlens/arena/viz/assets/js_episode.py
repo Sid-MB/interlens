@@ -15,6 +15,7 @@
 #
 # [rational_agents: viz] 2026-07-29
 # [rational_agents: viz-ux] 2026-08-03
+# [implement: live-play/laneE] 2026-08-17
 
 """The episode page's own wiring: build the marks, render the panels, and keep chart and transcript in sync.
 
@@ -104,10 +105,14 @@ const SELECT = makeSelectTurn((idx) => {
 
 function drawTurns() {
   const host = $("turns");
+  /* Derived once for the whole list: an exported LIVE episode carries a per-turn occupant, and the badge marks a
+     departure from the seat's first occupant — so without this map a static export would badge only the human
+     turns and show a mid-game swap as if nothing had changed hands. */
+  const defaults = occupantDefaults(P.turns);
   host.innerHTML = annProvenance(P.annotations_source, P.counterfactual_oracles)
     + scrubberHtml(P.turns)
     + `<div id="turnlist">` + P.turns.map(t => turnCard(t, G, ORACLE,
-        { showCounterfactual: Boolean(ORACLE), infoLinks: true })).join("") + `</div>`;
+        { showCounterfactual: Boolean(ORACLE), infoLinks: true, occupantDefaults: defaults })).join("") + `</div>`;
   bindLazy(host, P.turns);
   bindCounterfactualCards(host, G, P.turns, ORACLE);
   host.querySelectorAll(".chip[data-goturn]").forEach(b =>

@@ -45,6 +45,7 @@ from ..viz.chrome import _e, topbar
 from ..viz.page import _document
 from .assets.js_lobby import JS_LOBBY_PAGE
 from .provider import SEAT_KINDS, SeatConfig
+from .style import CSS_LIVE
 
 #: What each seat kind is called in the picker, and the one line under it that says what choosing it means. The
 #: distinction between ``rational`` and ``oracle`` is the whole point of the arena's computable seats — same
@@ -71,26 +72,13 @@ LOBBY_RULES = ("A budget cap is required whenever any seat is a metered model �
 
 # Lobby-only styling. It lives here rather than in ``viz.assets.css`` because the visualizer's stylesheet is
 # shared by every exported page and should not grow controls that only one server-rendered page has. Everything
-# structural (cards, strips, pills, buttons, selects, the type scale, both themes) comes from that stylesheet;
-# what is added is the form furniture it never needed — number and textarea inputs, a disabled-control look, and
-# the two responsive grids.
+# structural (cards, strips, pills, buttons, selects, the type scale, both themes) comes from that stylesheet.
+#: The lobby's own layout. The form furniture the shared stylesheet never needed — labelled fields, text and
+#: number inputs, the disabled-control look, the seat card — is what the PLAY page needs too, so it lives in
+#: :data:`~interlens.arena.live.style.CSS_LIVE` and is inlined beside this rather than copied into both pages.
 CSS_LOBBY = """
 .lobbyrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:var(--sp-3);align-items:start}
-.field{display:flex;flex-direction:column;gap:3px;min-width:0}
-.field>label{font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600}
-.field>.hint{font-size:var(--t-xs);color:var(--muted);line-height:1.35}
-.field.off{opacity:.45}
-.field .req{color:var(--critical);font-weight:700}
-textarea,input[type=number]{font:inherit;font-size:var(--t-sm);color:var(--ink);background:var(--surface-1);
- border:1px solid var(--ring-2);border-radius:var(--r-1);padding:4px 8px;width:100%}
-textarea{min-height:4.4em;resize:vertical;line-height:1.4}
-select:disabled,input:disabled,textarea:disabled{opacity:.5;cursor:not-allowed}
-select,input[type=text],input[type=number]{width:100%}
 .seatgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:var(--sp-3);margin-top:var(--sp-2)}
-.seatcard{border:1px solid var(--ring);border-radius:var(--r-2);padding:var(--sp-3);background:var(--plane);
- display:flex;flex-direction:column;gap:var(--sp-2)}
-.seatcard>.hd{display:flex;align-items:baseline;gap:var(--sp-2);justify-content:space-between;flex-wrap:wrap}
-.seatcard>.hd .who{font-weight:600;font-size:var(--t-md)}
 .startbar{display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap;margin-top:var(--sp-3)}
 .startbar button.primary{border-color:var(--s1);color:var(--s1);font-weight:600;padding:6px 18px}
 .problems{margin:var(--sp-2) 0 0;padding-left:1.15em;font-size:var(--t-sm);color:var(--critical)}
@@ -129,7 +117,7 @@ def render_lobby_html(state: dict) -> str:
                     for i in range(len(seats)))
     seats_body = cards or ("<div class='sub muted'>No seats yet — choose an instance bank whose party count is "
                            "known, and the seat cards appear here.</div>")
-    body = (f"<style>{CSS_LOBBY}</style>"
+    body = (f"<style>{CSS_LIVE}{CSS_LOBBY}</style>"
             "<h1>Live play</h1>"
             "<div class='sub'>Pick a game, decide who sits in each seat, then start. Turns stream into the "
             "visualizer's episode page as they are played, and any seat can be handed to someone else mid-game."

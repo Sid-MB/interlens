@@ -15,6 +15,7 @@
 #
 # [rational_agents: viz-ux] 2026-08-03
 # [implement: live-play/laneD] 2026-08-16
+# [implement: live-play/laneE] 2026-08-17
 
 """Browser layer, part 3: the transcript — turn cards, the scrubber, and lazy prompt bodies.
 
@@ -481,6 +482,16 @@ function infoLink(label, enabled) {
    `opts.occupantDefaults` (seat -> the occupant it started under), which the live page derives from the payload
    and passes in. Without that map only a human turn badges, which is the conservative half of the rule: a
    default is exactly what tells a routine occupant from a swapped one. */
+/* Which occupant a seat is considered to be HELD BY by default: the first one it played under. Derived from the
+   transcript rather than stored, so it follows whatever turns the page is actually showing — the live page
+   recomputes it as turns stream in, and a static export of a live episode gets the same map off the payload it
+   was rendered from. */
+function occupantDefaults(turns) {
+  const out = {};
+  (turns || []).forEach(t => { if (t.occupant && !(t.seat in out)) out[t.seat] = t.occupant; });
+  return out;
+}
+
 function occupantBadge(t, defaults) {
   const occupant = t.occupant;
   if (!occupant) return "";
