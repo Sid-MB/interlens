@@ -41,6 +41,7 @@ import threading
 import pytest
 
 from interlens.arena.engine import EpisodePool
+from interlens.arena.live.provider import SeatConfig
 from interlens.arena.live.router import LiveSeatRouter
 from interlens.arena.negotiation.sheets import GameSpec, ScoreSheet
 from interlens.arena.negotiation.space import DealSpace, Issue
@@ -243,6 +244,35 @@ def test_a_swap_racing_a_turn_never_mislabels_it():
     swap_thread.join(5)
     assert not mismatched, mismatched[:3]
     assert table.occupants()[seat] is not None            # and the table is intact, not torn
+
+
+# ---------------------------------------------------------------- one place the spelling is decided --
+@pytest.mark.parametrize("config, expected", [
+    (SeatConfig(kind="llm", model_id="claude-fable-5"), "api:claude-fable-5"),
+    (SeatConfig(kind="rational", policy="bayes-rational"), "policy:bayes-rational"),
+    (SeatConfig(kind="oracle", policy="fairness-oracle"), "oracle:fairness-oracle"),
+    (SeatConfig(kind="human", display_name="sid"), "human:sid"),
+    (SeatConfig(kind="scripted"), "scripted:scripted"),
+    # display_name overrides the detail for every kind, so an operator can name a seat whatever they like
+    (SeatConfig(kind="llm", model_id="claude-fable-5", display_name="the buyer"), "api:the buyer"),
+    # and a kind with nothing to identify it still produces a label rather than a colon and a blank
+    (SeatConfig(kind="llm"), "api:llm"),
+])
+def test_the_occupant_label_is_derived_in_exactly_one_place(config, expected):
+    """The router's stamp, the ``seat_swapped`` event's from/to and the transcript badge all read this one
+    function. Three spellings of the same seat would make an occupant timeline unreadable."""
+    assert config.occupant_label() == expected
+
+
+def test_a_human_seat_and_its_config_agree_about_who_is_playing():
+    """A ``HumanParticipant`` stamps its OWN name (it knows who is at the keyboard), so the session must build it
+    from ``occupant_detail`` or one seat would report two different players for one person."""
+    from interlens.arena.live.human import HumanParticipant
+
+    config = SeatConfig(kind="human", display_name="sid")
+    human = HumanParticipant(config.occupant_detail(), 0, game().sheets[0], game().space, 2,
+                             publisher=lambda kind, data: None)
+    assert human.occupant == config.occupant_label() == "human:sid"
 
 
 def test_a_missing_seat_identity_still_raises_through_the_lock():

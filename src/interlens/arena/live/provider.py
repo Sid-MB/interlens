@@ -39,6 +39,12 @@ from typing import Any, Protocol
 # used for smoke tests and demos.
 SEAT_KINDS = ("llm", "rational", "oracle", "human", "scripted")
 
+#: Seat kind -> the prefix of its occupant label (``SeatConfig.occupant_label``). Two kinds are spelled by ROLE
+#: rather than by kind: an ``llm`` seat is served over an API (``api:claude-fable-5``) and a ``rational`` seat by
+#: a computable policy (``policy:bayes-rational``), which is the vocabulary the rest of the arena already uses.
+#: A kind with no entry keeps its own name, so a new seat kind gets a sensible label before it gets a mapping.
+_OCCUPANT_PREFIX = {"llm": "api", "rational": "policy"}
+
 
 @dataclass
 class ModelInfo:
@@ -161,8 +167,27 @@ class SeatConfig:
         One function so the label the router stamps, the badge the transcript draws and the swap event's
         ``from``/``to`` are all the same string — an occupant timeline assembled from three spellings of the same
         seat would be unreadable. ``display_name`` overrides the detail when set.
+
+        The prefix is the seat's ROLE rather than its ``kind`` verbatim (``llm`` -> ``api:``, ``rational`` ->
+        ``policy:``), matching the vocabulary the rest of the arena already uses for seat kinds. The detail
+        defaults to whatever identifies that role: the model id, the policy name, the player's name.
         """
-        raise NotImplementedError("live-play lane A")
+        detail = self.occupant_detail()
+        return f"{_OCCUPANT_PREFIX.get(self.kind, self.kind)}:{detail}"
+
+    def occupant_detail(self) -> str:
+        """The half of :meth:`occupant_label` after the colon — the model, policy or person.
+
+        Exposed separately for one reason: a ``HumanParticipant`` stamps ``human:<its own name>`` on the turns it
+        plays (it knows who is at the keyboard; the table only knows who it was told about), so the session MUST
+        construct it with this exact string or the seat would report two different players for the same person.
+        """
+        named = (self.display_name or "").strip()
+        if named:
+            return named
+        fallback = {"llm": self.model_id, "rational": self.policy, "oracle": self.policy,
+                    "human": "player"}.get(self.kind)
+        return (fallback or self.kind).strip()
 
     def to_json(self) -> dict:
         """The wire form the lobby page and ``lobby_state`` events carry."""
