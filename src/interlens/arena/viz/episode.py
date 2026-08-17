@@ -448,6 +448,89 @@ def reconstruct_views(episode: dict, instance: dict) -> dict[int, list[dict]]:
         return {}
 
 
+def _turn_payload(t: dict, idx: int, *, is_retry: bool, geo: GameGeometry | None, kinds: dict,
+                  oracles: dict, seat_party: dict, rebuilt: dict, fabricated: dict) -> dict:
+    """One turn's render row — the per-turn unit :func:`episode_payload` builds its ``turns`` list from.
+
+    Split out so a LIVE page can build the row for a single arriving turn with exactly the code a full payload
+    rebuild uses (``arena.live.payload.turn_delta``): a streamed row is then byte-identical to the one a reload
+    produces, and the two can never drift.
+
+    Everything the row needs that is not on the turn itself is passed in, since all of it is episode-scoped and
+    computed once: ``geo`` (the game geometry, ``None`` without an instance), ``kinds`` (:func:`seat_kinds`),
+    ``oracles`` (turn idx -> {oracle name: record}), ``seat_party`` (seat name -> party index), ``rebuilt``
+    (replay-reconstructed views by turn idx) and ``fabricated`` (the ``gen_failures`` rows by turn idx).
+    ``is_retry`` marks a turn whose (round, phase, seat) slot was already seen — a superseded first attempt,
+    which changes only how a missing view is labelled."""
+    parsed = t.get("parsed_action") if isinstance(t.get("parsed_action"), dict) else {}
+    named = parsed.get("deal_named") or parsed.get("deal")
+    deal_index = geo.deal_index(named) if geo is not None else None
+    view, source = t.get("view"), "stored"
+    if not view:
+        view = rebuilt.get(idx)
+        source = ((RETRY_SOURCE if is_retry else "reconstructed") if idx in rebuilt else "absent")
+    turn_oracles = {name: _oracle_payload(name, rec, geo) for name, rec in (oracles.get(idx) or {}).items()}
+    row = {
+        "idx": idx, "round": t.get("round"), "phase": t.get("phase"), "seat": t.get("seat"),
+        "party": seat_party.get(t.get("seat")),
+        "kind": kinds["kinds"].get(t.get("seat"), "llm"),
+        # WHO held the seat for this turn (``TurnRecord.occupant``), and a human occupant's private note. ``None``
+        # on every batch-run episode, where the seat's occupant never changes and ``kind`` already says what it
+        # was; carried per turn because live play can hand a seat to a different player mid-episode, so only the
+        # turn knows. The transcript badges a turn whose occupant is not the seat's default.
+        "occupant": t.get("occupant"),
+        "human_note": t.get("human_note"),
+        "action": {
+            "atype": parsed.get("atype") or parsed.get("action") or ("none" if parsed else "unparsed"),
+            "label": _action_label({"action": parsed.get("atype"), "offer_id": parsed.get("offer")}),
+            "deal_named": named if isinstance(named, dict) else None,
+            "deal_index": deal_index,
+            "offer": parsed.get("offer") or parsed.get("offer_id"),
+            "message": parsed.get("message"),
+            "syntax_error": parsed.get("syntax_error"),
+        },
+        "parse_ok": bool(t.get("parse_ok")),
+        "content": t.get("content"),
+        "reasoning": parsed.get("thinking") or t.get("reasoning"),
+        "reasoning_provenance": t.get("reasoning_provenance") or "none",
+        # WHICH of the two sources above the text came from, which `reasoning_provenance` cannot say: an
+        # ``elicited`` rationale is prose the scaffold ASKED the seat to write in its response body, and is a
+        # different kind of evidence from a ``provider`` reasoning stream the model produced before answering.
+        # A page that labelled a scaffold-elicited rationale as a chain of thought would overclaim.
+        "reasoning_source": ("elicited" if parsed.get("thinking")
+                             else ("provider" if t.get("reasoning") else "none")),
+        "n_tokens_out": t.get("n_tokens_out"), "n_tokens_in": t.get("n_tokens_in"),
+        "cap": t.get("cap"), "stop_reason": t.get("stop_reason"),
+        "view": view, "view_source": source,
+        "oracles": turn_oracles,
+        "gen_failed": idx in fabricated,
+        "gen_failure": (fabricated.get(idx) or {}).get("reason"),
+        "gen_failed_detected_by": (fabricated.get(idx) or {}).get("detected_by"),
+        # A turn whose VISIBLE text is the engine's placeholder, whatever produced it. Strictly wider than
+        # ``gen_failed``: generation can succeed and still yield nothing publishable, which is what a
+        # thinking model does when it spends its whole cap inside an unterminated ``<think>``. Marked on the
+        # turn so the transcript can style it as the non-event it is instead of a party choosing to pass.
+        "silent": (t.get("content") or "") == EMPTY_TURN_PLACEHOLDER,
+    }
+    if row["silent"] and t.get("raw"):
+        # The text the model DID generate before the placeholder replaced it — normally an unterminated
+        # scratchpad, and the only evidence of what the turn was trying to do. Carried for silent turns only:
+        # it runs to several kilobytes and on a healthy local turn it merely repeats ``content``.
+        #
+        # And capped. A turn that burned a raised 32k cap inside one ``<think>`` block can carry a hundred
+        # kilobytes, and a page with a dozen of those is a page nobody opens twice. The HEAD is what a reader
+        # wants (what the seat set out to do), and the full text is in the episode record the page links to,
+        # so ``raw_chars`` keeps the true length honest rather than letting the excerpt pass for the whole.
+        raw = str(t["raw"])
+        row["raw"] = raw[:RAW_EXCERPT_CHARS]
+        row["raw_chars"] = len(raw)
+        row["raw_truncated"] = len(raw) > RAW_EXCERPT_CHARS
+    if deal_index is not None and geo is not None:
+        row["deal"] = geo.at(deal_index).to_json()
+        row["deal_welfare"] = geo.welfare_of(deal_index)
+    return row
+
+
 # -------------------------------------------------------------------------------- the payload --
 def episode_payload(episode: dict, instance: dict | None = None, annotation: dict | None = None, *,
                     manifest: dict | None = None, geometry: GameGeometry | None = None,
@@ -514,68 +597,12 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         is_retry = slot in slots_seen
         slots_seen.add(slot)
         idx = int(t.get("idx", len(rows)))
-        parsed = t.get("parsed_action") if isinstance(t.get("parsed_action"), dict) else {}
-        named = parsed.get("deal_named") or parsed.get("deal")
-        deal_index = geo.deal_index(named) if geo is not None else None
-        view, source = t.get("view"), "stored"
-        if not view:
-            view = rebuilt.get(idx)
-            source = ((RETRY_SOURCE if is_retry else "reconstructed") if idx in rebuilt else "absent")
-        turn_oracles = {name: _oracle_payload(name, rec, geo) for name, rec in (oracles.get(idx) or {}).items()}
-        row = {
-            "idx": idx, "round": t.get("round"), "phase": t.get("phase"), "seat": t.get("seat"),
-            "party": seat_party.get(t.get("seat")),
-            "kind": kinds["kinds"].get(t.get("seat"), "llm"),
-            "action": {
-                "atype": parsed.get("atype") or parsed.get("action") or ("none" if parsed else "unparsed"),
-                "label": _action_label({"action": parsed.get("atype"), "offer_id": parsed.get("offer")}),
-                "deal_named": named if isinstance(named, dict) else None,
-                "deal_index": deal_index,
-                "offer": parsed.get("offer") or parsed.get("offer_id"),
-                "message": parsed.get("message"),
-                "syntax_error": parsed.get("syntax_error"),
-            },
-            "parse_ok": bool(t.get("parse_ok")),
-            "content": t.get("content"),
-            "reasoning": parsed.get("thinking") or t.get("reasoning"),
-            "reasoning_provenance": t.get("reasoning_provenance") or "none",
-            # WHICH of the two sources above the text came from, which `reasoning_provenance` cannot say: an
-            # ``elicited`` rationale is prose the scaffold ASKED the seat to write in its response body, and is a
-            # different kind of evidence from a ``provider`` reasoning stream the model produced before answering.
-            # A page that labelled a scaffold-elicited rationale as a chain of thought would overclaim.
-            "reasoning_source": ("elicited" if parsed.get("thinking")
-                                 else ("provider" if t.get("reasoning") else "none")),
-            "n_tokens_out": t.get("n_tokens_out"), "n_tokens_in": t.get("n_tokens_in"),
-            "cap": t.get("cap"), "stop_reason": t.get("stop_reason"),
-            "view": view, "view_source": source,
-            "oracles": turn_oracles,
-            "gen_failed": idx in fabricated,
-            "gen_failure": (fabricated.get(idx) or {}).get("reason"),
-            "gen_failed_detected_by": (fabricated.get(idx) or {}).get("detected_by"),
-            # A turn whose VISIBLE text is the engine's placeholder, whatever produced it. Strictly wider than
-            # ``gen_failed``: generation can succeed and still yield nothing publishable, which is what a
-            # thinking model does when it spends its whole cap inside an unterminated ``<think>``. Marked on the
-            # turn so the transcript can style it as the non-event it is instead of a party choosing to pass.
-            "silent": (t.get("content") or "") == EMPTY_TURN_PLACEHOLDER,
-        }
-        if row["silent"] and t.get("raw"):
-            # The text the model DID generate before the placeholder replaced it — normally an unterminated
-            # scratchpad, and the only evidence of what the turn was trying to do. Carried for silent turns only:
-            # it runs to several kilobytes and on a healthy local turn it merely repeats ``content``.
-            #
-            # And capped. A turn that burned a raised 32k cap inside one ``<think>`` block can carry a hundred
-            # kilobytes, and a page with a dozen of those is a page nobody opens twice. The HEAD is what a reader
-            # wants (what the seat set out to do), and the full text is in the episode record the page links to,
-            # so ``raw_chars`` keeps the true length honest rather than letting the excerpt pass for the whole.
-            raw = str(t["raw"])
-            row["raw"] = raw[:RAW_EXCERPT_CHARS]
-            row["raw_chars"] = len(raw)
-            row["raw_truncated"] = len(raw) > RAW_EXCERPT_CHARS
-        if deal_index is not None and geo is not None:
-            row["deal"] = geo.at(deal_index).to_json()
-            row["deal_welfare"] = geo.welfare_of(deal_index)
+        row = _turn_payload(t, idx, is_retry=is_retry, geo=geo, kinds=kinds, oracles=oracles,
+                            seat_party=seat_party, rebuilt=rebuilt, fabricated=fabricated)
+        if row["action"]["deal_index"] is not None and geo is not None:
             trajectory.append({"turn_idx": idx, "ordinal": len(trajectory) + 1, "seat": t.get("seat"),
-                               "kind": row["kind"], "index": deal_index, "atype": row["action"]["atype"]})
+                               "kind": row["kind"], "index": row["action"]["deal_index"],
+                               "atype": row["action"]["atype"]})
         rows.append(row)
 
     ledger = public_ledger(rows)

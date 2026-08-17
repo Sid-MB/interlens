@@ -338,6 +338,36 @@ def _action_chip(turn: dict) -> str:
     return ""
 
 
+def _chat_bubble(payload: dict, t: dict) -> str:
+    """One published turn as a chat bubble — the per-turn unit :func:`_chat_bubbles` joins over.
+
+    Split out from the list so a live page can render a single arriving turn with the SAME code the static page
+    renders the whole transcript with (``arena.live.payload.bubble_html``): one bubble renderer, so a streamed
+    bubble can never drift from the one a reload rebuilds. ``payload`` is read only for the seat table, so the
+    caller may pass a payload whose ``turns`` do not yet contain ``t``."""
+    seats = {s.get("name"): s for s in payload.get("seats") or []}
+    seat = t.get("seat")
+    party = (seats.get(seat) or {}).get("party")
+    message = (t.get("action") or {}).get("message")
+    chip = _action_chip(t)
+    body = [f"<div class='who'><span class='pidx'>{_e(party)}</span> {_e(seat)}"
+            f"<span class='at'>turn {_e(t.get('idx'))} · round {_e(t.get('round'))}</span></div>"]
+    if message:
+        body.append(f"<div class='body'>{_e(message)}</div>")
+    if chip:
+        body.append(f"<div class='chipline'>{chip}</div>")
+    if t.get("gen_failed"):
+        body.append("<div class='fabtag'>NOT GENERATED — engine placeholder</div>")
+    elif t.get("silent"):
+        # The conversation view is what the other seats saw, and what they saw here was a party that said
+        # nothing. Tagging it keeps the bubble honest without inventing content for it.
+        body.append("<div class='fabtag'>SAID NOTHING — the seat published no answer this turn</div>")
+    return (f"<div class='bubble{' fab' if t.get('gen_failed') else (' silent' if t.get('silent') else '')}' "
+            f"id='bub-{_e(t.get('idx'))}' "
+            f"data-turnidx='{_e(t.get('idx'))}' data-seat='{_e(seat)}' data-party='{_e(party)}'>"
+            f"{''.join(body)}</div>")
+
+
 def _chat_bubbles(payload: dict) -> str:
     """The public conversation as chat bubbles, one per PUBLISHED turn, in order.
 
@@ -349,34 +379,10 @@ def _chat_bubbles(payload: dict) -> str:
 
     Every bubble carries its speaker's seat, so the browser can re-anchor the whole list to whichever seat is in
     view (that seat's own bubbles move to the right) without re-rendering anything."""
-    seats = {s.get("name"): s for s in payload.get("seats") or []}
     rows = [t for t in payload.get("turns") or [] if t.get("published", True)]
     if not rows:
         return "<div class='gap'>This episode published no turns.</div>"
-    bubbles = []
-    for t in rows:
-        seat = t.get("seat")
-        party = (seats.get(seat) or {}).get("party")
-        message = (t.get("action") or {}).get("message")
-        chip = _action_chip(t)
-        body = [f"<div class='who'><span class='pidx'>{_e(party)}</span> {_e(seat)}"
-                f"<span class='at'>turn {_e(t.get('idx'))} · round {_e(t.get('round'))}</span></div>"]
-        if message:
-            body.append(f"<div class='body'>{_e(message)}</div>")
-        if chip:
-            body.append(f"<div class='chipline'>{chip}</div>")
-        if t.get("gen_failed"):
-            body.append("<div class='fabtag'>NOT GENERATED — engine placeholder</div>")
-        elif t.get("silent"):
-            # The conversation view is what the other seats saw, and what they saw here was a party that said
-            # nothing. Tagging it keeps the bubble honest without inventing content for it.
-            body.append("<div class='fabtag'>SAID NOTHING — the seat published no answer this turn</div>")
-        bubbles.append(
-            f"<div class='bubble{' fab' if t.get('gen_failed') else (' silent' if t.get('silent') else '')}' "
-            f"id='bub-{_e(t.get('idx'))}' "
-            f"data-turnidx='{_e(t.get('idx'))}' data-seat='{_e(seat)}' data-party='{_e(party)}'>"
-            f"{''.join(body)}</div>")
-    return f"<div class='chatlog' id='chatlog'>{''.join(bubbles)}</div>"
+    return f"<div class='chatlog' id='chatlog'>{''.join(_chat_bubble(payload, t) for t in rows)}</div>"
 
 
 def _issue_bars_svg(game: dict, party: int) -> str:
