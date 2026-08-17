@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # [implement: live-play/lane0] 2026-08-16
+# [implement: live-play/laneB] 2026-08-16
 """Per-turn slices of the visualizer payload, for streaming one turn at a time.
 
 A live page and a static page must show the same thing, and the only way to be sure of that is for both to come
@@ -31,6 +32,9 @@ Owned by lane B.
 from __future__ import annotations
 
 from typing import Any
+
+from ..viz.episode import _oracle_records, _turn_payload, gen_failures, public_ledger, seat_kinds
+from ..viz.page import _chat_bubble
 
 
 def turn_delta(episode: dict, turn: dict, rows: list[dict], *, geometry: Any = None, kinds: dict | None = None,
@@ -53,8 +57,31 @@ def turn_delta(episode: dict, turn: dict, rows: list[dict], *, geometry: Any = N
     Views are never reconstructed here (replaying the episode once per turn would be absurd on a live path), so a
     turn the engine did not store a view for is reported ``view_source="absent"`` rather than reconstructed — the
     honest answer, and the same one ``episode_payload(reconstruct=False)`` gives.
+
+    ``kinds``, ``oracles`` and ``seat_party`` are derived from ``episode`` when omitted, so a caller with nothing
+    cached still gets a correct row. Pass the episode-scoped ones (``kinds``, ``seat_party``, ``geometry``) for
+    the live path; ``oracles`` is the exception that is normally left to default, since a turn's oracle records
+    are written by the engine as the turn is committed and so do not exist before it.
     """
-    raise NotImplementedError("live-play lane B")
+    idx = int(turn.get("idx", len(rows)))
+    slot = (turn.get("round"), turn.get("phase"), turn.get("seat"))
+    # A superseded first attempt at a slot already played: the ONLY thing it changes is how a missing view is
+    # labelled, and it is read off the rows already accumulated rather than tracked separately, so a session that
+    # was rebuilt from a reload gets the same answer as one that has been streaming since turn zero.
+    is_retry = any((r.get("round"), r.get("phase"), r.get("seat")) == slot for r in rows)
+    if kinds is None:
+        kinds = seat_kinds(episode, None)
+    if seat_party is None:
+        seat_party = {s.get("name"): i for i, s in enumerate(episode.get("seats") or [])}
+    if oracles is None:
+        oracles = _oracle_records(episode, None)
+    fabricated = {row["idx"]: row for row in gen_failures(episode)}
+    row = _turn_payload(turn, idx, is_retry=is_retry, geo=geometry, kinds=kinds, oracles=oracles,
+                        seat_party=seat_party, rebuilt={}, fabricated=fabricated)
+    rows.append(row)
+    # In place over the WHOLE list, not just the new row — see the note above on retroactive ``published``.
+    public_ledger(rows)
+    return row
 
 
 def bubble_html(payload: dict, turn: dict) -> str:
@@ -65,4 +92,4 @@ def bubble_html(payload: dict, turn: dict) -> str:
     quietly went stale. ``payload`` is read only for its seat table, so a payload not yet containing ``turn`` is
     fine.
     """
-    raise NotImplementedError("live-play lane B")
+    return _chat_bubble(payload, turn)
