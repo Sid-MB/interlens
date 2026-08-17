@@ -96,7 +96,8 @@ function isMetered(seat) {
 function meteredCount() { return seats().filter(isMetered).length; }
 
 /* The server's rules, checked here so Start is disabled before it is clicked. Kept in the same order and the
-   same words as `lobby_page._problems`. */
+   same words as `lobby_page._problems`. Anything the server would ACCEPT belongs in `notices` instead: a lobby
+   that refuses a configuration the server is happy with is a front end forbidding its own back end. */
 function validate() {
   const out = [];
   if (!(STATE.banks || []).length) out.push("This provider offers no instance banks.");
@@ -105,10 +106,20 @@ function validate() {
   if (meteredCount() > 0 && !(typeof cap === "number" && isFinite(cap) && cap > 0))
     out.push("A budget cap above $0 is required while a metered model is seated.");
   seats().forEach((s, i) => {
-    if (s.kind === "human" && !String(s.display_name || "").trim())
-      out.push("Seat " + i + " (" + seatName(i) + ") is played by you and needs a display name.");
     if (s.kind === "llm" && !s.model_id)
       out.push("Seat " + i + " (" + seatName(i) + ") is a model seat with no model chosen.");
+  });
+  return out;
+}
+
+/* Worth saying, does not block. Mirrors `lobby_page._notices`, minus the exact default label — that one is
+   derived from SeatConfig on the server and is not worth a second spelling here to say twice. */
+function notices() {
+  const out = [];
+  seats().forEach((s, i) => {
+    if (s.kind === "human" && !String(s.display_name || "").trim())
+      out.push("Seat " + i + " (" + seatName(i) + ") has no display name — the transcript will record it "
+               + "under the default occupant label.");
   });
   return out;
 }
@@ -129,6 +140,8 @@ function paint() {
   const problems = validate();
   const list = $("lobby-problems");
   if (list) list.innerHTML = problems.map(p => "<li>" + E(p) + "</li>").join("");
+  const notes = $("lobby-notices");
+  if (notes) notes.innerHTML = notices().map(n => "<li>" + E(n) + "</li>").join("");
   const start = $("lobby-start");
   if (start) start.disabled = problems.length > 0 || !!STATE.running;
   const cap = STATE.budget_usd;
@@ -240,6 +253,10 @@ function schedulePost() {
   postTimer = setTimeout(push, 350);
 }
 
+/* The patch carries the whole seats list rather than a changed index — one shape for every edit. `overrides`
+   (the provider's free-form extra configuration) is deliberately NOT sent: the endpoint takes a partial patch,
+   so an omitted key is left alone, and this page has no controls for it. Sending it back would mean round
+   tripping a value nothing here understands. */
 async function push() {
   postTimer = null;
   const patch = { seats: seats() };
@@ -286,6 +303,10 @@ async function start() {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) { status(body.error || ("could not start (" + r.status + ")"), true); paint(); return; }
+    /* The session id is what says a game exists. `episode_id` is null here by design — the engine mints it
+       inside run_episode, after the thread is spawned — so gating the redirect on it would strand the page on
+       a lobby whose game is already running. */
+    if (!body.sid) { status("the server started nothing it could name; staying here", true); paint(); return; }
     location.href = ROUTES.play;
   } catch (e) {
     status("could not reach the server: " + e, true);

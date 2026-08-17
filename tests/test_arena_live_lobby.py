@@ -41,7 +41,7 @@ import pytest
 
 from interlens.arena.live import events
 from interlens.arena.live.assets.js_lobby import JS_LOBBY, JS_LOBBY_PAGE
-from interlens.arena.live.lobby_page import _problems, render_lobby_html
+from interlens.arena.live.lobby_page import _notices, _problems, render_lobby_html
 from interlens.arena.live.provider import SEAT_KINDS, BankInfo, ModelInfo, SeatConfig
 
 # A model per interesting capability shape: a metered hosted model that CANNOT turn thinking off (the Claude-5
@@ -154,6 +154,12 @@ def test_every_seat_kind_is_offered():
     assert kinds == list(SEAT_KINDS)
 
 
+def test_a_server_that_narrows_the_seat_kinds_narrows_the_picker():
+    """``seat_kinds`` lets a deployment drop a kind it will not build; the picker must not offer it anyway."""
+    card = _card(render_lobby_html(_state(seat_kinds=["llm", "human"])), 0)
+    assert re.findall(r'<option value="(\w+)"', _select_of(card, "kind")) == ["llm", "human"]
+
+
 def test_unavailable_model_is_greyed_not_omitted_and_says_why():
     """A model that vanishes from the list reads as a model that does not exist; the reason is usually the fix."""
     card = _card(render_lobby_html(_state()), 0)
@@ -205,18 +211,25 @@ def test_policy_picker_is_populated_and_disabled_for_non_computable_seats():
     assert "disabled" in _select_of(_card(html, 0), "policy")
 
 
-def test_display_name_is_marked_required_on_a_human_seat():
+def test_a_human_seat_names_the_label_it_gets_without_a_name():
+    """Derived from ``SeatConfig`` rather than spelled out, so the lobby cannot promise a label the router does
+    not stamp."""
     html = render_lobby_html(_state())
-    assert "required — the transcript calls you this" in _card(html, 3)
+    assert SeatConfig(kind="human").occupant_label() in _card(html, 3)
     assert "optional occupant label" in _card(html, 0)
 
 
 # ------------------------------------------------------------------------------------- can it start --
-def test_a_human_seat_without_a_name_blocks_the_start_button():
-    html = render_lobby_html(_state(seats=[SeatConfig(kind="human"),
-                                           SeatConfig(kind="rational", policy="bayes-rational")]))
-    assert "id='lobby-start' class='primary' type='button' disabled" in html
-    assert "needs a display name" in html
+def test_a_human_seat_without_a_name_is_a_notice_not_a_blocker():
+    """The server ACCEPTS a nameless human seat and records it under a default label, so the lobby says which
+    label rather than refusing — a front end that forbids what its back end allows is the failure mode here."""
+    state = _state(seats=[SeatConfig(kind="human"), SeatConfig(kind="rational", policy="bayes-rational")])
+    html = render_lobby_html(state)
+    assert "disabled" not in html.split("id='lobby-start'")[1].split(">")[0]
+    assert _problems(state) == []
+    assert _notices(state) == [f"Seat 0 (Avery) has no display name — the transcript will record it as "
+                               f"{SeatConfig(kind='human').occupant_label()}."]
+    assert "id='lobby-notices'" in html and "has no display name" in html
 
 
 def test_a_metered_seat_without_a_cap_blocks_the_start_button():
@@ -278,6 +291,17 @@ def test_the_kinds_the_script_greys_match_the_page():
     assert _js_list("NO_INSTRUCTION_KINDS") == list(NO_INSTRUCTION_KINDS)
     assert _js_list("POLICY_KINDS") == ["rational", "oracle"]
     assert set(_js_list("POLICY_KINDS")) <= set(SEAT_KINDS)
+
+
+def test_the_script_keeps_blockers_and_notices_apart_the_same_way_the_page_does():
+    """``validate`` is what disables Start, ``notices`` is what merely says something. The display-name case
+    must sit in the second: the server accepts it, so blocking on it would make the lobby stricter than the
+    thing it is a front end for."""
+    blocking = re.search(r"function validate\(\) \{(.*?)\n\}", JS_LOBBY, re.S).group(1)
+    informational = re.search(r"function notices\(\) \{(.*?)\n\}", JS_LOBBY, re.S).group(1)
+    assert "display_name" not in blocking
+    assert "display_name" in informational
+    assert "budget cap" in blocking
 
 
 def test_the_script_mirrors_event_names_rather_than_inventing_them():

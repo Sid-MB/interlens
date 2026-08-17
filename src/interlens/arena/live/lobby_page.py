@@ -44,7 +44,7 @@ import json
 from ..viz.chrome import _e, topbar
 from ..viz.page import _document
 from .assets.js_lobby import JS_LOBBY_PAGE
-from .provider import SEAT_KINDS
+from .provider import SEAT_KINDS, SeatConfig
 
 #: What each seat kind is called in the picker, and the one line under it that says what choosing it means. The
 #: distinction between ``rational`` and ``oracle`` is the whole point of the arena's computable seats — same
@@ -62,9 +62,12 @@ SEAT_KIND_LABELS = {
 NO_INSTRUCTION_KINDS = ("rational", "oracle")
 
 #: The lobby's own rules, spelled out on the page so a disabled Start button is never a mystery. The browser
-#: layer checks the same two conditions live (``js_lobby.validate``); the server checks them again and wins.
-LOBBY_RULES = ("A budget cap is required whenever any seat is a metered model.",
-               "A seat played by you needs a display name — it is what the transcript calls you.")
+#: layer checks the same conditions live (``js_lobby.validate``); the server checks them again and wins.
+LOBBY_RULES = ("A budget cap is required whenever any seat is a metered model — the server refuses to start "
+               "without one, since an idle live game with an API seat can spend for a long time.",
+               "A model seat needs a model, and an unavailable model cannot be chosen.",
+               "A seat played by you does NOT need a display name; without one the transcript records the "
+               "default occupant label. The name is worth setting, not required.")
 
 # Lobby-only styling. It lives here rather than in ``viz.assets.css`` because the visualizer's stylesheet is
 # shared by every exported page and should not grow controls that only one server-rendered page has. Everything
@@ -92,6 +95,8 @@ select,input[type=text],input[type=number]{width:100%}
 .startbar button.primary{border-color:var(--s1);color:var(--s1);font-weight:600;padding:6px 18px}
 .problems{margin:var(--sp-2) 0 0;padding-left:1.15em;font-size:var(--t-sm);color:var(--critical)}
 .problems:empty{display:none}
+.notices{margin:var(--sp-2) 0 0;padding-left:1.15em;font-size:var(--t-sm);color:var(--ink-2)}
+.notices:empty{display:none}
 """
 
 
@@ -116,8 +121,12 @@ def render_lobby_html(state: dict) -> str:
     seats = list(state.get("seats") or [])
     models = [m for m in (state.get("models") or []) if isinstance(m, dict)]
     policies = [str(p) for p in (state.get("policies") or [])]
+    # The server may narrow the kinds this deployment offers (``seat_kinds``); the library's full set is the
+    # fallback, so a state that predates the key still renders every kind rather than none.
+    kinds = [str(k) for k in (state.get("seat_kinds") or SEAT_KINDS)]
     names = _seat_names(state, len(seats))
-    cards = "".join(_seat_card(i, names[i], seats[i], models, policies) for i in range(len(seats)))
+    cards = "".join(_seat_card(i, names[i], seats[i], models, policies, kinds=kinds)
+                    for i in range(len(seats)))
     seats_body = cards or ("<div class='sub muted'>No seats yet — choose an instance bank whose party count is "
                            "known, and the seat cards appear here.</div>")
     body = (f"<style>{CSS_LOBBY}</style>"
@@ -141,7 +150,8 @@ def render_lobby_html(state: dict) -> str:
                      body, None, JS_LOBBY_PAGE)
 
 
-def _seat_card(idx: int, seat_name: str, config: dict, models: list[dict], policies: list[str]) -> str:
+def _seat_card(idx: int, seat_name: str, config: dict, models: list[dict], policies: list[str], *,
+               kinds: tuple[str, ...] | list[str] = SEAT_KINDS) -> str:
     """One seat's configuration card: kind picker, then the controls that kind needs — model + thinking mode for
     an LLM seat (generated from that model's declared capabilities), policy for a computable one, player name for
     a human — plus the private-instructions box, greyed out for computable seats since a policy reads no prose.
@@ -163,6 +173,10 @@ def _seat_card(idx: int, seat_name: str, config: dict, models: list[dict], polic
         fix.
     policies : list[str]
         Policy names for a ``rational``/``oracle`` seat.
+    kinds : tuple[str, ...] | list[str]
+        Which seat kinds this deployment offers, in display order. Defaults to the library's full
+        :data:`~interlens.arena.live.provider.SEAT_KINDS`; a server that narrows the set (no scripted seats, say)
+        passes its own, so the picker cannot offer a kind the session would refuse to build.
     """
     kind = str(config.get("kind") or "llm")
     model_id = config.get("model_id") or (models[0]["model_id"] if models else "")
@@ -170,7 +184,7 @@ def _seat_card(idx: int, seat_name: str, config: dict, models: list[dict], polic
     modes = [str(t) for t in ((chosen or {}).get("thinking_modes") or ("off",))]
     is_llm, is_policy = kind == "llm", kind in ("rational", "oracle")
 
-    kinds = [(k, SEAT_KIND_LABELS.get(k, (k, ""))[0], False) for k in SEAT_KINDS]
+    kind_opts = [(k, SEAT_KIND_LABELS.get(k, (k, ""))[0], False) for k in kinds]
     model_opts = [(m.get("model_id"), _model_label(m), not m.get("available", True)) for m in models]
     if not model_opts:
         model_opts = [("", "no models offered", True)]
@@ -180,13 +194,14 @@ def _seat_card(idx: int, seat_name: str, config: dict, models: list[dict], polic
     kind_hint = SEAT_KIND_LABELS.get(kind, ("", ""))[1]
     thinking_hint = ("this model has one thinking mode" if len(modes) < 2
                      else "only the modes this model accepts are offered")
-    name_hint = "required — the transcript calls you this" if kind == "human" else "optional occupant label"
+    name_hint = (f"the transcript calls you this; left empty it records {_default_label(kind)}"
+                 if kind == "human" else "optional occupant label")
     instr_hint = ("a policy reads no prose" if is_policy
                   else "appended to this seat's private context as one labelled segment")
     return (f"<div class='seatcard' data-seat='{idx}' data-seat-name=\"{_e(seat_name)}\">"
             f"<div class='hd'><span class='who'>{_e(seat_name)}</span>"
             f"<span class='pill'>seat <b>{idx}</b></span></div>"
-            f"{_field(idx, 'kind', 'plays as', _select(idx, 'kind', kinds, kind), kind_hint)}"
+            f"{_field(idx, 'kind', 'plays as', _select(idx, 'kind', kind_opts, kind), kind_hint)}"
             f"{_field(idx, 'model_id', 'model', _select(idx, 'model_id', model_opts, model_id, not is_llm), '', not is_llm)}"
             f"{_field(idx, 'thinking', 'thinking', _select(idx, 'thinking', thinking_opts, str(config.get('thinking') or 'off'), not is_llm), thinking_hint, not is_llm)}"
             f"{_field(idx, 'policy', 'policy', _select(idx, 'policy', policy_opts, str(config.get('policy') or ''), not is_policy), '', not is_policy)}"
@@ -269,7 +284,7 @@ def _start_bar(state: dict) -> str:
 
     Start is rendered DISABLED whenever the server-side state already violates a rule, so the page is correct
     before its script runs; the browser layer re-evaluates the same rules on every edit."""
-    problems = _problems(state)
+    problems, notices = _problems(state), _notices(state)
     rules = "".join(f"<li>{_e(r)}</li>" for r in LOBBY_RULES)
     return ("<section class='card'>"
             "<div class='startbar'>"
@@ -277,6 +292,7 @@ def _start_bar(state: dict) -> str:
             "Start the game</button>"
             "<span class='sub' id='lobby-status' role='status' aria-live='polite'></span></div>"
             f"<ul class='problems' id='lobby-problems'>{''.join(f'<li>{_e(p)}</li>' for p in problems)}</ul>"
+            f"<ul class='notices' id='lobby-notices'>{''.join(f'<li>{_e(n)}</li>' for n in notices)}</ul>"
             f"<details><summary>What must be true before a game can start</summary>"
             f"<div class='body'><ul class='sub'>{rules}</ul></div></details>"
             "</section>")
@@ -415,8 +431,31 @@ def _problems(state: dict) -> list[str]:
         out.append("A budget cap above $0 is required while a metered model is seated.")
     names = _seat_names(state, len(state.get("seats") or []))
     for i, seat in enumerate(state.get("seats") or []):
-        if seat.get("kind") == "human" and not str(seat.get("display_name") or "").strip():
-            out.append(f"Seat {i} ({names[i]}) is played by you and needs a display name.")
         if seat.get("kind") == "llm" and not seat.get("model_id"):
             out.append(f"Seat {i} ({names[i]}) is a model seat with no model chosen.")
     return out
+
+
+def _notices(state: dict) -> list[str]:
+    """Things worth saying that do NOT block the game.
+
+    Kept apart from :func:`_problems` on purpose. A human seat with no display name is the case in point: the
+    server accepts it and records the seat under a default occupant label, so refusing to start on it would make
+    the lobby stricter than the thing it is a front end for — the classic way a client ends up forbidding a
+    configuration that works. Saying which label the transcript will carry is the useful half; blocking is not.
+    """
+    out = []
+    names = _seat_names(state, len(state.get("seats") or []))
+    for i, seat in enumerate(state.get("seats") or []):
+        if seat.get("kind") == "human" and not str(seat.get("display_name") or "").strip():
+            out.append(f"Seat {i} ({names[i]}) has no display name — the transcript will record it as "
+                       f"{_default_label('human')}.")
+    return out
+
+
+def _default_label(kind: str) -> str:
+    """The occupant label a seat of this kind gets with nothing filled in.
+
+    Derived by asking :class:`SeatConfig` rather than spelled out here, so the lobby cannot promise a label the
+    router does not actually stamp."""
+    return SeatConfig(kind=kind).occupant_label()
