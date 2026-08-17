@@ -55,9 +55,10 @@ from .provider import SEAT_KINDS
 
 __all__ = ["render_live_html"]
 
-#: What each of ``provider.SEAT_KINDS`` is called in the swap dock. The KINDS come from the provider rather than
-#: from a list here, so a kind the server can build always appears in the form (unlabelled ones fall back to
-#: their own name) and a kind it cannot build can never be offered.
+#: What each seat kind is called in the swap dock. Only the LABELS live here: the kinds themselves come from the
+#: session's own ``lobby["seat_kinds"]`` (falling back to ``provider.SEAT_KINDS``), so the form offers exactly what
+#: the server can build — a kind it grows appears here unlabelled rather than missing, and a kind it drops cannot
+#: be picked.
 SEAT_KIND_LABELS = {"llm": "model (API)", "rational": "rational policy", "oracle": "omniscient oracle",
                     "human": "human (you)", "scripted": "scripted"}
 
@@ -186,6 +187,9 @@ def _swap_dock(occupants: dict, lobby: dict, seat_names: list | None = None) -> 
     the occupant map are keyed by) — a seat is identified here by the name it speaks under, not by whatever the
     lobby form called its occupant, or the occupant lookup would miss on every seat whose player is unnamed.
 
+    The kind picker is generated from ``lobby["seat_kinds"]`` — the session's own list of what it can build — so
+    the form and the server cannot come to disagree about the vocabulary.
+
     The server is the authority on whether a swap is allowed — it refuses one while that seat's human prompt is
     open, because the person is mid-decision and the turn is already theirs — so the form always submits and
     surfaces a refusal, rather than deciding legality a second time in the browser and getting it subtly
@@ -194,11 +198,12 @@ def _swap_dock(occupants: dict, lobby: dict, seat_names: list | None = None) -> 
     models = [m for m in (lobby.get("models") or []) if m.get("available", True)]
     policies = lobby.get("policies") or []
     names = list(seat_names or [])
+    buildable = lobby.get("seat_kinds") or SEAT_KINDS
     cards = []
     for i, config in enumerate(seats):
         name = (names[i] if i < len(names) else None) or config.get("display_name") or f"seat {i}"
-        kinds = "".join(f"<option value='{k}'{' selected' if config.get('kind') == k else ''}>"
-                        f"{_e(SEAT_KIND_LABELS.get(k, k))}</option>" for k in SEAT_KINDS)
+        kinds = "".join(f"<option value='{_e(k)}'{' selected' if config.get('kind') == k else ''}>"
+                        f"{_e(SEAT_KIND_LABELS.get(k, k))}</option>" for k in buildable)
         model_options = "".join(
             f"<option value='{_e(m.get('model_id'))}'{' selected' if config.get('model_id') == m.get('model_id') else ''}>"
             f"{_e(m.get('label') or m.get('model_id'))}</option>" for m in models)

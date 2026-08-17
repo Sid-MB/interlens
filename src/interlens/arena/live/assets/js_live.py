@@ -408,7 +408,13 @@ document.querySelectorAll("[data-swap-seat]").forEach(btn => {
     fetch(API + "/swap", { method: "POST", headers: { "Content-Type": "application/json" },
                            body: JSON.stringify({ seat_idx: idx, seat_config: config }) })
       .then(r => r.json().catch(() => ({})).then(d => ({ ok: r.ok, d })))
-      .then(({ ok, d }) => { if (!ok) swapError(idx, d.error || d.reason || "the server refused this swap"); })
+      .then(({ ok, d }) => {
+        if (!ok) { swapError(idx, d.error || d.reason || "the server refused this swap"); return; }
+        /* The 200 carries the new occupant table, so the strip re-badges from the response rather than waiting
+           for the `seat_swapped` broadcast to come back around — same map, one fewer round trip, and the
+           broadcast still repaints for every OTHER browser watching. */
+        paintOccupants(d.occupants);
+      })
       .catch(err => swapError(idx, String(err)));
   });
 });
@@ -416,6 +422,16 @@ document.querySelectorAll("[data-swap-seat]").forEach(btn => {
 function paintOccupant(seatIdx, label) {
   const n = $("occupant-" + seatIdx);
   if (n) n.textContent = label || "—";
+}
+
+/* A whole seat -> occupant map, as `hello` and a successful swap both carry it. Keyed by the name a seat SPEAKS
+   under, which is what the transcript, the occupant map and the swap strip all agree on; the strip is indexed,
+   so the seat list is the translation. */
+function paintOccupants(map) {
+  Object.entries(map || {}).forEach(([seat, label]) => {
+    const at = (P.seats || []).findIndex(s => s.name === seat);
+    if (at >= 0) paintOccupant(at, label);
+  });
 }
 
 /* ---------------------------------------------------------------- status, usage, banners --- */
@@ -511,12 +527,11 @@ function appendTurn(evt) {
 /* ---------------------------------------------------------------- the stream --- */
 const SOURCE = new EventSource(API + "/events?last_event_id=" + encodeURIComponent(LIVE.seq || 0));
 
+/* `hello` is connection metadata, not a logged event: the server stamps it with the id the stream RESUMED FROM,
+   so it repeats an id already seen and must stay idempotent. Its body's `seq` is the session's current tip. */
 SOURCE.addEventListener("hello", ev => {
   const d = JSON.parse(ev.data);
-  Object.entries(d.occupants || {}).forEach(([seat, label]) => {
-    const at = (P.seats || []).findIndex(s => s.name === seat);
-    if (at >= 0) paintOccupant(at, label);
-  });
+  paintOccupants(d.occupants);
   if (d.phase === "done") setStatus("This episode is over.", "done");
 });
 

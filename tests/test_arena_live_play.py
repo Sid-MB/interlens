@@ -91,6 +91,8 @@ def _snapshot(payload, awaiting=None, occupants=None):
     return {"sid": "s1", "seq": 12, "phase": "awaiting_human" if awaiting else "running", "awaiting": awaiting,
             "occupants": occupants or {}, "payload": payload,
             "lobby": {"sid": "s1", "instance_id": "inst-1", "seats": LOBBY_SEATS, "budget_usd": 2.0,
+                      # The session's own list of what it can build, which the kind picker is generated from.
+                      "seat_kinds": ["llm", "rational", "oracle", "human"],
                       "models": [{"model_id": "claude-fable-5", "label": "Fable 5", "available": True},
                                  {"model_id": "gone", "label": "Unavailable", "available": False}],
                       "policies": ["bayes-rational", "hardball"]}}
@@ -231,6 +233,21 @@ def test_the_swap_dock_offers_every_buildable_seat_kind_and_the_current_occupant
     assert "Unavailable" not in html
 
 
+def test_the_kind_picker_comes_from_the_session_not_from_this_module(payload):
+    """The swap form offers exactly the kinds the session says it can build.
+
+    A kind the server grows appears here (unlabelled, under its own name) rather than being missing, and a kind
+    it drops cannot be picked — the failure mode being a form that produces a configuration the server answers
+    with a 400."""
+    snapshot = _snapshot(payload)
+    snapshot["lobby"]["seat_kinds"] = ["llm", "human", "marionette"]
+    html = render_live_html(snapshot)
+    picker = html.split("id='swap-kind-0'")[1].split("</select>")[0]
+    assert "value='marionette'" in picker and ">marionette<" in picker      # unknown kind, offered under its name
+    assert "value='llm'" in picker and "model (API)" in picker              # known kind, wearing its label
+    assert "value='oracle'" not in picker                                   # not on this session's list
+
+
 def test_a_swap_refusal_has_somewhere_to_land(payload):
     """The server refuses a swap while that seat's human prompt is open, and v1 surfaces the refusal rather than
     pre-blocking the control — two places deciding legality is how they come to disagree."""
@@ -344,6 +361,15 @@ def test_accept_and_reject_are_gated_from_their_own_lists():
     from interlens.arena.live.assets import JS_LIVE
     assert "legal.can_reject || []" in JS_LIVE
     assert "accept.indexOf(id) >= 0, reject.indexOf(id) >= 0" in JS_LIVE
+
+
+def test_a_successful_swap_rebadges_from_its_own_response():
+    """The swap POST answers with the new occupant table, so the strip repaints from the response instead of
+    waiting for the broadcast to come back around. The broadcast still repaints every OTHER browser, so the two
+    paths share one painter rather than growing two."""
+    from interlens.arena.live.assets import JS_LIVE
+    assert "function paintOccupants(map)" in JS_LIVE
+    assert "paintOccupants(d.occupants);" in JS_LIVE
 
 
 def test_the_dock_draws_a_control_from_every_ratified_capability():
