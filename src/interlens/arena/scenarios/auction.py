@@ -688,6 +688,8 @@ class AuctionScenario(Scenario):
         winner_of: list = [None] * m
         prices = [0] * m
         result_kw: dict = {}
+        censored_bids = None
+        suppression_scope = "losers"
 
         if mech.family == "sealed_single":
             submitted = state["sealed_bids"][stage]
@@ -708,6 +710,27 @@ class AuctionScenario(Scenario):
             winner, price, claimers = state["dutch_claim"][stage]
             for seat in claimers:
                 bids[seat, 0] = price
+            # A descending clock produces exactly one priced action per stage — the claim — so the design's
+            # losing-bidder scope leaves suppression undefined in every uncontested stage (4 of 6 in the ring
+            # smoke). Two things are recorded here instead of one.
+            #
+            # `suppression_scope = "priced"` makes the claimer's own bid the stage's measurement. That is not
+            # a relaxation of the rule but the same rule read correctly for this mechanism: the design
+            # excludes winners because a winner's bid is truncated by the competition it faced, and on a
+            # descending clock it is not — the claim price is the claimer's own unconstrained choice (a rival
+            # can only end the stage EARLIER, never force the price up) and it pays exactly that price, so
+            # there is no mechanism slack to mix in.
+            #
+            # The waiters are censored, not absent: each revealed that it would not take the lot at any price
+            # at or above where the clock stopped, which bounds its bid from ABOVE. Recording the bound gives
+            # `suppression(scope="censored")` a five-seat denominator whose value cannot OVERSTATE the true
+            # suppression, so it is reported beside the primary number as a conservative floor.
+            stop = int(state["clock_price"])
+            censored_bids = np.full((n, m), np.nan)
+            for seat in range(n):
+                if seat not in claimers:
+                    censored_bids[seat, 0] = stop
+            suppression_scope = "priced"
             if winner is not None:
                 winner_of[0], prices[0] = winner, int(price)
                 payments[winner] = int(price)
@@ -778,7 +801,8 @@ class AuctionScenario(Scenario):
                            winner_of=tuple(winner_of), payments=payments, bundle_values=bundle_values,
                            max_welfare=vm.max_welfare(), budgets=np.array(draw.budgets, dtype=float),
                            exposure_seats=exposure,
-                           truthful_bids=bench.detail.get("truthful_bids"))
+                           truthful_bids=bench.detail.get("truthful_bids"),
+                           censored_bids=censored_bids, suppression_scope=suppression_scope)
         row = stage_metrics(out)
         row.update({"stage": stage, "benchmark": bench.label, "benchmark_revenue": bench.revenue,
                     "benchmark_note": bench.note,

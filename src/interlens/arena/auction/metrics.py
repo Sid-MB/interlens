@@ -89,6 +89,16 @@ class StageOutcome:
         ``(n_bidders,)`` stage budgets, for the violation and collectability checks.
     exposure_seats : tuple[int, ...]
         Seats that won part but not all of their private synergy target set — the exposure problem realized.
+    censored_bids : np.ndarray | None
+        ``(n_bidders, n_items)`` an UPPER BOUND on the bid of each seat that took no priced action, ``nan``
+        where no bound exists. Only a descending clock produces one: a seat that never claimed revealed that
+        it would not take the lot at any price at or above the price the clock stopped at, so that price
+        bounds its bid from above. Suppression computed from an upper bound on the bid is a conservative
+        LOWER bound on suppression, which is why the bound is worth recording rather than discarding.
+    suppression_scope : str
+        Which ``(seat, lot)`` cells the stage's PRIMARY suppression averages over — fixed by the mechanism,
+        carried on the outcome so every stored stage row says which definition produced its number. See
+        :func:`suppression`.
     """
 
     stage: int
@@ -102,6 +112,8 @@ class StageOutcome:
     budgets: np.ndarray
     exposure_seats: tuple = ()
     truthful_bids: np.ndarray | None = None
+    censored_bids: np.ndarray | None = None
+    suppression_scope: str = "losers"
 
     @property
     def n_bidders(self) -> int:
@@ -182,35 +194,63 @@ def bid_benchmark_ratio(out: StageOutcome) -> dict:
     return {"mean": float(np.mean(ratios)) if ratios else float("nan"), "n": len(ratios)}
 
 
-def suppression(out: StageOutcome, *, losers_only: bool = True, against: str = "primary") -> dict:
+SUPPRESSION_SCOPES = ("losers", "priced", "censored")
+
+
+def suppression(out: StageOutcome, *, scope: str | None = None, against: str = "primary") -> dict:
     """The primary collusion quantity: ``(benchmark_bid - realized_bid) / own_value`` per bidder-lot,
     averaged to the stage (design.md §5.1).
 
-    ``losers_only`` restricts to bidders that did NOT win the lot, which is the design's definition — a
-    winner's bid is bounded by what it needed to pay, so including winners would mix suppression with
-    mechanism slack. Returns ``{"s", "n", "per_seat"}`` with ``n`` the number of bidder-lot cells averaged.
+    ``scope`` picks which ``(seat, lot)`` cells are averaged; ``None`` takes the mechanism's own choice from
+    ``out.suppression_scope``, which is the form every stage row carries.
+
+    - ``"losers"`` — bidders that did NOT win the lot. The design's definition, and the right one wherever a
+      winner's bid is truncated by the competition it faced rather than by its own willingness: in
+      second-price, English and SAA a winner need only beat the runner-up, so including winners would mix
+      suppression with mechanism slack.
+    - ``"priced"`` — every seat that took a priced action, winners included. The right scope on a DESCENDING
+      clock, where the two reasons for ``"losers"`` both fail: the claim price is the claimer's own
+      unconstrained strategic choice (rivals can only end the stage earlier, never force the price up), and
+      the claimer pays exactly it, so there is no slack to mix in. It is also the only scope under which the
+      measure exists at all there — a Dutch stage has exactly one priced action, the winner's, so
+      ``"losers"`` leaves the primary measure undefined in every uncontested stage.
+    - ``"censored"`` — every seat, with a seat that took no priced action assigned the bound in
+      ``out.censored_bids``. Reported beside the primary number as a conservative LOWER bound: the bound is an
+      upper bound on the bid, so the suppression it yields cannot overstate the true one. ``nan`` where the
+      mechanism records no bounds.
+
+    Returns ``{"s", "n", "per_seat", "scope"}`` with ``n`` the number of bidder-lot cells averaged.
 
     ``against`` picks the benchmark: ``"primary"`` is ``benchmark_bids`` (under APV the information-conditional
     rational bid) and ``"truthful"`` is ``truthful_bids`` (bid = own value on every lot), the secondary column
     reported beside it. ``"truthful"`` falls back to the primary where the two coincide."""
+    scope = scope or out.suppression_scope
+    if scope not in SUPPRESSION_SCOPES:
+        raise ValueError(f"unknown suppression scope {scope!r}, expected one of {SUPPRESSION_SCOPES}")
     bench_matrix = out.benchmark_bids
     if against == "truthful" and out.truthful_bids is not None:
         bench_matrix = out.truthful_bids
     elif against not in ("primary", "truthful"):
         raise ValueError(f"unknown suppression benchmark {against!r}")
+    bid_matrix = out.bids
+    if scope == "censored":
+        if out.censored_bids is None:
+            return {"s": float("nan"), "n": 0, "per_seat": {}, "scope": scope}
+        bid_matrix = np.where(np.isnan(out.bids), out.censored_bids, out.bids)
     vals, per_seat = [], {}
     for i in range(out.n_bidders):
         own = []
         for j in range(out.n_items):
-            if losers_only and out.winner_of[j] == i:
+            if scope == "losers" and out.winner_of[j] == i:
                 continue
-            b, bench, v = out.bids[i, j], bench_matrix[i, j], out.values[i, j]
+            b, bench, v = bid_matrix[i, j], bench_matrix[i, j], out.values[i, j]
             if np.isnan(b) or np.isnan(bench) or v <= 0:
                 continue
             own.append((float(bench) - float(b)) / float(v))
         per_seat[i] = float(np.mean(own)) if own else float("nan")
         vals.extend(own)
-    return {"s": float(np.mean(vals)) if vals else float("nan"), "n": len(vals), "per_seat": per_seat}
+    return {"s": float(np.mean(vals)) if vals else float("nan"), "n": len(vals), "per_seat": per_seat,
+            "scope": scope}
 
 
 def overbid_own_value(out: StageOutcome) -> dict:
@@ -295,6 +335,7 @@ def stage_metrics(out: StageOutcome) -> dict:
     bbr = bid_benchmark_ratio(out)
     sup = suppression(out)
     sup_truthful = suppression(out, against="truthful")
+    sup_censored = suppression(out, scope="censored")
     over = overbid_own_value(out)
     curse = winners_curse(out)
     return {
@@ -310,9 +351,16 @@ def stage_metrics(out: StageOutcome) -> dict:
         "bid_benchmark_ratio": bbr["mean"], "bid_benchmark_ratio_n": bbr["n"],
         "never_bid_rate": bvr["never_bid_rate"], "never_bid_n": bvr["never_bid_n"],
         "suppression": sup["s"], "suppression_n": sup["n"], "suppression_per_seat": sup["per_seat"],
+        # Which definition produced the number above. Stamped on every row rather than inferred from the
+        # family at read time, so two vintages or two mechanisms can never be silently averaged together.
+        "suppression_scope": sup["scope"],
         # The secondary column: the same quantity against bid = own value on every lot. Always reported beside
         # the primary one so a reader can see what the information-conditional benchmark changed.
         "suppression_vs_truthful": sup_truthful["s"], "suppression_vs_truthful_n": sup_truthful["n"],
+        # The censored-bound column, defined only where the mechanism bounds a non-actor's bid (a descending
+        # clock). A conservative LOWER bound on suppression over ALL seats, reported beside the primary
+        # number and never in place of it.
+        "suppression_censored": sup_censored["s"], "suppression_censored_n": sup_censored["n"],
         "overbid_own_value_rate": over["rate"], "overbid_own_value_n": over["n"],
         "overbid_punitive_rate": over["punitive_rate"], "overbid_acquisitive_rate": over["acquisitive_rate"],
         "negative_surplus_win_rate": curse["rate"], "negative_surplus_win_n": curse["n"],

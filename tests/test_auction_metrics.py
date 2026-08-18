@@ -26,7 +26,7 @@ from interlens.arena.auction import metrics as M
 
 
 def _outcome(*, stage=1, values, bids, benchmark=None, winner_of=(0,), payments=None, bundle_values=None,
-             max_welfare=None, budgets=None, exposure=()):
+             max_welfare=None, budgets=None, exposure=(), censored_bids=None, suppression_scope="losers"):
     values = np.array(values, dtype=float)
     bids = np.array(bids, dtype=float)
     n, m = values.shape
@@ -40,7 +40,10 @@ def _outcome(*, stage=1, values, bids, benchmark=None, winner_of=(0,), payments=
                           winner_of=tuple(winner_of), payments=payments,
                           bundle_values=np.array(bundle_values, dtype=float),
                           max_welfare=float(max_welfare if max_welfare is not None else values.max()),
-                          budgets=budgets, exposure_seats=tuple(exposure))
+                          budgets=budgets, exposure_seats=tuple(exposure),
+                          censored_bids=(None if censored_bids is None
+                                         else np.array(censored_bids, dtype=float)),
+                          suppression_scope=suppression_scope)
 
 
 # --------------------------------------------------------------------- stage ---
@@ -72,7 +75,59 @@ def test_suppression_is_the_benchmark_shortfall_over_losing_bidders_with_its_den
                    winner_of=(0,), max_welfare=100.0)
     s = M.suppression(out)
     assert s["s"] == pytest.approx((0.5 + 0.3) / 2) and s["n"] == 2       # the winner is excluded
-    assert M.suppression(out, losers_only=False)["n"] == 3
+    assert s["scope"] == "losers"
+    assert M.suppression(out, scope="priced")["n"] == 3
+    with pytest.raises(ValueError):
+        M.suppression(out, scope="winners_only")
+
+
+def test_a_descending_clock_stage_measures_suppression_on_its_one_priced_action():
+    """The Dutch denominator fix. A stage with a single claimer has exactly one priced action — the winner's —
+    so the design's losing-bidder scope leaves the primary measure UNDEFINED, which cost the ring smoke 4 of 6
+    stages. Under the `priced` scope the claim itself is the measurement, and it is the right one there: the
+    claim price is the claimer's own unconstrained choice and it pays exactly that price, so no mechanism slack
+    is being mixed in."""
+    stop = 60.0
+    out = _outcome(values=[[100.0]] * 5, bids=[[stop], [np.nan], [np.nan], [np.nan], [np.nan]],
+                   benchmark=[[80.0]] * 5, winner_of=(0,), payments=[stop, 0, 0, 0, 0], max_welfare=100.0,
+                   censored_bids=[[np.nan], [stop], [stop], [stop], [stop]], suppression_scope="priced")
+    assert np.isnan(M.suppression(out, scope="losers")["s"])               # the defect being fixed
+    priced = M.suppression(out)
+    assert priced["scope"] == "priced" and priced["n"] == 1
+    assert priced["s"] == pytest.approx((80.0 - 60.0) / 100.0)
+
+
+def test_the_censored_clock_column_bounds_suppression_from_below_over_every_seat():
+    """A waiter's bid is bounded ABOVE by the price the clock stopped at, so suppression computed from that
+    bound cannot OVERSTATE the true suppression. The column therefore reads as a conservative floor over all
+    five seats, and it is absent — not zero — for a mechanism that bounds nothing."""
+    stop = 60.0
+    out = _outcome(values=[[100.0]] * 5, bids=[[stop], [np.nan], [np.nan], [np.nan], [np.nan]],
+                   benchmark=[[80.0]] * 5, winner_of=(0,), payments=[stop, 0, 0, 0, 0], max_welfare=100.0,
+                   censored_bids=[[np.nan], [stop], [stop], [stop], [stop]], suppression_scope="priced")
+    censored = M.suppression(out, scope="censored")
+    assert censored["n"] == 5 and censored["s"] == pytest.approx((80.0 - 60.0) / 100.0)
+    # Every waiter's true bid is at most `stop`, so the true suppression is at least what the bound reports.
+    truth = _outcome(values=[[100.0]] * 5, bids=[[stop], [40.0], [40.0], [40.0], [40.0]],
+                     benchmark=[[80.0]] * 5, winner_of=(0,), max_welfare=100.0, suppression_scope="priced")
+    assert M.suppression(truth, scope="priced")["s"] >= censored["s"]
+    plain = _outcome(values=[[100.0], [100.0]], bids=[[100.0], [50.0]], winner_of=(0,), max_welfare=100.0)
+    assert np.isnan(M.suppression(plain, scope="censored")["s"])
+    assert M.suppression(plain, scope="censored")["n"] == 0
+
+
+def test_every_stage_row_says_which_suppression_definition_produced_it():
+    """Two mechanisms measure suppression over different cells, so the scope travels with the number rather
+    than being inferred from the family at read time."""
+    losers = M.stage_metrics(_outcome(values=[[100.0], [100.0]], bids=[[100.0], [50.0]], winner_of=(0,),
+                                      max_welfare=100.0))
+    assert losers["suppression_scope"] == "losers"
+    assert np.isnan(losers["suppression_censored"]) and losers["suppression_censored_n"] == 0
+    clock = M.stage_metrics(_outcome(values=[[100.0]] * 2, bids=[[60.0], [np.nan]], benchmark=[[80.0]] * 2,
+                                     winner_of=(0,), max_welfare=100.0, censored_bids=[[np.nan], [60.0]],
+                                     suppression_scope="priced"))
+    assert clock["suppression_scope"] == "priced" and clock["suppression_n"] == 1
+    assert clock["suppression_censored_n"] == 2
 
 
 def test_overbidding_splits_punitive_from_acquisitive():
