@@ -812,6 +812,13 @@ class AuctionScenario(Scenario):
                     "benchmark_independent_clock": bench.detail.get("independent_clock"),
                     "benchmark_welfare": bench.welfare, "prices": list(prices),
                     "winner_of": list(winner_of), "payments": [float(p) for p in payments],
+                    # The money the auctioneer actually MOVED between seats this stage, positive = received.
+                    # It lives on `stage_results` too, but that structure is the transcript's, not the
+                    # analysis's: every reader of executed side payments reads the stage rows, so an executed
+                    # transfer that never reached them was invisible to the measure it exists for. Caught by
+                    # the ring campaign's pilot, where a declared transfer recorded `executed: True` while
+                    # every stage row read `{}`.
+                    "transfer_net": dict(transfer_net),
                     "surplus": [own[i]["surplus"] for i in range(n)]})
         state["outcomes"].append(row)
 

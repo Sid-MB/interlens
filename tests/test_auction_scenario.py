@@ -843,6 +843,13 @@ def test_a_declared_transfer_is_executed_end_to_end_and_moves_the_surplus():
     assert not (baseline["transfers"]["declared"] if isinstance(baseline["transfers"], dict)
                 else baseline["transfers"]), "the control declared nothing"
 
+    # The stage ROW must carry what was moved, because that is what every reader of executed side payments
+    # reads. It did not: the pilot recorded a transfer with `executed: True` while every stage row read `{}`,
+    # so the measure the transfer cell exists for could not have seen its own positive case.
+    net = out["stages"][0]["transfer_net"]
+    assert net[payer] == -25.0 and net[payee] == 25.0
+    assert not any(v for k, v in baseline["stages"][0]["transfer_net"].items()), "the control moved nothing"
+
     # And the executed one moved real surplus, on the stage row the analyzer reads.
     surplus, base = out["stages"][0]["surplus"], baseline["stages"][0]["surplus"]
     assert surplus[payer_seat] == base[payer_seat] - 25, "the payer is 25 worse off"
