@@ -789,6 +789,69 @@ def test_instructed_ring_reaches_members_only_and_leaves_the_frozen_prefix_intac
     assert scn.system_prompt(ringed, outsider) == scn.system_prompt(neutral, outsider)
 
 
+def test_a_declared_transfer_is_executed_end_to_end_and_moves_the_surplus():
+    """The whole `dm_transfers` rung, exercised from a seat's turn text to the stored outcome.
+
+    This path has never carried a single real transfer: the ring smoke declared ZERO across six episodes, so
+    "the seats never used the instrument" and "the instrument was never wired" would have produced the same
+    number. A primary outcome that reads 0.000 has to be provably a BEHAVIOURAL zero, which means the path must
+    be shown to work when it is used. Both halves of the McAfee-McMillan semantics are pinned: a transfer the
+    sender can cover executes and moves surplus, and one it cannot is recorded `executed: False` rather than
+    dropped, because an unpaid promise IS the weak-cartel behaviour."""
+    scn = AuctionScenario()
+    mech = Mechanism.sealed("second_price", reserve=20)
+    inst = scn.generate_instance(0, 7, mechanism=mech, horizon=8)
+    state = scn.make_state(inst, "all_llm", 0, {"mechanism": mech.to_json(), "horizon": 1,
+                                               "channel": "dm_transfers", "talk_rounds": 1})
+    names = list(state["seat_names"])
+    budgets = list(state["spec"].stage(1).budgets)
+    # The payer must be a seat whose budget can actually cover the payment NET OF ITS AUCTION PAYMENT. That is
+    # not a detail: `ai_lab` carries budget_mult 0.70 as the Che-Gale budget-bound subject, and here its whole
+    # remaining capacity after a bid of 30 is 22 -- so the seat the design makes poorest cannot fund a
+    # meaningful side payment at all. Transfer capacity is heterogeneous BY DESIGN.
+    payer_seat = max(range(5), key=lambda i: budgets[i])
+    payee_seat = min(range(5), key=lambda i: budgets[i])
+    payer, payee = names[payer_seat], names[payee_seat]
+    assert budgets[payer_seat] > 25, "the premise of the coverable half"
+
+    def play(declare: bool) -> dict:
+        st = scn.make_state(inst, "all_llm", 0, {"mechanism": mech.to_json(), "horizon": 1,
+                                                "channel": "dm_transfers", "talk_rounds": 1})
+        while True:
+            reqs = scn.next_requests(st)
+            if not reqs:
+                break
+            talk = st["phase"] == "talk"
+            for req in reqs:
+                seat = int(req.meta["seat_index"])
+                payload = {"action": "none"} if talk else {"action": "bid", "amount": 30}
+                # Declared once, in the talk round, so the arithmetic below is one payment and not two.
+                if declare and talk:
+                    if seat == payer_seat:
+                        payload |= {"transfer": {"to": payee, "amount": 25}}
+                    elif seat == payee_seat:
+                        payload |= {"transfer": {"to": payer, "amount": 10 ** 7}}
+                scn.apply(st, req, "```json\n" + json.dumps(payload) + "\n```")
+        return scn.score(st)
+
+    out, baseline = play(True), play(False)
+    declared = out["transfers"]["declared"] if isinstance(out["transfers"], dict) else out["transfers"]
+    by_sender = {d["sender"]: d for d in declared}
+    assert set(by_sender) == {payer, payee}, "both declarations must be recorded, coverable or not"
+    assert by_sender[payer]["executed"] is True and by_sender[payer]["amount"] == 25
+    assert by_sender[payee]["executed"] is False, "an uncoverable promise is words, and is recorded as words"
+    assert not (baseline["transfers"]["declared"] if isinstance(baseline["transfers"], dict)
+                else baseline["transfers"]), "the control declared nothing"
+
+    # And the executed one moved real surplus, on the stage row the analyzer reads.
+    surplus, base = out["stages"][0]["surplus"], baseline["stages"][0]["surplus"]
+    assert surplus[payer_seat] == base[payer_seat] - 25, "the payer is 25 worse off"
+    assert surplus[payee_seat] == base[payee_seat] + 25, "the payee is 25 better off"
+    for i in range(5):
+        if i not in (payer_seat, payee_seat):
+            assert surplus[i] == base[i], "nobody else moved"
+
+
 def test_designated_but_uninstructed_ring_changes_no_prompt():
     """``instructed=False`` records a ring the ANALYSIS designated for a counterfactual. It must be inert on
     the prompt surface, or a counterfactual would silently become a treatment."""
