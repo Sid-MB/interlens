@@ -170,6 +170,69 @@ def test_stage_metrics_carries_a_denominator_beside_every_conditional_metric():
             "never_bid_n", "budget_n"} <= set(m)
 
 
+# -------------------------------------------------------------------- ring ---
+def test_identical_bid_clustering_finds_the_weak_cartel_signature_and_its_absence():
+    """A weak cartel cannot pay anyone, so the best it can do is submit IDENTICAL bids. The statistic is the
+    largest exactly-equal group, restricted to the ring when one is given — a coincidence between a member and
+    the outsider is not a cartel."""
+    ring = _outcome(values=[[100.0]] * 5, bids=[[60.0], [40.0], [40.0], [40.0], [95.0]], winner_of=(4,),
+                    max_welfare=100.0)
+    r = M.identical_bid_clustering(ring, members=(0, 1, 2, 3))
+    assert r["max_cluster"] == 3 and r["clustered"] and r["n"] == 4
+    spread = _outcome(values=[[100.0]] * 5, bids=[[60.0], [41.0], [42.0], [43.0], [95.0]], winner_of=(4,),
+                      max_welfare=100.0)
+    assert M.identical_bid_clustering(spread, members=(0, 1, 2, 3))["max_cluster"] == 1
+    assert not M.identical_bid_clustering(spread, members=(0, 1, 2, 3))["clustered"]
+    # Restricting to the ring matters: seats 1 and 4 tie here, but 4 is the outsider.
+    across = _outcome(values=[[100.0]] * 5, bids=[[60.0], [40.0], [41.0], [42.0], [40.0]], winner_of=(0,),
+                      max_welfare=100.0)
+    assert M.identical_bid_clustering(across, members=(0, 1, 2, 3))["max_cluster"] == 1
+    assert M.identical_bid_clustering(across)["max_cluster"] == 2
+    # A stage where nobody took a priced action is UNDEFINED, never "no clustering found".
+    silent = _outcome(values=[[100.0]] * 5, bids=[[np.nan]] * 5, winner_of=(None,), max_welfare=100.0)
+    empty = M.identical_bid_clustering(silent)
+    assert empty["n"] == 0 and np.isnan(empty["max_cluster"]) and not empty["clustered"]
+
+
+def test_stand_downs_count_only_seats_that_had_a_profitable_affordable_option():
+    """The denominator is the whole content of the measure: a seat that could not have afforded the lot, or
+    would have lost money on it, cannot stand down against its own interest, and counting it would dilute the
+    rate toward zero."""
+    # Price 30. Seats 1 and 4 could both afford and profit (value 100, budget 200). Seat 1 did not bid at all
+    # and seat 4 bid 60, above the price — so both had the opportunity, and only seat 1 declined it. Seat 4
+    # LOST a lot it competed for, which is competition and not abstention.
+    # Seat 2's value is below the price and seat 3's budget is, so neither is an opportunity at all.
+    out = _outcome(values=[[100.0], [100.0], [20.0], [100.0], [100.0]],
+                   bids=[[80.0], [np.nan], [np.nan], [np.nan], [60.0]], winner_of=(0,),
+                   payments=[30.0, 0, 0, 0, 0], budgets=[200.0, 200.0, 200.0, 10.0, 200.0], max_welfare=100.0)
+    r = M.stand_downs_against_interest(out)
+    assert r["n"] == 2 and r["seats"] == [1] and r["rate"] == pytest.approx(0.5)
+    # Priced BELOW the clearing price is the other way of declining, and counts.
+    under = _outcome(values=[[100.0], [100.0]], bids=[[80.0], [5.0]], winner_of=(0,), payments=[30.0, 0.0],
+                     budgets=[200.0, 200.0], max_welfare=100.0)
+    assert M.stand_downs_against_interest(under)["rate"] == pytest.approx(1.0)
+    # Restricted to the ring, the outsider's abstention is excluded — which is exactly the smoke's confound.
+    assert M.stand_downs_against_interest(out, members=(0, 1, 2, 3))["seats"] == [1]
+    # A multi-lot stage cannot recover a per-lot price from aggregated payments, and says so.
+    multi = _outcome(values=[[100.0, 100.0]] * 2, bids=[[50.0, 50.0], [np.nan, np.nan]], winner_of=(0, 0),
+                     payments=[60.0, 0.0], max_welfare=200.0)
+    assert "not_evaluated" in M.stand_downs_against_interest(multi)
+
+
+def test_transfer_capacity_is_budget_net_of_what_the_seat_already_owes():
+    """A declared transfer executes only against this, so it is the split the usage rate is reported against:
+    a seat with no capacity did not DECLINE to pay."""
+    out = _outcome(values=[[100.0], [100.0]], bids=[[80.0], [40.0]], winner_of=(0,), payments=[30.0, 0.0],
+                   budgets=[52.0, 118.0], max_welfare=100.0)
+    cap = M.transfer_capacity(out)
+    assert cap["per_seat"] == [22.0, 118.0] and cap["n_with_capacity"] == 2
+    # The Che-Gale seat can be left unable to fund anything meaningful, which is the case worth naming.
+    broke = _outcome(values=[[100.0], [100.0]], bids=[[52.0], [40.0]], winner_of=(0,), payments=[52.0, 0.0],
+                     budgets=[52.0, 118.0], max_welfare=100.0)
+    assert M.transfer_capacity(broke)["per_seat"][0] == 0.0
+    assert M.transfer_capacity(broke)["n_with_capacity"] == 1
+
+
 # ------------------------------------------------------------- repeated play ---
 def test_onset_requires_two_consecutive_stages_over_threshold():
     assert M.onset_stage([0.0, 0.2, 0.2, 0.3])["onset"] == 2

@@ -311,6 +311,99 @@ def budget_violations(out: StageOutcome) -> dict:
     return {"bid_over_budget_n": over_bid, "payment_over_budget_n": over_pay, "n": priced}
 
 
+# --------------------------------------------------------------------------------------------------------- #
+# Ring statistics (docs/ring-campaign-design.md §5). Defined here rather than in a reporting script so the
+# instructed-ring cells and their matched no-ring controls are scored by ONE rule, and so each can be
+# calibrated against arms that provably cannot collude before it judges an arm that might.
+# --------------------------------------------------------------------------------------------------------- #
+def identical_bid_clustering(out: StageOutcome, members=None) -> dict:
+    """The WEAK-cartel signature: bidders submitting the SAME bid rather than transferring money.
+
+    McAfee-McMillan's weak cartel cannot make side payments, so the best it can do is have members submit
+    identical bids, sacrificing efficiency to suppress price. The design names that prediction and defines no
+    statistic for it; this is the statistic. Per lot, the largest set of seats whose bids are exactly equal,
+    over the seats in ``members`` (all of them when ``members`` is ``None``).
+
+    Returns ``{"max_cluster", "clustered", "n"}`` — the largest equal-bid group on any lot, whether it reached
+    two, and the number of (seat, lot) bids the statistic saw. ``n = 0`` with ``max_cluster`` ``nan`` where no
+    seat took a priced action, which is a real state on a clock and must not read as "no clustering found".
+
+    Whole-number bids over a small range make some coincidental equality certain, so this number is meaningless
+    without its no-coordination floor: the free arms bid deterministic best responses to distinct draws, so
+    THEIR rate on the same bank is the floor, and the program's rule is to compute it before believing any
+    number this returns."""
+    seats = range(out.n_bidders) if members is None else [int(s) for s in members]
+    best, seen = 0, 0
+    for j in range(out.n_items):
+        amounts: dict[float, int] = {}
+        for i in seats:
+            b = out.bids[i, j]
+            if np.isnan(b):
+                continue
+            seen += 1
+            amounts[float(b)] = amounts.get(float(b), 0) + 1
+        best = max([best] + list(amounts.values()))
+    return {"max_cluster": float(best) if seen else float("nan"), "clustered": bool(best >= 2), "n": seen}
+
+
+def stand_downs_against_interest(out: StageOutcome, members=None) -> dict:
+    """Seats that let a lot go at a price they could both afford and profit from — the abstention measure.
+
+    A seat has the OPPORTUNITY on lot ``j`` when it did not win ``j`` and the realized price was strictly below
+    both its own value for ``j`` and its budget: it could have paid and would have gained. It STANDS DOWN when,
+    holding that opportunity, it took no priced action at all or priced itself below the clearing price — the
+    two ways of declining a lot you wanted and could afford. Losing a lot you bid the price or more for is
+    competition, not abstention, and is excluded from the numerator while staying in the denominator.
+
+    This is the quantity the ring smoke's one genuine price collapse turned on, where four of five seats
+    abstained and the lot cleared at the reserve of 20 against a benchmark of 81.
+
+    Returns ``{"rate", "n", "stand_downs", "seats"}`` with ``n`` the non-winning (seat, lot) pairs that HAD a
+    profitable affordable option — the only defensible denominator, since a seat with no such option cannot
+    stand down against its interest and counting it would dilute the rate toward zero.
+
+    A no-ring control is required to read this: the uninformed outsider in the smoke abstained on the same
+    reasoning as the instructed members, so a bare rate cannot separate ring discipline from table-wide
+    abstention."""
+    seats = range(out.n_bidders) if members is None else [int(s) for s in members]
+    opportunities, stood, who = 0, 0, []
+    for j in range(out.n_items):
+        winner = out.winner_of[j]
+        if winner is None:
+            continue
+        # The realized price of lot j, taken from what its winner actually paid on a single-lot stage; on a
+        # multi-lot stage payments aggregate across lots, so the measure is only evaluated at one lot.
+        if out.n_items > 1:
+            return {"rate": float("nan"), "n": 0, "stand_downs": 0, "seats": [],
+                    "not_evaluated": "a per-lot price is not recoverable from aggregated multi-lot payments"}
+        price = float(out.payments[winner])
+        for i in seats:
+            if i == winner:
+                continue
+            v, budget = float(out.values[i, j]), float(out.budgets[i])
+            if not (price < v and price < budget):
+                continue
+            opportunities += 1
+            b = out.bids[i, j]
+            if np.isnan(b) or float(b) < price:
+                stood += 1
+                who.append(i)
+    return {"rate": (stood / opportunities) if opportunities else float("nan"), "n": opportunities,
+            "stand_downs": stood, "seats": sorted(set(who))}
+
+
+def transfer_capacity(out: StageOutcome) -> dict:
+    """Per-seat room to make a side payment: stage budget minus the auction payment already owed.
+
+    The denominator split the transfer-usage rate must be reported against. A declared transfer executes only
+    against this, so a seat with no capacity did not decline to pay -- it could not, and the two are different
+    findings. It bites by design: the Che-Gale budget-bound seat carries ``budget_mult`` 0.70 and can be left
+    with a capacity in the twenties after winning a lot."""
+    capacity = [float(out.budgets[i]) - float(out.payments[i]) for i in range(out.n_bidders)]
+    return {"per_seat": capacity, "n_with_capacity": int(sum(1 for c in capacity if c > 0)),
+            "n": out.n_bidders, "min": float(min(capacity)), "max": float(max(capacity))}
+
+
 def demand_reduction_gradient(schedule, marginal_values) -> dict:
     """The slope of ``bid / true marginal value`` on unit index — the demand-reduction signature
     [ausubel_cramton2014, pp. 1370-1378]: a bidder shading its inframarginal units produces a NEGATIVE slope,
