@@ -26,10 +26,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .auction_geometry import index_row
 from .chrome import distance_to_nbs, inject_nav, nav_group
 from .compare import DEFAULT_PAIR_KEY, pair_runs
 from .episode import RunDir
-from .page import preference_visibility, render_compare_html, render_episode_html, render_index_html
+from .page import (AUCTION_INDEX_COLUMNS, preference_visibility, render_compare_html, render_episode_html,
+                   render_index_html)
 
 
 def _parameter_fields(payload: dict) -> dict:
@@ -42,8 +44,11 @@ def _parameter_fields(payload: dict) -> dict:
     """
     ep, manifest, game = payload.get("episode") or {}, payload.get("manifest") or {}, payload.get("game") or {}
     cell = ep.get("cell_cfg") or {}
-    difficulty = (game.get("difficulty") or ep.get("difficulty") or cell.get("difficulty")
-                  or manifest.get("difficulty") or {})
+    # An auction payload carries no `game`; its instance difficulty rides on the auction geometry, which is the
+    # same `solution.difficulty` record read from the same place.
+    auction_geometry = (payload.get("auction") or {}).get("geometry") or {}
+    difficulty = (game.get("difficulty") or auction_geometry.get("difficulty") or ep.get("difficulty")
+                  or cell.get("difficulty") or manifest.get("difficulty") or {})
     if isinstance(difficulty, (int, float)):
         difficulty = {"score": difficulty}
     if not isinstance(difficulty, dict):
@@ -116,6 +121,30 @@ def _merge_hazards(left: dict, right: dict) -> dict:
             "non_action_pct": max(left["non_action_pct"], right["non_action_pct"])}
 
 
+def _auction_fields(payload: dict) -> dict:
+    """The auction index's own columns for one episode of a rendered run.
+
+    The columns themselves come from
+    :func:`~interlens.arena.viz.auction_geometry.index_row`, the single owner of what they mean — a campaign hub
+    listing every episode in a campaign derives the same set from the stored records without paying for a
+    replay, and the two tables must agree cell for cell.
+
+    What this adds is the one column that needs the trace: ``cf_agreement_pct``, the share of committed moves
+    on which BOTH computable rules would have played what the seat played. It stays ``None`` rather than 0 when
+    the counterfactuals were not computed, so a fast-path index reads as "not measured" instead of as total
+    disagreement.
+    """
+    ep = payload.get("episode") or {}
+    auction = payload.get("auction") or {}
+    row = index_row({**ep, "outcome": payload.get("outcome") or {}, "turns": payload.get("turns") or []},
+                    {"solution": {"difficulty": (auction.get("geometry") or {}).get("difficulty")}})
+    scored = [e for t in (auction.get("turns") or []) for e in (t.get("counterfactual") or {}).values()
+              if not e.get("error")]
+    if scored:
+        row["cf_agreement_pct"] = round(100 * sum(1 for e in scored if e.get("agrees")) / len(scored), 1)
+    return row
+
+
 def _pct_value(fraction) -> float:
     """A recorded rate as a percentage, rounded for a table cell; ``0.0`` for an absent rate."""
     return round(100 * (fraction or 0), 2)
@@ -185,6 +214,7 @@ def export_run(run: str | Path, out_dir: str | Path, *, limit: int | None = None
     out_dir.mkdir(parents=True, exist_ok=True)
     files = run_dir.episode_files()[:limit] if limit is not None else run_dir.episode_files()
     rows, paths, failures = [], [], []
+    is_auction = False
     for f in files:
         try:
             payload = run_dir.payload(f, reconstruct=reconstruct)
@@ -196,21 +226,26 @@ def export_run(run: str | Path, out_dir: str | Path, *, limit: int | None = None
         name = f"{ep['episode_id']}.html"
         (out_dir / name).write_text(render_episode_html(payload))
         paths.append(out_dir / name)
-        rows.append({"href": name, "label": ep["episode_id"], "model": ep.get("model"), "arm": ep.get("arm"),
-                     "visibility": preference_visibility(payload),
-                     "instance": ep.get("instance_id"), "seed": ep.get("seed"), "deal": bool(out.get("deal")),
-                     "primary": out.get("primary"), "dist_nbs": distance_to_nbs(payload),
-                     "usw": out.get("usw"), "esw": out.get("esw"),
-                     "fabricated_pct": round(100 * (gen.get("fraction") or 0), 2),
-                     "regret": (payload.get("annotation_summary") or {}).get("total_regret"),
-                     **_hazard_fields(payload), **_parameter_fields(payload)})
+        row = {"href": name, "label": ep["episode_id"], "model": ep.get("model"), "arm": ep.get("arm"),
+               "visibility": preference_visibility(payload),
+               "instance": ep.get("instance_id"), "seed": ep.get("seed"), "deal": bool(out.get("deal")),
+               "primary": out.get("primary"), "dist_nbs": distance_to_nbs(payload),
+               "usw": out.get("usw"), "esw": out.get("esw"),
+               "fabricated_pct": round(100 * (gen.get("fraction") or 0), 2),
+               "regret": (payload.get("annotation_summary") or {}).get("total_regret"),
+               **_hazard_fields(payload), **_parameter_fields(payload)}
+        if payload.get("auction"):
+            is_auction = True
+            row.update(_auction_fields(payload))
+        rows.append(row)
     _link_pages(paths, rows)
     note = (f"{len(rows)} episode(s) from <code>{run_dir.root}</code>. "
             + (f"{len(failures)} episode(s) failed to render." if failures else ""))
     readme_path = run_dir.root / "README.md"
     readme = readme_path.read_text() if readme_path.is_file() else ""
     (out_dir / "index.html").write_text(
-        render_index_html(rows, f"Episodes — {run_dir.root.name}", note, readme)
+        render_index_html(rows, f"Episodes — {run_dir.root.name}", note, readme,
+                          columns=AUCTION_INDEX_COLUMNS if is_auction else None)
     )
     manifest = {"run": str(run_dir.root), "out_dir": str(out_dir), "n_episodes": len(rows),
                 "index": str(out_dir / "index.html"), "failures": failures,

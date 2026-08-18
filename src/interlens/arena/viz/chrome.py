@@ -51,8 +51,15 @@ def _e(x: Any) -> str:
 
 
 def _num(v: Any, digits: int = 3) -> str:
-    """Format a number for a cell, em-dash for a non-number, so a missing metric never reads as zero."""
-    return f"{v:.{digits}f}" if isinstance(v, (int, float)) and not isinstance(v, bool) else "—"
+    """Format a number for a cell, em-dash for a non-number, so a missing metric never reads as zero.
+
+    ``NaN`` and infinity take the em dash too. They are how a metric with no denominator arrives — an auction
+    stage with no losing bid has no suppression, an on-path multi-lot benchmark has no counterfactual revenue —
+    and printing the word ``nan`` in a column of real figures reads as a broken number rather than as the
+    absent measurement it is."""
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v):
+        return "—"
+    return f"{v:.{digits}f}"
 
 
 # ------------------------------------------------------------------------------------ wire payload --

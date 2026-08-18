@@ -53,7 +53,7 @@ def make_replay_state(scenario: Scenario, instance: Instance, episode: dict) -> 
 
 
 def apply_prefix(scenario: Scenario, state: dict, episode: dict, upto: int | None = None, *,
-                 on_turn=None) -> int:
+                 on_turn=None, on_request=None) -> int:
 	"""Replay ``episode``'s stored turns into an existing ``state``, stopping before turn index ``upto``.
 
 	This is the branch/resume primitive: after it returns, ``state`` is exactly the mid-game state the engine
@@ -66,6 +66,11 @@ def apply_prefix(scenario: Scenario, state: dict, episode: dict, upto: int | Non
 	while ``state`` still holds that turn's post-move context — the hook for post-hoc per-turn work (re-running
 	oracles, reconstructing intermediate ledgers). Its return value is ignored; raising aborts the replay.
 
+	``on_request`` is the same shape, invoked BEFORE the turn is applied, while ``state`` still holds the
+	context the seat actually decided in. The two hooks are not interchangeable: a per-turn counterfactual
+	("what would another decision rule have played HERE") is only meaningful against the pre-move state, and
+	reading it from ``on_turn`` would score every rule against the position its own turn created.
+
 	Returns the number of turns applied. Raises :class:`ReplayError` if a stored turn cannot be matched to a
 	pending request, or if ``upto`` is not reached because the record has fewer turns."""
 	applied = 0
@@ -73,6 +78,8 @@ def apply_prefix(scenario: Scenario, state: dict, episode: dict, upto: int | Non
 		if upto is not None and int(turn.get("idx", applied)) >= int(upto):
 			return applied
 		request = _match_request(scenario, state, turn)
+		if on_request is not None:
+			on_request(state, request, turn)
 		scenario.apply(state, request, turn["content"])
 		applied += 1
 		if on_turn is not None:
@@ -82,15 +89,16 @@ def apply_prefix(scenario: Scenario, state: dict, episode: dict, upto: int | Non
 	return applied
 
 
-def replay_episode(scenario: Scenario, instance: Instance, episode: dict, *, on_turn=None) -> dict:
+def replay_episode(scenario: Scenario, instance: Instance, episode: dict, *, on_turn=None,
+                   on_request=None) -> dict:
 	"""Feed a stored episode's turns back through ``scenario`` and return the recomputed outcome dict.
 
 	``episode`` is the stored JSON record (``Episode.to_json()`` shape; the arena experiments' records load
 	directly). The instance must be the one the episode was played on (``episode['instance_id']``).
 
-	``on_turn`` is as in :func:`apply_prefix`, whose full-replay case this is."""
+	``on_turn`` and ``on_request`` are as in :func:`apply_prefix`, whose full-replay case this is."""
 	state = make_replay_state(scenario, instance, episode)
-	apply_prefix(scenario, state, episode, on_turn=on_turn)
+	apply_prefix(scenario, state, episode, on_turn=on_turn, on_request=on_request)
 	outcome = scenario.score(state)
 	# the same post-scoring refinement the engine applies live (e.g. the distributed long-context
 	# truncation/capitulation outcome classes) — pure in (state, turns, outcome), so it replays exactly

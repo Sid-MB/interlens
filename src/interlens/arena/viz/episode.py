@@ -50,6 +50,7 @@ from typing import Any
 from ..actions import action_from_json
 from ..engine import EMPTY_TURN_PLACEHOLDER, gen_failures
 from . import references
+from .auction_geometry import AuctionGeometry, auction_trace, is_auction_instance, json_safe
 from .ballots import DERIVATION_SIDECAR, final_ballots, vote_derivation
 from .census import turn_census
 from .geometry import GameGeometry
@@ -531,12 +532,83 @@ def _turn_payload(t: dict, idx: int, *, is_retry: bool, geo: GameGeometry | None
     return row
 
 
+# --------------------------------------------------------------------------- the auction payload --
+def _auction_payload(episode: dict, instance: dict, *, manifest: dict | None, geometry, paths: dict | None,
+                     vintage: dict | None, counterfactuals: bool) -> dict:
+    """The render payload for one AUCTION episode.
+
+    Shares everything that is scenario-agnostic with :func:`episode_payload` — the turn rows through
+    :func:`_turn_payload`, the fabrication screen, the census, the generation budget, the seat-kind detection —
+    and swaps the game geometry for :class:`~interlens.arena.viz.auction_geometry.AuctionGeometry` plus the
+    replay-derived trace. Written as a sibling rather than as branches inside ``episode_payload`` because the
+    two share no per-turn work beyond ``_turn_payload``: an auction turn resolves no deal index, plots on no
+    frontier, and carries no oracle value records, so half of ``episode_payload``'s body would have been guarded
+    to no purpose.
+
+    ``payload["game"]`` is set to ``None`` explicitly. Every negotiation panel already tests it, so this is the
+    graceful-degradation path the visualizer was built with rather than a new one.
+    """
+    kinds = seat_kinds(episode, manifest)
+    turns = episode.get("turns") or []
+    fabricated = {row["idx"]: row for row in gen_failures(episode)}
+    seat_party = {s.get("name"): i for i, s in enumerate(episode.get("seats") or [])}
+    rows, slots_seen = [], set()
+    for t in turns:
+        slot = (t.get("round"), t.get("phase"), t.get("seat"))
+        is_retry = slot in slots_seen
+        slots_seen.add(slot)
+        idx = int(t.get("idx", len(rows)))
+        rows.append(_turn_payload(t, idx, is_retry=is_retry, geo=None, kinds=kinds, oracles={},
+                                  seat_party=seat_party, rebuilt={}, fabricated=fabricated))
+    geo = geometry if geometry is not None else AuctionGeometry.from_instance(instance,
+                                                                             episode.get("cell_cfg"))
+    trace = auction_trace(episode, instance, geometry=geo, counterfactuals=counterfactuals)
+    payload = {
+        "kind": "episode",
+        "scenario_family": "auction",
+        "episode": {k: episode.get(k) for k in
+                    ("episode_id", "scenario", "arm", "model", "level", "instance_id", "seed", "cell",
+                     "cell_cfg", "status", "rounds_used", "tokens_in", "tokens_out", "cost_usd", "gen_config",
+                     "error", "schema_version", "difficulty", "tags")},
+        "seats": [{"name": s.get("name"), "role": s.get("role"), "variant": s.get("variant"),
+                   "party": i, "seat": s.get("seat", i),
+                   "kind": kinds["kinds"].get(s.get("name"), "llm")}
+                  for i, s in enumerate(episode.get("seats") or [])],
+        "seat_kind_source": {"source": kinds["source"], "detail": kinds["detail"]},
+        "turns": rows,
+        "trajectory": [],
+        "offers": [],
+        # Scrubbed: an auction outcome carries NaN wherever a metric has no denominator, and a NaN in the
+        # embedded payload is invalid JSON that would disable every script on the page. See `json_safe`.
+        "outcome": json_safe(dict(episode.get("outcome") or {})),
+        "oracle_names": [],
+        "counterfactual_oracles": [],
+        "views": {"stored": sum(1 for t in turns if t.get("view")), "reconstructed": 0,
+                  "n_turns": len(turns), "reconstructed_pre_retry": 0},
+        "generation": {"n_turns": len(turns), "fabricated": len(fabricated),
+                       "fraction": round(len(fabricated) / len(turns), 4) if turns else 0.0,
+                       "detected_by": sorted({r["detected_by"] for r in fabricated.values()}) or None},
+        "census": turn_census(rows),
+        # Explicitly None: an auction has no enumerable deal space, so every negotiation panel must degrade
+        # rather than draw an empty frontier. See the note on `episode_payload`.
+        "game": None,
+        "auction": trace,
+        "manifest": {k: (manifest or {}).get(k) for k in
+                     ("run_name", "invocation", "table", "arms", "policies", "models", "oracles", "scaffold",
+                      "info", "provenance", "api_request_config", "turn_max_tokens")} if manifest else None,
+        "vintage": vintage,
+        "paths": paths or {},
+    }
+    payload["budget"] = generation_budget(payload)
+    return payload
+
+
 # -------------------------------------------------------------------------------- the payload --
 def episode_payload(episode: dict, instance: dict | None = None, annotation: dict | None = None, *,
                     manifest: dict | None = None, geometry: GameGeometry | None = None,
                     reconstruct: bool = True, paths: dict | None = None,
                     annotations_source: str | None = None, vintage: dict | None = None,
-                    derivation: dict | None = None) -> dict:
+                    derivation: dict | None = None, auction_counterfactuals: bool = True) -> dict:
     """The complete render payload for one episode.
 
     Parameters
@@ -575,7 +647,22 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         :func:`~interlens.arena.viz.ballots.vote_derivation`), which lets the final-vote tally show what each
         computable seat's own policy re-derives beside what the record holds. ``None`` renders the recorded
         ballots alone.
+    auction_counterfactuals : bool
+        On an AUCTION episode, whether to compute the per-turn rational and oracle counterfactual bids (see
+        :func:`~interlens.arena.viz.auction_geometry.auction_trace`). On by default because they are the
+        campaign's headline instrumentation; ``False`` is the fast path when only the index row is wanted.
+        Ignored for every other scenario.
+
+    Notes
+    -----
+    An AUCTION episode takes a different geometry: ``GameGeometry`` is ``GameSpec``-shaped and returns ``None``
+    on an auction payload, so ``payload["game"]`` stays ``None`` (which is what makes every negotiation panel
+    degrade away rather than render an empty frontier) and ``payload["auction"]`` carries the sibling geometry
+    plus the replay-derived per-episode trace. The two keys are mutually exclusive by construction.
     """
+    if is_auction_instance(instance):
+        return _auction_payload(episode, instance, manifest=manifest, geometry=geometry, paths=paths,
+                               vintage=vintage, counterfactuals=auction_counterfactuals)
     geo = geometry if geometry is not None else GameGeometry.from_instance(instance or {})
     kinds = seat_kinds(episode, manifest)
     oracles = _oracle_records(episode, annotation)
@@ -706,14 +793,26 @@ class RunDir:
         """Every episode JSON under the run, in sorted path order."""
         return sorted(p for p in self.episodes_dir.glob("**/*.json") if p.name != "manifest.json")
 
-    def geometry(self, instance_id: str) -> GameGeometry | None:
-        """The cached :class:`GameGeometry` for an instance id (``None`` if the instance is missing or not a
-        scorable game)."""
-        if instance_id not in self._geometry:
-            self._geometry[instance_id] = GameGeometry.from_instance(self.instances.get(instance_id) or {})
-        return self._geometry[instance_id]
+    def geometry(self, instance_id: str, cell_cfg: dict | None = None):
+        """The cached geometry for an instance id: a :class:`GameGeometry` for a negotiation instance, an
+        :class:`~interlens.arena.viz.auction_geometry.AuctionGeometry` for an auction one, ``None`` if the
+        instance is missing or is neither.
 
-    def payload(self, episode_path: str | Path, *, reconstruct: bool = True) -> dict:
+        Auction geometry is cached per ``(instance_id, cell)``, not per instance: a single bank instance is
+        consumed by cells that override the mechanism and the horizon, so caching one spec per instance would
+        hand a Dutch episode the sealed cell's geometry — a real defect class in this lane's history."""
+        instance = self.instances.get(instance_id) or {}
+        if not is_auction_instance(instance):
+            if instance_id not in self._geometry:
+                self._geometry[instance_id] = GameGeometry.from_instance(instance)
+            return self._geometry[instance_id]
+        key = (instance_id, str((cell_cfg or {}).get("cell") or ""), str((cell_cfg or {}).get("horizon") or ""))
+        if key not in self._geometry:
+            self._geometry[key] = AuctionGeometry.from_instance(instance, cell_cfg)
+        return self._geometry[key]
+
+    def payload(self, episode_path: str | Path, *, reconstruct: bool = True,
+                auction_counterfactuals: bool = True) -> dict:
         """The render payload for one episode file in this run, with its instance, annotation, manifest, and
         cached geometry wired in."""
         episode_path = Path(episode_path)
@@ -731,9 +830,11 @@ class RunDir:
         if self.derivation is not None:
             paths["vote_derivation"] = str((self.root / DERIVATION_SIDECAR).resolve())
         return episode_payload(episode, instance, annotation, manifest=self.manifest,
-                               geometry=self.geometry(instance_id), reconstruct=reconstruct, paths=paths,
+                               geometry=self.geometry(instance_id, episode.get("cell_cfg")),
+                               reconstruct=reconstruct, paths=paths,
                                annotations_source=(self.annotations_dirname if annotation is not None else None),
-                               vintage=self.vintage, derivation=self.derivation)
+                               vintage=self.vintage, derivation=self.derivation,
+                               auction_counterfactuals=auction_counterfactuals)
 
 
 def _index_records(path: Path, key: str, require: str | None = None) -> tuple[dict[str, dict], dict[str, Path]]:

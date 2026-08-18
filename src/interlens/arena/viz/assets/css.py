@@ -572,11 +572,74 @@ svg.issuesvg .dealdot{fill:var(--s1);stroke:var(--surface-1);stroke-width:1.5}
  linear-gradient(-45deg,transparent 43%,var(--muted) 43%,var(--muted) 57%,transparent 57%)}
 .issuenums{display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-top:var(--sp-2);font-variant-numeric:tabular-nums}
 
+/* --- auction panels -------------------------------------------------------------------------------------- */
+/* FIVE seat identities on one chart, which is two more than the three-slot categorical cap the scatter palette
+   is bound by. The cap is a colour-separation constraint, so it is met the way the rest of this stylesheet meets
+   it: colour is never the only encoding. Each seat carries a distinct DASH pattern as well as a distinct hue,
+   every mark carries a <title> naming its seat, and the legend prints the five names beside their swatches. Slots
+   4 and 5 reuse the reference-alt violet and a warm neutral, both of which separate from the first three in both
+   modes and from each other by dash pattern regardless. A reader who cannot tell two lines apart by colour can
+   always tell them apart by stroke or by hovering; nothing on the page depends on the distinction being made by
+   colour alone. */
+:root{--seat0:var(--s1);--seat1:var(--s2);--seat2:var(--s3);--seat3:var(--reference-alt);--seat4:#8a6d3b}
+@media (prefers-color-scheme:dark){:root{--seat4:#d3ae6a}}
+[data-theme="dark"]{--seat4:#d3ae6a}
+[data-theme="light"]{--seat4:#8a6d3b}
+svg .s0{--seat:var(--seat0)} svg .s1{--seat:var(--seat1)} svg .s2{--seat:var(--seat2)}
+svg .s3{--seat:var(--seat3)} svg .s4{--seat:var(--seat4)}
+.legend .swatch.s0{background:var(--seat0)} .legend .swatch.s1{background:var(--seat1)}
+.legend .swatch.s2{background:var(--seat2)} .legend .swatch.s3{background:var(--seat3)}
+.legend .swatch.s4{background:var(--seat4)}
+svg.laddersvg .bidline{fill:none;stroke:var(--seat);stroke-width:2;opacity:.9}
+svg.laddersvg .bidline.s1{stroke-dasharray:7 3} svg.laddersvg .bidline.s2{stroke-dasharray:2 3}
+svg.laddersvg .bidline.s3{stroke-dasharray:9 3 2 3} svg.laddersvg .bidline.s4{stroke-dasharray:4 2 1 2}
+svg.laddersvg .bidpt{fill:var(--seat);stroke:var(--surface-1);stroke-width:1.5;cursor:pointer}
+svg.laddersvg .bidpt:hover,svg.laddersvg .bidpt:focus-visible{stroke:var(--ink);stroke-width:2.5}
+svg.laddersvg .lotmark{fill:none;stroke:var(--seat);stroke-width:1.4;cursor:pointer;opacity:.8}
+/* Filled = this bid took the standing high. The transition is the event worth seeing on a multi-lot ladder,
+   and fill/no-fill carries it without adding a sixth colour. */
+svg.laddersvg .lotmark.took{fill:var(--seat);opacity:1}
+svg.laddersvg .exitmark{fill:none;stroke:var(--seat);stroke-width:2;stroke-linecap:round;cursor:pointer}
+svg.laddersvg .vtick{stroke:var(--seat);stroke-width:1;stroke-dasharray:2 5;opacity:.5}
+svg.laddersvg .stageband{fill:var(--s3);opacity:.07}
+svg.laddersvg .stageband.defect{fill:var(--critical);opacity:.09}
+svg.laddersvg .stagerule{stroke:var(--grid);stroke-width:1;stroke-dasharray:3 3}
+svg.laddersvg .stagelab{fill:var(--ink-2);font-size:10.5px;font-weight:600}
+svg.laddersvg .taul{stroke:var(--muted);stroke-width:1;stroke-dasharray:6 4;opacity:.7}
+.chartwrap.wide svg{min-width:100%;width:auto}
+svg.stripsvg .track{fill:var(--grid);opacity:.35}
+svg.stripsvg .opt{stroke:var(--seat);stroke-width:1.6;opacity:.75}
+svg.stripsvg .opt.won{stroke-width:3.2;opacity:1}
+svg.stripsvg .opt:hover{stroke:var(--ink);stroke-width:3.5;opacity:1}
+svg.stripsvg .taul{stroke:var(--ink-2);stroke-width:1.6;stroke-dasharray:5 4;opacity:.9}
+svg.stripsvg .issuelab{fill:var(--ink-2);font-size:9.5px}
+.stagegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:var(--sp-3)}
+.stagegrid .stageblock .hd{font-weight:600;font-size:var(--t-sm);margin-bottom:var(--sp-1)}
+svg.dmsvg .dmedge{fill:none;stroke:var(--ink-2);opacity:.62;transition:opacity .12s}
+svg.dmsvg .dmedge.dim{opacity:.06}
+svg.dmsvg marker path{fill:var(--ink-2)}
+svg.dmsvg .dmnode{fill:var(--seat);stroke:var(--surface-1);stroke-width:2}
+svg.dmsvg .dmlab{fill:var(--ink);font-size:10px;font-weight:600;paint-order:stroke;stroke:var(--surface-1);
+ stroke-width:3px;stroke-linejoin:round}
+.graphrow{display:grid;grid-template-columns:minmax(280px,380px) 1fr;gap:var(--sp-3);align-items:start}
+table.cftable td.agree{color:var(--s3)}
+table.cftable td.differ{color:var(--s2);font-weight:600}
+table .totalrow td{border-top:2px solid var(--axis);border-bottom:0}
+td .gloss,th .gloss{display:block;color:var(--muted);font-size:11px;font-weight:400}
+.hovercard .hd{font-weight:600;margin-bottom:var(--sp-1)}
+.hovercard .cfrow{display:flex;gap:var(--sp-2);align-items:baseline;flex-wrap:wrap;
+ font-variant-numeric:tabular-nums}
+.hovercard .cfrow .k{color:var(--muted);min-width:5.5rem;font-size:var(--t-sm)}
+.hovercard .differ{color:var(--s2)}
+button.chip.on{border-color:var(--s1);color:var(--s1);
+ background:color-mix(in oklab,var(--s1) 8%,var(--surface-1))}
+
 /* --- responsive / print ---------------------------------------------------------------------------------- */
 @media (max-width:1180px){.layout{grid-template-columns:1fr}
  aside{position:static;max-height:none}
  aside.sidebar{overflow:visible}
  .sidebar .pane{max-height:none;overflow:visible}}
+@media (max-width:900px){.graphrow{grid-template-columns:1fr}}
 @media (max-width:760px){.cols,.two{grid-template-columns:1fr}
  .topbar{position:static} .turnhd,.scrub,.colhd{position:static} main{padding:var(--sp-3)}
  .strip .stat{border-right:0}}

@@ -37,6 +37,7 @@ module               what it holds
 ``js_sidebar``       the tabbed sidebar and the IntersectionObserver scroll sync that drives it
 ``js_shell``         theme toggle, episode navigation, keyboard bindings, the help overlay
 ``js_episode``       the episode page's wiring
+``js_auction``       the auction episode page's wiring (stage scrubber, ladder hover, transcript sync)
 ``js_compare``       the comparison page's wiring
 ``js_index``         the run index's sort and filter
 ===================  =========================================================================================
@@ -70,6 +71,7 @@ they wear the reserved status palette and always carry a glyph and a word beside
 from __future__ import annotations
 
 from .css import CSS
+from .js_auction import JS_AUCTION
 from .js_chart import JS_CHART
 from .js_compare import JS_COMPARE
 from .js_core import JS_CORE, JS_UTIL
@@ -87,5 +89,5 @@ JS = "\n".join((JS_UTIL, JS_CORE, JS_HOVER, JS_CHART, JS_TRANSCRIPT, JS_SIDEBAR,
 #: The run index's bundle: the same shell and helpers, none of the episode data layer.
 JS_INDEX_PAGE = "\n".join((JS_UTIL, JS_SHELL, JS_INDEX))
 
-__all__ = ["CSS", "JS", "JS_CHART", "JS_COMPARE", "JS_CORE", "JS_EPISODE", "JS_HOVER", "JS_INDEX",
-           "JS_INDEX_PAGE", "JS_SHELL", "JS_SIDEBAR", "JS_TRANSCRIPT", "JS_UTIL"]
+__all__ = ["CSS", "JS", "JS_AUCTION", "JS_CHART", "JS_COMPARE", "JS_CORE", "JS_EPISODE", "JS_HOVER",
+           "JS_INDEX", "JS_INDEX_PAGE", "JS_SHELL", "JS_SIDEBAR", "JS_TRANSCRIPT", "JS_UTIL"]

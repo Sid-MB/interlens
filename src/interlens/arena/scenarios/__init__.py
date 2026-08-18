@@ -21,6 +21,8 @@
   intelligence (payoff-exact scoring; no solo arm).
 - ``CodingCollab`` — 3 seats jointly write one Python module against a public pytest suite while each holds
   private, mechanically checkable style constraints (sandboxed exact scoring).
+- ``AuctionScenario`` — five bidders over ``T`` auction stages under one mechanism config (sealed second-price,
+  Dutch / English clock, simultaneous ascending), with the format as a config rather than a separate runner.
 - ``DistributedLongContext`` — one long-context task partitioned across 4 seats (task adapters + offline
   instance builders in ``interlens.arena.scenarios.dlc``; first-class ``truncated_at_budget`` /
   ``capitulated`` outcome classes).
@@ -31,6 +33,7 @@ and hidden solution) and exact scorers. Further scenarios follow the same patter
 (the distributed long-context entries bind their task adapter).
 """
 
+from .auction import AuctionScenario
 from .coding import CodingCollab
 from .dlc import dlc_scenario
 from .longcontext import DistributedLongContext, TaskAdapter
@@ -39,7 +42,8 @@ from .relay import InfoRelay
 from .scorable import ScorableNegotiation
 from .security import SecurityDilemma
 
-SCENARIOS = {s.name: s for s in (Negotiation, InfoRelay, SecurityDilemma, CodingCollab, ScorableNegotiation)}
+SCENARIOS = {s.name: s for s in (Negotiation, InfoRelay, SecurityDilemma, CodingCollab, ScorableNegotiation,
+                                 AuctionScenario)}
 SCENARIOS.update({
 	"dlc_sniah": lambda: dlc_scenario("sniah"),
 	"dlc_oolong_pairs": lambda: dlc_scenario("oolong_pairs"),
@@ -48,5 +52,5 @@ SCENARIOS.update({
 	"dlc_bcp": lambda: dlc_scenario("bcp"),
 })
 
-__all__ = ["Negotiation", "InfoRelay", "SecurityDilemma", "CodingCollab", "ScorableNegotiation",
-           "DistributedLongContext", "TaskAdapter", "dlc_scenario", "SCENARIOS"]
+__all__ = ["AuctionScenario", "Negotiation", "InfoRelay", "SecurityDilemma", "CodingCollab",
+           "ScorableNegotiation", "DistributedLongContext", "TaskAdapter", "dlc_scenario", "SCENARIOS"]

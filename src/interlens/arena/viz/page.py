@@ -39,14 +39,16 @@ from pathlib import Path
 
 from markdown_it import MarkdownIt
 
-from .assets import CSS, JS, JS_COMPARE, JS_EPISODE, JS_INDEX_PAGE
+from .assets import CSS, JS, JS_AUCTION, JS_COMPARE, JS_EPISODE, JS_INDEX_PAGE
+from .auction_page import auction_body, auction_info_panel, auction_setup_panel, auction_summary_strip
 from .ballots import ballot_table
 from .census import census_strip
 from .chrome import (_e, _num, distance_to_nbs, help_overlay, nav_group, quick_stats, slim_payload,
                      summary_strip, topbar)
 from .hazards import budget_badge, budget_note, vintage_badge, vintage_banner, vintage_pairing
 
-__all__ = ["nav_group", "render_compare_html", "render_episode_html", "render_index_html"]
+__all__ = ["AUCTION_INDEX_COLUMNS", "INDEX_COLUMNS", "nav_group", "render_auction_episode_html",
+           "render_compare_html", "render_episode_html", "render_index_html"]
 
 
 _MARKDOWN = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
@@ -682,7 +684,14 @@ def render_episode_html(payload: dict) -> str:
 
     The top bar carries the run name, the episode picker, and the quick read; where the picker's contents go is a
     marker the exporter fills once every page of the run is known (see :func:`~.chrome.nav_group`), so a page
-    rendered on its own is still complete — it simply has nothing to navigate to."""
+    rendered on its own is still complete — it simply has nothing to navigate to.
+
+    An AUCTION payload takes :func:`render_auction_episode_html` instead: an auction has no deal space, so the
+    frontier chart, the solution-concept legend, the regret strip and the ballot table have nothing to draw,
+    and the four panels of design.md §10 stand in their place. Everything shared — the shell, the census and
+    vintage badges, the prompt audit, the transcript — is the same code on both paths."""
+    if (payload.get("auction") or payload.get("scenario_family") == "auction") and not payload.get("game"):
+        return render_auction_episode_html(payload)
     ep = payload.get("episode") or {}
     game = payload.get("game")
     oracles = payload.get("oracle_names") or []
@@ -743,6 +752,75 @@ def render_episode_html(payload: dict) -> str:
                             + vintage_badge(payload.get("vintage")) + budget_badge(payload.get("budget")),
                             brand_title="back to the run index"),
                      body, payload, JS + "\n" + JS_EPISODE)
+
+
+# ---------------------------------------------------------------------------- auction episode page --
+def render_auction_episode_html(payload: dict) -> str:
+    """One self-contained interactive page for one auction episode.
+
+    Sections, in order: the auction summary strip; the census strip; the staged bid ladder; the per-lot
+    allocation strip; the winner/payment/surplus panel; the message graph; the per-turn counterfactual table;
+    the system-prompt audit; and the transcript. The side panel carries the mechanism, the five public cards,
+    the lot catalogue, the per-stage private draws, the public chat, and the reading guide.
+
+    Reached through :func:`render_episode_html`, so a caller never has to know which kind of episode it holds.
+    """
+    ep = payload.get("episode") or {}
+    auction = payload.get("auction") or {}
+    geo = auction.get("geometry") or {}
+    mech = geo.get("mechanism") or {}
+    ring = geo.get("ring") or {}
+    ring_banner = ("<div class='warn'><b>INSTRUCTED RING — not poolable with any neutral cell.</b> The seats "
+                   f"named {_e(ring.get('members'))} were told in the prompt that they have agreed to "
+                   "coordinate their bidding. That instruction is quarantined from the frozen prompt set, and "
+                   "no episode carrying it may be compared with a coordination-neutral one.</div>"
+                   if ring.get("instructed") else "")
+    body = f"""<h1>{_e(ep.get('scenario'))} {_e(mech.get('family'))} &mdash;
+ <code>{_e(ep.get('episode_id'))}</code></h1>
+{_meta_pills(payload)}{_source_links(payload)}
+{vintage_banner(payload.get('vintage'))}
+{ring_banner}
+{auction_summary_strip(payload)}{census_strip(payload.get('census'))}
+{budget_note(payload.get('budget'))}
+<div class='layout'><div>
+{auction_body(payload)}
+<div class='detail' id='ladder-detail'></div>
+{_system_prompt_audit(payload)}
+<section class='card'><h2>Transcript</h2>
+ <div class='sub'>Every panel is expandable: the reasoning recorded for the turn, the exact prompt the seat saw,
+ and the raw turn text. The rail below is every turn, coloured by what the seat did — click a chip to jump to
+ it. What each computable rule would have played at the same turn is in the counterfactual table above; press
+ <kbd>v</kbd> to get there.</div>
+ <div class='bar'><button id='expand-all'>Expand all panels</button>
+  <button id='collapse-all'>Collapse all</button>
+  <span class='sub muted'>or press <kbd>e</kbd> / <kbd>c</kbd>; <kbd>j</kbd> <kbd>k</kbd> walk the turns</span>
+ </div>
+ <div id='turns'></div></section>
+</div><aside>{auction_setup_panel(payload)}
+<section class='card'><h2>The public record</h2>
+ <div class='sub'>Every message published to the table, and the binding move beside it. Private scratchpads are
+ not here.</div>{_chat_bubbles(payload)}</section>
+<section class='card'><h2>How to read this page</h2>{auction_info_panel()}</section>
+</aside></div>"""
+    return _document(f"{ep.get('episode_id')} — auction episode",
+                     topbar(_e(ep.get("cell") or ep.get("scenario") or "run"), "index.html",
+                            _auction_quick_stats(payload) + vintage_badge(payload.get("vintage"))
+                            + budget_badge(payload.get("budget")),
+                            brand_title="back to the run index"),
+                     body, payload, JS + "\n" + JS_AUCTION)
+
+
+def _auction_quick_stats(payload: dict) -> str:
+    """The two-or-three-number read in an auction page's top bar: the format, efficiency, and suppression."""
+    out = payload.get("outcome") or {}
+    mech = ((payload.get("auction") or {}).get("geometry") or {}).get("mechanism") or {}
+    bits = [f"<span><span class='k'>format</span> <b>{_e(mech.get('family'))}</b></span>",
+            f"<span><span class='k'>efficiency</span> <b>{_num(out.get('mean_efficiency'))}</b></span>",
+            f"<span><span class='k'>suppression</span> <b>{_num(out.get('mean_suppression'))}</b></span>",
+            f"<span><span class='k'>turns</span> <b>{len(payload.get('turns') or [])}</b></span>"]
+    if out.get("api_silence"):
+        bits.append(f"<span class='neg'><span class='k'>api silence</span> <b>{out['api_silence']}</b></span>")
+    return "".join(bits)
 
 
 # -------------------------------------------------------------------------------- comparison page --
@@ -881,6 +959,20 @@ INDEX_COLUMNS = [("page", "label", "link"), ("model", "model", "text"), ("arm", 
                  ("hazards", "hazards", "hazards"),
                  ("score Δ", "score_diff", "bar"), ("total regret", "regret", "num")]
 
+#: The AUCTION index's columns. A different set rather than a superset, because half of the negotiation columns
+#: (outcome deal / dist NBS / USW / worst-off / total regret) have no auction analogue and would be an em-dash
+#: field the length of the table. Difficulty, its tags, and the collusion-onset stage are sortable here per
+#: design.md §10; ``suppression`` and ``efficiency`` are the two the campaign reads first, so they lead.
+AUCTION_INDEX_COLUMNS = [("page", "label", "link"), ("cell", "cell", "text"), ("arm", "arm", "text"),
+                         ("format", "family", "text"), ("channel", "channel", "text"),
+                         ("T", "horizon", "num"), ("instance", "instance", "text"),
+                         ("difficulty", "difficulty", "num"), ("parameter tags", "difficulty_tags", "tags"),
+                         ("seed", "seed", "num"), ("efficiency", "efficiency", "bar"),
+                         ("suppression", "suppression", "num"), ("rev / bench", "revenue_ratio", "num"),
+                         ("onset", "onset", "onset"), ("messages", "messages", "num"),
+                         ("cf agreement", "cf_agreement_pct", "num"),
+                         ("fabricated", "fabricated_pct", "pct"), ("hazards", "hazards", "hazards")]
+
 
 def _index_cell(row: dict, key: str, kind: str, scale: float) -> str:
     """One index cell, carrying a ``data-sort`` value so the browser sorts on the NUMBER, not on the string it is
@@ -891,6 +983,13 @@ def _index_cell(row: dict, key: str, kind: str, scale: float) -> str:
     if kind == "deal":
         return (f"<td data-sort='{1 if row.get('deal') else 0}'>"
                 f"{'deal' if row.get('deal') else '<span class=neg>no deal</span>'}</td>")
+    if kind == "onset":
+        # A censored episode is the ABSENCE of an onset event, not an event at stage 0, so it sorts to the far
+        # end rather than to the bottom of the numeric range — which is exactly the mistake that would make a
+        # column of censored rows look like the earliest onsets in the campaign.
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            return "<td data-sort='999' class='muted'>censored</td>"
+        return f"<td data-sort='{v}'><span class='flag'>stage {int(v)}</span></td>"
     if kind == "visibility":
         label = str(v or "PRIVATE").upper()
         return f"<td data-sort='{_e(label)}'><span class='visibility'>{_e(label)}</span></td>"
@@ -959,25 +1058,33 @@ def _difficulty_correlation(rows: list[dict]) -> str:
             "Positive means the compared condition gains more on harder sets.</div>")
 
 
-def render_index_html(rows: list[dict], title: str, note: str = "", readme_markdown: str = "") -> str:
+def render_index_html(rows: list[dict], title: str, note: str = "", readme_markdown: str = "",
+                      columns: list[tuple] | None = None) -> str:
     """A run index: one row per generated page, sortable on every column and filterable by text, outcome, and
     whether the engine fabricated any turns.
 
     Sorting and filtering are client-side over the rows already in the document — there is no second copy of the
     data in a JSON blob, so a 200-episode index stays a small file and still reads correctly with scripting off.
     The row count of what survives a filter is always on screen, because a filter that silently hides rows is how
-    a reader concludes a run has fewer episodes than it has."""
-    scale = max((abs(r["primary"]) for r in rows if isinstance(r.get("primary"), (int, float))), default=0.0)
-    head = "".join(f"<th data-sort scope='col'>{_e(h)}</th>" for h, _, _ in INDEX_COLUMNS)
+    a reader concludes a run has fewer episodes than it has.
+
+    ``columns`` selects the column set, defaulting to :data:`INDEX_COLUMNS` (the negotiation one). Pass
+    :data:`AUCTION_INDEX_COLUMNS` for an auction run, whose rows carry a different measure set entirely — the
+    scale for the ``bar`` columns is taken from whichever key the first ``bar`` column names, so a caller does
+    not have to supply it."""
+    columns = columns if columns is not None else INDEX_COLUMNS
+    bar_key = next((k for _, k, kind in columns if kind == "bar"), "primary")
+    scale = max((abs(r[bar_key]) for r in rows if isinstance(r.get(bar_key), (int, float))), default=0.0)
+    head = "".join(f"<th data-sort scope='col'>{_e(h)}</th>" for h, _, _ in columns)
     body = []
     for r in rows:
         # The filter's haystack is every column plus the lower-severity hazard notes, which share the hazard
         # column's cell but not its key — a reader searching "budget" must still find them.
-        hay = " ".join([*(str(r.get(k) or "") for _, k, _ in INDEX_COLUMNS), str(r.get("hazard_notes") or "")])
+        hay = " ".join([*(str(r.get(k) or "") for _, k, _ in columns), str(r.get("hazard_notes") or "")])
         body.append(f"<tr data-hay=\"{_e(hay)}\" data-deal='{1 if r.get('deal') else 0}' "
                     f"data-fabricated='{r.get('fabricated_pct') or 0}' "
                     f"data-hazards='{len([f for f in str(r.get('hazards') or '').split('·') if f.strip()])}'>"
-                    + "".join(_index_cell(r, k, kind, scale) for _, k, kind in INDEX_COLUMNS) + "</tr>")
+                    + "".join(_index_cell(r, k, kind, scale) for _, k, kind in columns) + "</tr>")
     table = (f"<section class='card'>{_difficulty_correlation(rows)}<div class='filterbar'>"
              "<input type='search' id='idx-search' placeholder='Filter by episode, model, arm, instance…' "
              "aria-label='filter the table'>"
