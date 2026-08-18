@@ -18,6 +18,7 @@ forking, budgets as stop conditions, reservation gating, persistence, and replay
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import threading
@@ -30,7 +31,7 @@ from interlens.message import Message
 from interlens.participant import Participant
 from interlens.arena import (BatchedEpisodePool, EMPTY_TURN_PLACEHOLDER, EpisodePool, EpisodeStore,
                              GenerationFailureBudgetExceeded, check_reasoning_leak, gen_failures,
-                             replay_episode, rescore)
+                             replay_episode, rescore, truncation_budget, turn_signatures)
 from interlens.arena.scenarios import InfoRelay, Negotiation
 
 
@@ -468,6 +469,68 @@ def test_gen_failures_reads_legacy_episodes_and_spares_genuine_model_silence():
 	# because a non-thinking local model's raw completion equals its content and record_turn stores None.
 	healthy_local = {"idx": 4, "seat": "Casey", "content": "a real proposal", "n_tokens_out": 40, "raw": None}
 	assert gen_failures({"turns": [healthy_local]}) == []
+
+
+def test_truncation_is_read_off_the_effective_budget_not_the_protocol_cap():
+	"""``cap`` is what the protocol asked for; ``effective_cap`` is what the request ran under, and only the second
+	one may be compared against ``n_tokens_out``. An ``APIParticipant`` with a ``turn_token_floor`` raises the
+	request, so the naive comparison read 450 of 450 flagged turns of the frozen five-arm Opus corpus as cap hits
+	when every one of them had finished on its own (``end_turn``, up to 8,545 tokens against a stored 2,048)."""
+	over_cap_api = {"content": "a long but complete turn", "n_tokens_out": 8545, "cap": 2048,
+	                "effective_cap": 16384, "stop_reason": "end_turn", "parse_ok": True}
+	assert truncation_budget(over_cap_api) == 16384
+	assert "truncated" not in turn_signatures(over_cap_api)
+	# a real API cap hit is still a cap hit — the stop reason is authoritative whatever the budget says
+	assert "truncated" in turn_signatures(dict(over_cap_api, stop_reason="max_tokens"))
+	# and a turn that genuinely reached its raised budget is truncated on the token clause alone
+	assert "truncated" in turn_signatures(dict(over_cap_api, n_tokens_out=16384))
+
+
+def test_truncation_falls_back_to_stop_reason_on_pre_v13_records():
+	"""Millions of stored turns predate ``effective_cap``, and on those the recorded ``cap`` cannot be trusted for a
+	hosted-API turn. The fallback keeps the token comparison for turns with NO ``stop_reason`` — local
+	``ModelParticipant``s, the only population it was ever written for — and defers to the stop reason otherwise."""
+	legacy_api = {"content": "a long but complete turn", "n_tokens_out": 8545, "cap": 2048,
+	              "stop_reason": "end_turn", "parse_ok": True}
+	assert truncation_budget(legacy_api) == 0                      # nothing honest to compare against
+	assert "truncated" not in turn_signatures(legacy_api)
+	assert "truncated" in turn_signatures(dict(legacy_api, stop_reason="max_tokens"))
+	# a legacy LOCAL turn is unchanged: no stop_reason, so the stored cap is the budget it really ran under
+	legacy_local = {"content": "cut off mid-sentence", "n_tokens_out": 2048, "cap": 2048,
+	                "stop_reason": None, "parse_ok": True}
+	assert truncation_budget(legacy_local) == 2048
+	assert "truncated" in turn_signatures(legacy_local)
+	assert "truncated" not in turn_signatures(dict(legacy_local, n_tokens_out=305))
+	# cap_floor is how a legacy record is audited against a budget known only from its run manifest
+	assert truncation_budget(legacy_api, cap_floor=16384) == 16384
+	assert "truncated" not in turn_signatures(legacy_local, cap_floor=32768)
+	# an unrecorded cap (0) never counts as truncation, then or now
+	assert truncation_budget({"n_tokens_out": 900, "cap": 0}) == 0
+	assert "truncated" not in turn_signatures({"content": "x", "n_tokens_out": 900, "cap": 0, "parse_ok": True})
+
+
+def test_record_turn_stores_the_effective_budget_a_participant_reports(tmp_path):
+	"""End to end: a participant that raises the engine's cap reports the raised number, ``record_turn`` stores it
+	beside the protocol cap, and the stored turn is then screenable without knowing anything about the run."""
+
+	class FlooredSeat(ScriptedSeat):
+		"""An APIParticipant-shaped seat: it generates past the cap it was handed, because it raised it."""
+
+		def generate(self, view, **kwargs):
+			message = super().generate(view, **kwargs)
+			message.metadata.update({"effective_cap": 16384, "n_tokens": 8545, "stop_reason": "end_turn"})
+			return message
+
+	scen = InfoRelay()
+	ep = run(EpisodePool(EpisodeStore(tmp_path)).run_episode(
+		scen, scen.generate_instance(0, 5), "team", FlooredSeat(final_text="done")))
+	assert ep.turns and all(t.effective_cap == 16384 for t in ep.turns)
+	assert all(t.cap < t.effective_cap for t in ep.turns)          # the protocol number is still on the record
+	assert not any("truncated" in turn_signatures(dataclasses.asdict(t)) for t in ep.turns)
+	# a participant that reports nothing (every local model) records the engine's own cap as the effective one
+	plain = run(EpisodePool(EpisodeStore(tmp_path)).run_episode(
+		scen, scen.generate_instance(0, 6), "team", ScriptedSeat(final_text="done")))
+	assert plain.turns and all(t.effective_cap == t.cap for t in plain.turns)
 
 
 def test_episode_pool_records_a_generation_failure_as_an_error_and_never_fabricates(tmp_path):

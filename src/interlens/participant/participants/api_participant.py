@@ -300,7 +300,8 @@ class APIParticipant(Functional, Participant):
 		text = client(system=system, messages=messages, model=self.model_id,
 		              max_tokens=max_tokens, temperature=self.temperature, **kw)
 		self._validate_openrouter_response(text)
-		return Message(author=self.name, content=str(text), metadata=self._usage_metadata(text))
+		return Message(author=self.name, content=str(text),
+		               metadata=self._usage_metadata(text) | {"effective_cap": max_tokens})
 
 	def generate_batch(self, views: list[list[dict]], *, turn: int | None = None,
 	                   group_seed: int | None = None, max_new_tokens: int | None = None) -> list[Message]:
@@ -337,7 +338,7 @@ class APIParticipant(Functional, Participant):
 		for text in texts:
 			self._validate_openrouter_response(text)
 		return [Message(author=self.name, content=str(t),
-		                metadata=self._usage_metadata(t) | {"batched": True})
+		                metadata=self._usage_metadata(t) | {"batched": True, "effective_cap": max_tokens})
 		        for t in texts]
 
 	def _cached_view(self, view: list[dict]) -> tuple:
@@ -365,7 +366,13 @@ class APIParticipant(Functional, Participant):
 	def _effective_cap(self, max_new_tokens: int | None) -> int:
 		"""The output-token cap actually sent: the caller's ``max_new_tokens`` (else this participant's
 		``max_tokens``), raised to ``turn_token_floor`` when one is set — the thinking-aware guard against an
-		external per-turn cap starving a reasoning model's visible output (see the field docstring)."""
+		external per-turn cap starving a reasoning model's visible output (see the field docstring).
+
+		Every turn reports this number back as ``Message.metadata["effective_cap"]`` (the engine's
+		``arena.engine.EFFECTIVE_CAP_KEY``), which is the only way a stored turn can be screened for truncation:
+		the engine records the cap it *asked* for, so comparing ``n_tokens_out`` against that alone reads a raised
+		request's ordinary long turns as cap hits — measured at 450 false positives out of 450 on the frozen
+		five-arm Opus corpus, generating up to 8,545 tokens against a recorded cap of 2,048."""
 		cap = max_new_tokens if max_new_tokens is not None else self.max_tokens
 		if self.turn_token_floor is not None:
 			cap = max(cap, self.turn_token_floor)

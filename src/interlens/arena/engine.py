@@ -95,6 +95,11 @@ logger = logging.getLogger(__name__)
 GEN_FAILED_KEY = "gen_failed"
 GEN_FAILURE_KEY = "gen_failure"
 
+# The metadata key by which a participant reports the output budget it ACTUALLY requested, when that differs from
+# the cap the engine handed it (``APIParticipant`` raises a cap to its ``turn_token_floor``). ``record_turn`` stores
+# it as ``TurnRecord.effective_cap``; absent, the engine's own cap is the effective one.
+EFFECTIVE_CAP_KEY = "effective_cap"
+
 # How many times the batched driver re-attempts a SINGLE request that failed transiently, after batch splitting
 # has already narrowed the wave to that one request, before giving up and fabricating a turn. The failures worth
 # retrying here are transient by construction (a cuDNN graph blip, a fragmentation-driven OOM that
@@ -215,7 +220,32 @@ TURN_SIGNATURES = ("placeholder", "gen_failed", "empty_gen", "truncated", "noop_
 TRUNCATED_STOPS = frozenset({"max_tokens", "length"})
 
 
-def turn_signatures(turn: dict, *, engine_fabricated: bool | None = None) -> set[str]:
+def truncation_budget(turn: dict, *, cap_floor: int = 0) -> int:
+	"""The output budget one stored turn's ``n_tokens_out`` may honestly be compared against; ``0`` for "none, so
+	read truncation from ``stop_reason`` alone".
+
+	Two stored fields look like this number and only one is it. ``cap`` is what the PROTOCOL asked for, and a
+	participant may raise it before sending — ``APIParticipant`` sends ``max(cap, turn_token_floor)`` — so on a
+	hosted-API turn the stored ``cap`` can be a factor of eight below the budget the request ran under. Comparing
+	against it manufactures truncation out of ordinary long turns: measured over the frozen five-arm Opus corpus,
+	all 450 turns a ``n_tokens_out >= cap`` screen flagged carry ``stop_reason: end_turn`` and *exceed* the stored
+	cap, up to 8,545 tokens against 2,048 (0.208 reported truncation against 0.000 real).
+
+	So ``effective_cap`` (v1.3+) is used when present. On a pre-v1.3 record it is absent and the difference was
+	never stored, so the fallback reserves ``cap`` for turns carrying **no** ``stop_reason`` — which is exactly the
+	population the comparison was written for, since local ``ModelParticipant``\\ s never populate one and hosted
+	providers always do.
+
+	``cap_floor`` is the escape hatch for a legacy run whose real budget is known from outside the record (a
+	manifest's ``api_request_config.turn_token_floor``, or a ``--turn-max-tokens`` the stored caps understate): it
+	raises the returned budget, so a turn only counts as a cap hit if it reached the budget the run really had."""
+	budget = turn.get(EFFECTIVE_CAP_KEY)
+	if budget is None:
+		budget = turn.get("cap") if turn.get("stop_reason") is None else 0
+	return max(int(budget or 0), int(cap_floor or 0))
+
+
+def turn_signatures(turn: dict, *, engine_fabricated: bool | None = None, cap_floor: int = 0) -> set[str]:
 	"""Every failure signature carried by one stored turn (a ``TurnRecord.to_json()`` dict); ``set()`` if healthy.
 
 	:func:`gen_failures` answers one question — did the ENGINE fabricate this turn — and a run can be perfectly
@@ -231,9 +261,11 @@ def turn_signatures(turn: dict, *, engine_fabricated: bool | None = None) -> set
 	  behaviour and the fix is a larger cap or thinking disabled. **Measured at 24.4% of turns for a thinking-on
 	  Qwen3-32B at a 2,048-token cap, against 0.0% with thinking off**, while ``fabrication`` correctly read
 	  0.000 throughout — the engine did its job and a quarter of the turns were still silent.
-	- ``truncated`` — a genuine cap hit. Note that local ``ModelParticipant``\\ s never populate ``stop_reason``,
-	  so on local runs the ``n_tokens_out >= cap`` clause is the only one that fires; a ``cap`` of 0 means
-	  "unrecorded" in the schema and never counts as truncation.
+	- ``truncated`` — a genuine cap hit: a truncating ``stop_reason``, or output that reached the turn's budget as
+	  :func:`truncation_budget` resolves it (``cap_floor`` is passed straight through, for a legacy run whose real
+	  budget is only known from its manifest). The token clause is the only one that fires on local runs, which
+	  never populate ``stop_reason``, and it is deliberately NOT applied to a pre-v1.3 hosted-API turn, whose
+	  stored ``cap`` is the protocol's number rather than the one the request used.
 	- ``noop_action`` / ``parse_failed`` — behavioural symptoms reported alongside, NOT causes. ``noop_action``
 	  also fires on legitimate no-op play, and on some placeholder turns does not fire at all.
 
@@ -244,8 +276,8 @@ def turn_signatures(turn: dict, *, engine_fabricated: bool | None = None) -> set
 	tags: set[str] = set()
 	content = turn.get("content") or ""
 	tokens = int(turn.get("n_tokens_out") or 0)
-	cap = int(turn.get("cap") or 0)
-	if turn.get("stop_reason") in TRUNCATED_STOPS or (cap and tokens >= cap):
+	budget = truncation_budget(turn, cap_floor=cap_floor)
+	if turn.get("stop_reason") in TRUNCATED_STOPS or (budget and tokens >= budget):
 		tags.add("truncated")
 	if EMPTY_TURN_PLACEHOLDER in content:
 		tags.add("placeholder")
@@ -406,6 +438,12 @@ class EpisodeRun:
 			n_tokens_out=tokens_out, n_tokens_in=tokens_in,
 			stop_reason=message.metadata.get("stop_reason"),
 			cap=cap,
+			# The budget the request really ran under, which is what a truncation screen has to compare against:
+			# a participant reports it when it raised the engine's cap (``APIParticipant`` sends
+			# ``max(cap, turn_token_floor)``), and otherwise the engine's own cap is it. Stored separately from
+			# ``cap`` rather than replacing it, so the protocol's number stays auditable; ``None`` only when
+			# neither is known, which is the same "unrecorded" the schema gives ``cap == 0``.
+			effective_cap=(int(message.metadata.get(EFFECTIVE_CAP_KEY) or 0) or int(cap or 0)) or None,
 			raw=(raw if raw != text or think else None),
 			reasoning=reasoning, reasoning_provenance=provenance,
 			reasoning_tokens=int(message.metadata.get("reasoning_tokens") or 0),

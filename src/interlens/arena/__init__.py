@@ -46,7 +46,8 @@ from .actions import (Accept, Action, Deal, LEGALITY, Offer, OfferId, OfferRegis
                       Pass, Propose, Reject, SYNTAX, Walk, action_from_json, parse_action)
 from .oracles import Oracle, OracleRecord, OracleVerdict, annotate
 from .engine import (BatchedEpisodePool, EMPTY_TURN_PLACEHOLDER, EpisodePool, EpisodeRun,
-                     GenerationFailureBudgetExceeded, TURN_SIGNATURES, gen_failures, turn_signatures)
+                     GenerationFailureBudgetExceeded, TURN_SIGNATURES, gen_failures, truncation_budget,
+                     turn_signatures)
 from .refusal import RefusalLadder, is_refusal
 from .ratchet import DifficultyRatchet, found_level
 from .rollouts import RolloutConfigMismatch, RolloutSet, config_fingerprint, rollout
@@ -97,6 +98,9 @@ __all__ = [
 	# invisible to the fabrication gate, parse_ok, and an empty-content check alike
 	"turn_signatures",
 	"TURN_SIGNATURES",
+	# which of a stored turn's two recorded caps its output length may be compared against — the protocol's
+	# number is not always the request's, and confusing them manufactures truncation
+	"truncation_budget",
 	# API-side refusal recovery: the content-preserving re-render ladder and its detector
 	"RefusalLadder",
 	"is_refusal",

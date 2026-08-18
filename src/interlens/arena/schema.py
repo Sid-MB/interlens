@@ -43,7 +43,16 @@ from typing import Any
 # The version is the reliable way to ask "can I trust ``gen_failed == False`` on this file?" — on a v1.1-or-older
 # episode the field is simply absent, which is not the same as "generation succeeded", so screen those with
 # ``engine.gen_failures`` (it falls back to the legacy signature).
-SCHEMA_VERSION = "v1.2"
+#
+# v1.3 added ``TurnRecord.effective_cap``: the output budget the request was actually sent with, as opposed to
+# ``cap``, which is the protocol's number and may have been raised before the call (``APIParticipant`` sends
+# ``max(cap, turn_token_floor)``). ``None`` on every pre-v1.3 record, and that absence is load-bearing rather
+# than cosmetic: a truncation screen that compares ``n_tokens_out`` against a pre-v1.3 ``cap`` on a hosted-API
+# turn reads ordinary long turns as cap hits (measured: 450 of 450 flagged turns of the frozen five-arm Opus
+# corpus finished with ``stop_reason: end_turn`` having generated up to 8,545 tokens against a stored 2,048).
+# ``engine.truncation_budget`` is the one place that resolves the difference, and it needs ``None`` to tell a
+# legacy record from one that genuinely recorded no budget.
+SCHEMA_VERSION = "v1.3"
 
 # Neutral seat names, assigned in order (a scenario with n seats uses the first n).
 PERSONAS = ["Avery", "Blake", "Casey", "Devon", "Ember", "Flynn", "Greer", "Hollis"]
@@ -112,7 +121,14 @@ class TurnRecord:
 	n_tokens_out: int = 0
 	n_tokens_in: int = 0
 	stop_reason: str | None = None
-	cap: int = 0            # max_tokens this turn was generated under (0 = unrecorded)
+	cap: int = 0            # max_tokens the PROTOCOL asked for on this turn (0 = unrecorded)
+	# The output budget the request was actually sent with, which is not always ``cap``: a participant may raise an
+	# externally imposed cap before calling (``APIParticipant`` sends ``max(cap, turn_token_floor)`` so adaptive
+	# thinking cannot eat a small per-turn cap and return an empty turn). This is therefore the ONLY budget
+	# ``n_tokens_out`` may be compared against; ``cap`` records what the protocol asked for. ``None`` on pre-v1.3
+	# records, where the distinction was not stored — read it through ``engine.truncation_budget`` rather than
+	# directly, since that handles the legacy fallback.
+	effective_cap: int | None = None
 	raw: str | None = None  # raw completion incl. reasoning, when different from content
 	# The turn's reasoning record, first-class: whatever reasoning the provider returned (Anthropic thinking
 	# blocks incl. summarized ones; local <think> streams), with provenance marking completeness —
