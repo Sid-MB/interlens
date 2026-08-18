@@ -77,8 +77,22 @@ PRICING_BY_FAMILY: dict[str, tuple[str, ...]] = {
 VALUE_STRUCTURES: tuple[str, ...] = ("ipv", "apv", "interdep")
 
 #: The nested affordance ladder of design.md §3.4. Each rung ADDS a capability and removes none, so ``dm``
-#: retains broadcast.
-CHANNELS: tuple[str, ...] = ("silent", "broadcast", "dm", "dm_transfers")
+#: retains broadcast and ``dm_transfers_escrowed`` retains the unconditional transfer.
+#:
+#: ``dm_transfers_escrowed`` was added after the unconditional rung was measured and found DOMINATED: the ring
+#: smoke's seats priced it and declined it 28 times ("non-binding standdown + binding transfer = pure loss"),
+#: because an unconditional payment buys a promise the recipient need not keep. The escrowed rung adds a
+#: condition field, so a payment can be made contingent on the recipient taking no lot — which is what makes
+#: standing down purchasable and is the instrument the McAfee-McMillan knockout actually requires. The
+#: unconditional rung is retained as a theory-confirmed control rather than replaced.
+CHANNELS: tuple[str, ...] = ("silent", "broadcast", "dm", "dm_transfers", "dm_transfers_escrowed")
+
+#: Rungs carrying a private channel, rungs at which a ``transfer`` may be declared at all, and the subset at
+#: which a transfer may carry a CONDITION. Derived slices of :data:`CHANNELS` rather than three hand-written
+#: lists, so adding a rung cannot leave one of them behind.
+DM_CHANNELS: tuple[str, ...] = tuple(c for c in CHANNELS if c.startswith("dm"))
+TRANSFER_CHANNELS: tuple[str, ...] = tuple(c for c in CHANNELS if c.startswith("dm_transfers"))
+ESCROW_CHANNELS: tuple[str, ...] = tuple(c for c in CHANNELS if c.endswith("_escrowed"))
 
 #: Number of seats. Fixed by the five-seat program; participation is not an object of study (design.md §8).
 N_BIDDERS: int = 5

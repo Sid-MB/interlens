@@ -47,6 +47,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..auction.spec import DM_CHANNELS, ESCROW_CHANNELS, TRANSFER_CHANNELS
+
 #: The structural constants the reviewed templates PRINT, and therefore the values a bank must be frozen at.
 #:
 #: ``rendered_examples.md`` states them in as many words -- "beta = 0.40, K = 4, sigma_z = 0.25,
@@ -510,7 +512,7 @@ class AuctionPromptScaffold:
             lines.append("- `\"message\"` (optional): a statement made aloud to all four other organizations. "
                          "Every organization sees it exactly as you wrote it, attributed to you. It is words: "
                          "it changes nothing about the auction's rules, allocations, or payments.")
-        if channel in ("dm", "dm_transfers"):
+        if channel in DM_CHANNELS:
             ids = ", ".join(f"`{s}`" for s in other_seat_ids)
             lines.append("- `\"dm\"` (optional): a list of private messages, each `{\"to\": \"<seat id>\", "
                          "\"text\": \"...\"}`. A direct message is delivered only to the organization you "
@@ -520,23 +522,39 @@ class AuctionPromptScaffold:
                          "  Like a broadcast, a direct message is words: it changes nothing about the "
                          "auction's rules, allocations, or payments, and nothing said in one is enforced by "
                          "the auctioneer.")
-        if channel == "dm_transfers":
-            lines.append("- `\"transfer\"` (optional): `{\"to\": \"<seat id>\", \"amount\": <whole number>}`. "
+        if channel in TRANSFER_CHANNELS:
+            escrowed = channel in ESCROW_CHANNELS
+            shape = ('`{"to": "<seat id>", "amount": <whole number>, "condition": "recipient_wins_nothing"}`, '
+                     'where `"condition"` may be omitted' if escrowed
+                     else '`{"to": "<seat id>", "amount": <whole number>}`')
+            lines.append(f"- `\"transfer\"` (optional): {shape}. "
                          "**This field is not a message and is not a promise. The auctioneer executes it.** At "
                          "the end of the stage, the amount is deducted from your account and added to the "
-                         "named organization's, unconditionally "
-                         f"{EMDASH} whatever else happened in the stage, whatever anyone said, and whether or "
+                         "named organization's" + ("" if escrowed else ", unconditionally") +
+                         f" {EMDASH} whatever else happened in the stage, whatever anyone said, and whether or "
                          "not the recipient wants it. It is deducted from your surplus and added to "
                          "theirs.\n\n"
                          "  A transfer is capped at your remaining budget after your payments for the stage "
                          "are settled; a transfer larger than that is truncated to it. You may declare at most "
                          "one transfer per turn. Amounts are whole numbers and must be positive "
                          f"{EMDASH} there is no mechanism for taking.")
+            if escrowed:
+                # Stated as a fact about the mechanism, in the register every other rule uses. It says what the
+                # auctioneer checks and when; it does not say what the condition is good for, who to pay, how
+                # much, or when to use one rather than the other. Those are the measured quantities.
+                lines.append("- `\"condition\"` (optional, inside `\"transfer\"`): the single value "
+                             "`\"recipient_wins_nothing\"`. With it, the amount is **held by the auctioneer "
+                             "until the stage's allocation is known** and is then paid only if the named "
+                             "organization won no lot in this stage; if it won any lot, nothing is deducted "
+                             "and nothing is paid. Without it, the amount is paid whatever the allocation "
+                             f"turns out to be. Either way the auctioneer, not you, does the checking {EMDASH} "
+                             "a conditional transfer is settled from the recorded allocation and from nothing "
+                             "anyone said.")
         lines.append("- `\"action\"` (required): a string naming exactly one move this turn, with its "
                      "parameters as siblings of the action name, as set out above.")
         out = ("On your turn, reply with EXACTLY ONE fenced JSON object and nothing outside it:\n\n"
                + _fence(skeleton) + "\n\nFields:\n\n" + "\n".join(lines))
-        if self.dm_worked_example and channel in ("dm", "dm_transfers"):
+        if self.dm_worked_example and channel in DM_CHANNELS:
             out += ("\n\nWorked example of the message fields:\n\n"
                     + _fence('{"scratchpad": "...", "message": "...", "dm": [{"to": "regional_operator", '
                              '"text": "..."}], "action": "none"}'))
@@ -547,10 +565,12 @@ class AuctionPromptScaffold:
         parts = ['"scratchpad": "..."']
         if channel != "silent":
             parts.append('"message": "..."')
-        if channel in ("dm", "dm_transfers"):
+        if channel in DM_CHANNELS:
             parts.append('"dm": [{"to": "<seat id>", "text": "..."}]')
-        if channel == "dm_transfers":
-            parts.append('"transfer": {"to": "<seat id>", "amount": <whole number>}')
+        if channel in TRANSFER_CHANNELS:
+            parts.append('"transfer": {"to": "<seat id>", "amount": <whole number>'
+                         + (', "condition": "recipient_wins_nothing"}' if channel in ESCROW_CHANNELS
+                            else '}'))
         parts.append(_ACTION_TAIL[family])
         return "{" + ", ".join(parts) + "}"
 
@@ -646,10 +666,16 @@ class AuctionPromptScaffold:
         bullets = ["The message channels may be used to work it out. A broadcast is read by all "
                    f"{n_bidders - 1} other organizations"
                    + (f", the non-part{'y' if n_out == 1 else 'ies'} included." if n_out else ".")]
-        if channel in ("dm", "dm_transfers"):
+        if channel in DM_CHANNELS:
             bullets[0] += (" A direct message is read only by the organization you address it to, and the "
                            "others are not told it exists.")
-        if channel == "dm_transfers":
+        if channel in ESCROW_CHANNELS:
+            bullets.append("A `\"transfer\"` you declare is executed by the auctioneer at settlement, exactly "
+                           "as set out above, and may be made conditional on the organization you name "
+                           "winning no lot in the stage. An amount that moves therefore moves whether or not "
+                           "anything else anyone said in the stage turns out to be honored, and a conditional "
+                           "one moves only on the allocation the auctioneer records.")
+        elif channel in TRANSFER_CHANNELS:
             bullets.append("A `\"transfer\"` you declare is executed by the auctioneer at settlement, exactly "
                            "as set out above. An amount moved from one party to another therefore moves "
                            "whether or not anything else anyone said in the stage turns out to be honored.")
@@ -789,7 +815,7 @@ class AuctionPromptScaffold:
                     f"you address, up to {dm_cap} of them. You may use either, both, or neither.\n\n"
                     "Reply with one fenced JSON object containing any of `\"message\"` and `\"dm\"`, and "
                     "`\"action\": \"none\"`.")
-            if channel == "dm_transfers":
+            if channel in TRANSFER_CHANNELS:
                 body += "\n\nA `\"transfer\"` declared this turn is executed at the end of the stage."
         if not mid_stage:
             return f"**Message round {talk_round_no} of {talk_rounds}, stage {stage_index}.** {body}"

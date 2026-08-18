@@ -180,18 +180,41 @@ class DirectMessage(Action):
         return {"action": self.kind, "to": list(self.to), "text": self.text}
 
 
+#: The condition a transfer may be made contingent on, at the ``dm_transfers_escrowed`` rung. Exactly one is
+#: offered, and it is the one the theory needs: ``recipient_wins_nothing`` pays only if the seat being paid
+#: took no lot in the stage — i.e. it actually stood aside. That is the McAfee-McMillan knockout payment.
+#:
+#: Only one is offered on purpose. Each additional condition is a strategy the harness would be suggesting,
+#: and the arrangement the ring reaches is the measured quantity (docs/templates/ring_block.md's omissions
+#: table). ``None`` is the unconditional transfer, which stays available at every transfer rung.
+TRANSFER_CONDITIONS: tuple[str, ...] = ("recipient_wins_nothing",)
+
+
 @dataclass(frozen=True)
 class Transfer(Action):
-    """A side payment the harness EXECUTES at settlement. Available only under ``dm_transfers``; that single
-    switch is the strong-cartel / weak-cartel contrast [mcafee_mcmillan1992, pp. 582-589], because under
-    plain ``dm`` a promise to pay is words and nothing more."""
+    """A side payment the harness EXECUTES at settlement. Available only at a transfer rung; that switch is
+    the strong-cartel / weak-cartel contrast [mcafee_mcmillan1992, pp. 582-589], because under plain ``dm`` a
+    promise to pay is words and nothing more.
+
+    ``condition`` makes the payment CONTINGENT, and it exists because the unconditional form was measured and
+    found to be dominated. Reading the ring smoke's scratchpads, the seats priced the instrument and rejected
+    it correctly, 28 times in as many words — *"non-binding standdown + binding transfer = pure loss"*,
+    *"transfers are pure gifts"*, *"no transfer — unconditional, no value"*. An unconditional payment buys a
+    promise the recipient has no obligation to keep, so paying is strictly worse than not paying and the
+    strong-cartel case was never actually on the table. With ``condition="recipient_wins_nothing"`` the
+    auctioneer pays only if the recipient took no lot, which is what makes standing down PURCHASABLE and is
+    the instrument McAfee-McMillan's knockout requires.
+
+    ``None`` is the unconditional form, retained rather than replaced: it is now a theory-confirmed control
+    arm, and the channel ladder's rule is that each rung adds a capability and removes none."""
 
     kind: ClassVar[str] = "transfer"
     to: str
     amount: int
+    condition: str | None = None
 
     def to_json(self) -> dict:
-        return {"action": self.kind, "to": self.to, "amount": self.amount}
+        return {"action": self.kind, "to": self.to, "amount": self.amount, "condition": self.condition}
 
 
 _AUCTION_ACTIONS: dict[str, type] = {a.kind: a for a in
@@ -475,23 +498,43 @@ class TransferBook:
         self.declared: list[dict] = []
 
     def declare(self, transfer: Transfer, sender: str, *, stage: int) -> None:
-        """Record one declared transfer."""
+        """Record one declared transfer, with its condition if it carries one."""
         self.declared.append({"stage": stage, "sender": sender, "to": transfer.to,
-                              "amount": int(transfer.amount), "executed": False})
+                              "amount": int(transfer.amount), "condition": transfer.condition,
+                              "executed": False, "outcome": "pending"})
 
-    def settle(self, stage: int, capacity: dict[str, float]) -> dict[str, float]:
+    def settle(self, stage: int, capacity: dict[str, float], *, won_nothing=None) -> dict[str, float]:
         """Execute the stage's declared transfers against each sender's remaining ``capacity`` (budget minus
-        auction payments), in declaration order. Returns the net transfer per seat (positive = received)."""
+        auction payments), in declaration order. Returns the net transfer per seat (positive = received).
+
+        A CONDITIONAL transfer is escrowed until here and then executed only if its condition holds against the
+        realized allocation. ``won_nothing`` is the set of seat names that took no lot this stage, which is the
+        only thing ``recipient_wins_nothing`` needs; a conditional transfer settled without it is refused
+        rather than paid, because paying an unevaluated condition is the unconditional gift the condition
+        exists to avoid.
+
+        Every declaration records WHY it ended as it did in ``outcome`` — ``paid``, ``condition_unmet``, or
+        ``insufficient_capacity``. The distinction is the measurement: a ring that declares conditional
+        payments and sees them all lapse because nobody stood aside is a different finding from a ring that
+        never declares one, and both are different from a ring that cannot afford to."""
         net = {s: 0.0 for s in capacity}
         for rec in self.declared:
             if rec["stage"] != stage or rec["executed"]:
                 continue
             s, r, amt = rec["sender"], rec["to"], float(rec["amount"])
-            if s in capacity and r in net and capacity[s] >= amt > 0:
-                capacity[s] -= amt
-                net[s] -= amt
-                net[r] += amt
-                rec["executed"] = True
+            if not (s in capacity and r in net and amt > 0):
+                continue
+            if rec.get("condition") == "recipient_wins_nothing" and r not in (won_nothing or ()):
+                rec["outcome"] = "condition_unmet"
+                continue
+            if capacity[s] < amt:
+                rec["outcome"] = "insufficient_capacity"
+                continue
+            capacity[s] -= amt
+            net[s] -= amt
+            net[r] += amt
+            rec["executed"] = True
+            rec["outcome"] = "paid"
         return net
 
     def to_json(self) -> dict:
@@ -541,7 +584,14 @@ def parse_envelope(text: str | None) -> TurnEnvelope:
     tr = obj.get("transfer")
     if isinstance(tr, dict) and tr.get("to") is not None:
         try:
-            env.transfer = Transfer(to=str(tr["to"]), amount=int(tr["amount"]))
+            # An unrecognised condition is NOT silently dropped to `None`: that would turn a seat's attempt to
+            # buy a stand-down into an unconditional gift, i.e. into the exact instrument it was declining.
+            # The whole transfer is refused instead, and the seat is told so by the retry.
+            cond = tr.get("condition") or tr.get("if")
+            cond = str(cond) if cond is not None else None
+            if cond is not None and cond not in TRANSFER_CONDITIONS:
+                raise ValueError(f"unknown transfer condition {cond!r}")
+            env.transfer = Transfer(to=str(tr["to"]), amount=int(tr["amount"]), condition=cond)
         except (KeyError, TypeError, ValueError):
             env.transfer = None
     return env

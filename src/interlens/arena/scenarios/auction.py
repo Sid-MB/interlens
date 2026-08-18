@@ -54,7 +54,8 @@ from ..auction import priors
 from ..auction.allocation import Allocation, ValueModel, sealed_single_outcome
 from ..auction.benchmarks import stage_benchmark
 from ..auction.metrics import StageOutcome, stage_metrics
-from ..auction.spec import AuctionSpec, Mechanism, RingSpec, card_scramble_seed, scramble_public_cards
+from ..auction.spec import (DM_CHANNELS, ESCROW_CHANNELS, TRANSFER_CHANNELS, AuctionSpec, Mechanism,
+                            RingSpec, card_scramble_seed, scramble_public_cards)
 from ..engine import EMPTY_TURN_PLACEHOLDER
 from ..scenario import Scenario
 from ..schema import Instance, SeatRequest
@@ -518,11 +519,11 @@ class AuctionScenario(Scenario):
                                         "sender": name, "text": env.message.strip()})
             public.append(env.message.strip())
             state["hygiene"]["broadcasts"] += 1
-        if deliver and spec.channel in ("dm", "dm_transfers"):
+        if deliver and spec.channel in DM_CHANNELS:
             for dm in env.dms:
                 made = state["dm"].route(dm, name, stage=stage, round=rnd, phase=state["phase"])
                 state["hygiene"]["dms"] += len(made)
-        if deliver and spec.channel == "dm_transfers" and env.transfer is not None:
+        if deliver and spec.channel in TRANSFER_CHANNELS and env.transfer is not None:
             if env.transfer.amount > 0 and env.transfer.to in state["seat_names"] \
                     and env.transfer.to != name:
                 state["transfers"].declare(env.transfer, name, stage=stage)
@@ -772,9 +773,14 @@ class AuctionScenario(Scenario):
         alloc = Allocation(tuple(winner_of))
         bundle_values = np.array([vm.bundle_value(i, alloc.bundle(i)) for i in range(n)])
         transfer_net = {}
-        if spec.channel == "dm_transfers":
+        if spec.channel in TRANSFER_CHANNELS:
             capacity = {state["seat_names"][i]: float(draw.budgets[i]) - float(payments[i]) for i in range(n)}
-            transfer_net = state["transfers"].settle(stage, capacity)
+            # Which seats took NO lot, which is the whole of what `recipient_wins_nothing` needs. Evaluated
+            # HERE, after allocation and before payment nets out, because that is what makes the payment an
+            # escrow rather than a gift: the seat declares it during the stage, and the auctioneer only pays
+            # once the allocation shows the recipient actually stood aside.
+            won_nothing = {state["seat_names"][i] for i in range(n) if i not in winner_of}
+            transfer_net = state["transfers"].settle(stage, capacity, won_nothing=won_nothing)
 
         own = {}
         ids = self._lot_ids(spec)

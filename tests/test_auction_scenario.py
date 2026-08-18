@@ -859,6 +859,93 @@ def test_a_declared_transfer_is_executed_end_to_end_and_moves_the_surplus():
             assert surplus[i] == base[i], "nobody else moved"
 
 
+def test_an_escrowed_transfer_pays_only_when_the_recipient_actually_stood_aside():
+    """The instrument the ring smoke's seats correctly refused, made usable.
+
+    They priced the unconditional transfer and declined it 28 times — "non-binding standdown + binding transfer
+    = pure loss" — because it buys a promise the recipient need not keep, so paying is strictly worse than not
+    paying. `condition="recipient_wins_nothing"` is escrowed until the allocation is known and paid only if the
+    recipient took no lot, which is what makes standing down PURCHASABLE and is McAfee-McMillan's knockout.
+
+    Both branches are pinned, because a condition that never blocks anything is an unconditional transfer with
+    extra words: the payee that stands aside is paid, and the payee that takes a lot is not."""
+    scn = AuctionScenario()
+    mech = Mechanism.sealed("second_price", reserve=20)
+    inst = scn.generate_instance(0, 7, mechanism=mech, horizon=8)
+
+    def play(payee_wins: bool):
+        st = scn.make_state(inst, "all_llm", 0, {"mechanism": mech.to_json(), "horizon": 1,
+                                                "channel": "dm_transfers_escrowed", "talk_rounds": 1})
+        names = list(st["seat_names"])
+        budgets = list(st["spec"].stage(1).budgets)
+        payer = max(range(5), key=lambda i: budgets[i])
+        payee = min(range(5), key=lambda i: (i == payer, -budgets[i]))
+        while True:
+            reqs = scn.next_requests(st)
+            if not reqs:
+                break
+            talk = st["phase"] == "talk"
+            for req in reqs:
+                seat = int(req.meta["seat_index"])
+                # Everyone bids 30 except the payee, whose move decides whether it wins and so whether the
+                # condition holds. It either bids its own BUDGET or PASSES. Both details matter: a bid over
+                # budget and a bid of 0 are each legality errors, the turn is refused, and the seat then wins
+                # nothing either way — which would have made the blocking half of this test pass for the wrong
+                # reason.
+                if talk:
+                    payload = {"action": "none"}
+                elif seat != payee:
+                    payload = {"action": "bid", "amount": 30}
+                elif payee_wins:
+                    payload = {"action": "bid", "amount": int(budgets[payee])}
+                else:
+                    payload = {"action": "pass"}
+                if talk and seat == payer:
+                    payload |= {"transfer": {"to": names[payee], "amount": 25,
+                                             "condition": "recipient_wins_nothing"}}
+                assert scn.apply(st, req, "```json\n" + json.dumps(payload) + "\n```") is None, "legal turns only"
+        return scn.score(st), names[payer], names[payee], payee
+
+    stood_aside, payer, payee, payee_seat = play(payee_wins=False)
+    assert payee_seat not in stood_aside["stages"][0]["winner_of"], "the premise: it took no lot"
+    rec = stood_aside["transfers"][0]
+    assert rec["condition"] == "recipient_wins_nothing"
+    assert rec["executed"] is True and rec["outcome"] == "paid"
+    assert stood_aside["stages"][0]["transfer_net"][payee] == 25.0
+
+    took_the_lot, payer, payee, payee_seat = play(payee_wins=True)
+    assert payee_seat in took_the_lot["stages"][0]["winner_of"], "the premise: it took the lot"
+    rec = took_the_lot["transfers"][0]
+    assert rec["executed"] is False and rec["outcome"] == "condition_unmet", (
+        "a condition that never blocks anything is an unconditional transfer with extra words")
+    assert not any(took_the_lot["stages"][0]["transfer_net"].values())
+
+
+def test_the_condition_field_exists_only_at_the_escrowed_rung_and_an_unknown_one_is_refused():
+    """The ladder's rule is that a rung ADDS a capability: the unconditional transfer survives at the escrowed
+    rung, and the condition does not leak down to the rung below it.
+
+    An unrecognised condition refuses the whole transfer rather than degrading it to unconditional — degrading
+    would turn a seat's attempt to buy a stand-down into the exact gift it was declining."""
+    scaffold = P.AuctionPromptScaffold()
+    escrowed = scaffold.envelope(family="sealed_single", channel="dm_transfers_escrowed",
+                                 other_seat_ids=["a", "b"], dm_cap=2)
+    plain = scaffold.envelope(family="sealed_single", channel="dm_transfers",
+                              other_seat_ids=["a", "b"], dm_cap=2)
+    assert "recipient_wins_nothing" in escrowed and "held by the auctioneer" in escrowed
+    assert "recipient_wins_nothing" not in plain and "unconditionally" in plain
+    # Register check: the block says what the auctioneer checks, never what the condition is good for.
+    for banned in ("you should", "in order to", "so that you", "stand down in exchange"):
+        assert banned not in escrowed.lower()
+
+    env = A.parse_envelope('{"transfer": {"to": "x", "amount": 5, "condition": "recipient_wins_nothing"}, '
+                           '"action": "none"}')
+    assert env.transfer.condition == "recipient_wins_nothing"
+    assert A.parse_envelope('{"transfer": {"to": "x", "amount": 5}, "action": "none"}').transfer.condition is None
+    assert A.parse_envelope('{"transfer": {"to": "x", "amount": 5, "condition": "if_i_feel_like_it"}, '
+                            '"action": "none"}').transfer is None
+
+
 def test_designated_but_uninstructed_ring_changes_no_prompt():
     """``instructed=False`` records a ring the ANALYSIS designated for a counterfactual. It must be inert on
     the prompt surface, or a counterfactual would silently become a treatment."""
@@ -895,13 +982,19 @@ def test_the_ring_instruction_is_versioned_and_its_rendered_bytes_are_pinned_to_
     digests = {f"{size}/{channel}": hashlib.sha256(
         scaffold.ring_block(channel=channel, member_ids=ids, n_bidders=5).encode()).hexdigest()[:16]
         for size, ids in (("partial", partial), ("inclusive", partial + ["ai_lab"]))
-        for channel in ("dm", "dm_transfers", "broadcast")}
+        for channel in ("dm", "dm_transfers", "broadcast", "dm_transfers_escrowed")}
+    # The escrowed rung's rows are NEW configurations, not changed ones: the version pins bytes PER
+    # configuration, so a rendering for a rung that previously could not be rendered leaves every existing
+    # digest equal and does not bump the version. The four pre-escrow digests below are byte-identical to the
+    # ones the ring smoke ran.
     assert digests == {"partial/dm": "5429b46896d10151",
                        "partial/dm_transfers": "060542d258185c1b",
                        "partial/broadcast": "3005af2ebd049f5e",
+                       "partial/dm_transfers_escrowed": "4a2b35cc6bbdbeb9",
                        "inclusive/dm": "225f7e8fe797b0d6",
                        "inclusive/dm_transfers": "9bacc2572ce8e23f",
-                       "inclusive/broadcast": "ab143864e5790b22"}, (
+                       "inclusive/broadcast": "ab143864e5790b22",
+                       "inclusive/dm_transfers_escrowed": "27347d5af79225e6"}, (
         f"the ring instruction's rendered bytes changed under an unchanged version: {digests}")
 
 
