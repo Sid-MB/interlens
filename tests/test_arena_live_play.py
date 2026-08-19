@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # [implement: live-play/laneD] 2026-08-16
+# [implement: live-play/lobby-defaults] 2026-08-19
 """The live PLAY page: the episode view a person can act inside, and the badge that says who acted.
 
 Three things are worth pinning here and the rest follows from them:
@@ -94,6 +95,8 @@ def _snapshot(payload, awaiting=None, occupants=None):
                       # The session's own list of what it can build, which the kind picker is generated from.
                       "seat_kinds": ["llm", "rational", "oracle", "human"],
                       "models": [{"model_id": "claude-fable-5", "label": "Fable 5", "available": True},
+                                 {"model_id": "claude-opus-5", "label": "Opus 5", "available": True,
+                                  "default": True},
                                  {"model_id": "gone", "label": "Unavailable", "available": False}],
                       "policies": ["bayes-rational", "hardball"]}}
 
@@ -231,6 +234,19 @@ def test_the_swap_dock_offers_every_buildable_seat_kind_and_the_current_occupant
     assert not _missing(html, "model (API)", "rational policy", "omniscient oracle")
     assert "Fable 5" in html
     assert "Unavailable" not in html
+
+
+def test_handing_a_seat_to_a_model_offers_the_providers_default(payload):
+    """A seat that is not a model seat has no model of its own, and the browser would otherwise select whichever
+    option came first. The dock pre-selects the flagged model, and sends an EMPTY thinking mode so the session
+    resolves it to that model's default (thinking on wherever it is allowed) rather than forcing it off."""
+    html = render_live_html(_snapshot(payload))
+    rational = html.split("id='swap-model-2'")[1].split("</select>")[0]       # a rational seat, no model set
+    assert "value='claude-opus-5' selected" in rational
+    already = html.split("id='swap-model-1'")[1].split("</select>")[0]        # a seat already on a model keeps it
+    assert "value='claude-fable-5' selected" in already
+    from interlens.arena.live.assets import JS_LIVE
+    assert 'thinking: val("swap-thinking")' in JS_LIVE and 'val("swap-thinking") || "off"' not in JS_LIVE
 
 
 def test_the_kind_picker_comes_from_the_session_not_from_this_module(payload):

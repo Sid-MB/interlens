@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # [implement: live-play/lane0] 2026-08-16
+# [implement: live-play/lobby-defaults] 2026-08-19
 """The seam between the live server and whatever experiment supplies its games.
 
 The server knows how to run a negotiation live — stream it, block a seat on a browser, swap an occupant — and
@@ -30,7 +31,7 @@ Nothing here does any work. These are the shapes the four implementation lanes a
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 # What can sit in a seat. ``llm`` is a hosted or local model, ``rational``/``oracle`` are computable
@@ -44,6 +45,61 @@ SEAT_KINDS = ("llm", "rational", "oracle", "human", "scripted")
 #: a computable policy (``policy:bayes-rational``), which is the vocabulary the rest of the arena already uses.
 #: A kind with no entry keeps its own name, so a new seat kind gets a sensible label before it gets a mapping.
 _OCCUPANT_PREFIX = {"llm": "api", "rational": "policy"}
+
+#: Thinking modes best-first: which mode a model seat takes when nobody has said. Extended thinking is on
+#: WHEREVER the model accepts it, because a live game is watched rather than batched — a seat that reasons before
+#: it moves is the interesting one, and the token cost of one hand-played game is not what a budget cap is for.
+#: ``on`` (an explicit adaptive request) is preferred over ``auto`` (the model's own default, which happens to be
+#: adaptive on current Claude models) so the episode RECORDS the condition it played under rather than leaving it
+#: unset; ``off`` is last and is only ever chosen by a model that offers nothing else. A model's own
+#: ``thinking_modes`` still decides — this is a preference order over that list, never an addition to it.
+THINKING_PREFERENCE = ("on", "auto", "off")
+
+
+def _attr(model: Any, key: str, fallback: Any = None) -> Any:
+    """One field of a model description, whether it arrived as a :class:`ModelInfo` or as its ``to_json()`` dict.
+
+    The lobby renders from the dicts (that is what crosses the wire) and the session validates against the
+    objects, so the default-resolution helpers below have to read both or there would be two copies of the rule
+    that disagree at exactly the moment they matter."""
+    if isinstance(model, dict):
+        value = model.get(key, fallback)
+    else:
+        value = getattr(model, key, fallback)
+    return fallback if value is None else value
+
+
+def default_thinking(model: Any) -> str:
+    """The thinking mode a seat on this model starts in: the first of :data:`THINKING_PREFERENCE` the model
+    accepts, falling back to its first declared mode if it accepts none of them (a provider free to invent mode
+    names must still get a mode that model can take). ``model`` is a :class:`ModelInfo` or its wire dict; a
+    missing model resolves to ``"off"``, the only mode every backend has."""
+    modes = [str(m) for m in _attr(model, "thinking_modes", ()) or ()] if model else []
+    if not modes:
+        return "off"
+    return next((m for m in THINKING_PREFERENCE if m in modes), modes[0])
+
+
+def default_model_id(models: Any) -> str:
+    """Which model a seat that has just become an ``llm`` seat is pre-selected to.
+
+    The provider decides, by flagging one :class:`ModelInfo` with ``default=True`` — the lobby must not know the
+    name of anybody's favourite model, and an id hardcoded in the page would be a second place to edit every time
+    the frontier moves. Preference order, ties broken by list order: the flagged model if it can be used, then
+    any model that can be used, then the flagged one anyway, then the first entry. Pre-selecting a model whose
+    key is missing over one that would actually run is the one case where honouring the flag helps nobody, and
+    the flag still wins when NOTHING is usable, so a lobby with no credential still opens on the right name (and
+    on the "no Anthropic credential" reason next to it). ``""`` when there is nothing to offer.
+    """
+    entries = list(models or [])
+    if not entries:
+        return ""
+
+    def rank(model: Any) -> int:
+        flagged, usable = bool(_attr(model, "default", False)), bool(_attr(model, "available", True))
+        return 0 if (flagged and usable) else 1 if usable else 2 if flagged else 3
+
+    return str(_attr(min(entries, key=rank), "model_id", "") or "")
 
 
 @dataclass
@@ -75,6 +131,11 @@ class ModelInfo:
         Why not, in the user's terms (``"ANTHROPIC_API_KEY is not set"``). ``None`` when available.
     metered : bool
         Whether turns from this model cost money and must count against the session's budget cap.
+    default : bool
+        Whether this is the model a new ``llm`` seat starts on. The PROVIDER owns that choice — it is the half
+        that knows which model this experiment actually wants played — so the lobby never spells a model id of
+        its own. Flag at most one; :func:`default_model_id` resolves several (or none) by availability and list
+        order rather than raising, since a lobby is the wrong place to discover a misconfigured flag.
     """
 
     model_id: str
@@ -85,13 +146,14 @@ class ModelInfo:
     available: bool = True
     unavailable_reason: str | None = None
     metered: bool = True
+    default: bool = False
 
     def to_json(self) -> dict:
         """The lobby's wire form (see :func:`~interlens.arena.live.events.lobby_state`)."""
         return {"model_id": self.model_id, "label": self.label, "provider": self.provider,
                 "thinking_modes": list(self.thinking_modes), "supports_temperature": self.supports_temperature,
                 "available": self.available, "unavailable_reason": self.unavailable_reason,
-                "metered": self.metered}
+                "metered": self.metered, "default": self.default}
 
 
 @dataclass
@@ -143,7 +205,11 @@ class SeatConfig:
         For ``kind="rational"`` / ``"oracle"``: the policy name (a key of ``arena.table.POLICY_FACTORIES``, e.g.
         ``"bayes-rational"``). The kind, not the policy, decides whether the seat gets full-information tables.
     thinking : str
-        For ``kind="llm"``: the extended-thinking mode, restricted to the model's ``thinking_modes``.
+        For ``kind="llm"``: the extended-thinking mode, restricted to the model's ``thinking_modes``. The empty
+        string means "whatever this model's default is" (:func:`default_thinking`, i.e. thinking on wherever the
+        model allows it) and is what an unconfigured seat carries — spelled as its own value rather than as a
+        literal mode because ``off`` has to keep meaning a deliberate ``off``, and a seat that had thinking
+        turned off by hand must not have it turned back on by a re-validation.
     instructions : str
         Extra PRIVATE instructions for this seat, appended to its ``private_context`` as one labelled segment.
         This is how a live operator gives one seat a persona or a hidden agenda without editing a scaffold. Empty
@@ -157,7 +223,7 @@ class SeatConfig:
     kind: str = "llm"
     model_id: str | None = None
     policy: str | None = None
-    thinking: str = "off"
+    thinking: str = ""
     instructions: str = ""
     display_name: str = ""
 
@@ -188,6 +254,28 @@ class SeatConfig:
         fallback = {"llm": self.model_id, "rational": self.policy, "oracle": self.policy,
                     "human": "player"}.get(self.kind)
         return (fallback or self.kind).strip()
+
+    def resolved(self, models: Any) -> "SeatConfig":
+        """This seat with the choices nobody made filled in from the offered models — the ONE place defaults land.
+
+        For an ``llm`` seat: an empty ``model_id`` becomes :func:`default_model_id` (the provider's flagged
+        model), and an empty ``thinking`` becomes that model's :func:`default_thinking` (thinking on wherever it
+        is allowed). Any other seat, and any field already set, is returned untouched — including a deliberate
+        ``off``, which is why the unset value is ``""`` rather than a mode name.
+
+        Called by the session on every lobby edit, every start and every swap, so a client that posts a bare
+        ``{"kind": "llm"}`` gets the same seat the lobby page would have shown it. Idempotent: resolving a
+        resolved config returns it unchanged (the same object, in fact).
+        """
+        if self.kind != "llm":
+            return self
+        offered = list(models or [])
+        model_id = self.model_id or default_model_id(offered)
+        info = next((m for m in offered if _attr(m, "model_id", None) == model_id), None)
+        thinking = self.thinking or default_thinking(info)
+        if (model_id, thinking) == (self.model_id, self.thinking):
+            return self
+        return replace(self, model_id=model_id, thinking=thinking)
 
     def to_json(self) -> dict:
         """The wire form the lobby page and ``lobby_state`` events carry."""

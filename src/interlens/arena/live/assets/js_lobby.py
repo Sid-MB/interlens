@@ -15,6 +15,7 @@
 #
 # [implement: live-play/lane0] 2026-08-16
 # [implement: live-play/laneC] 2026-08-16
+# [implement: live-play/lobby-defaults] 2026-08-19
 """The lobby's browser layer: edit the seat lineup, then start the game.
 
 Every edit is POSTed to ``/api/lobby`` and the server's response is what the page re-renders from — the server
@@ -38,6 +39,12 @@ to end up with two lobbies that disagree about what a seat is.
 spells a state key, and they are exactly the ``data-field`` / ``data-lobby`` attributes the markup carries and
 exactly ``SeatConfig``'s dataclass fields. The lobby test pins all three to each other, so a renamed field fails
 a test instead of silently editing nothing.
+
+**Defaults are computed, never typed.** Which model a new LLM seat opens on and which thinking mode it takes come
+from ``defaultModelId`` / ``defaultThinking``, mirroring ``provider.default_model_id`` /
+``provider.default_thinking`` — the provider flags its default model, so no model id is spelled in this file. The
+"all model seats" row writes those same fields into many seats at once (``applyAll``) and then saves through the
+ordinary whole-seats POST, which is why a bulk edit needs no wire change of its own.
 
 **Validation here is a courtesy.** ``validate`` mirrors the server's two rules so Start is disabled before it is
 clicked rather than after — the click that costs money should not be the thing that discovers the budget cap is
@@ -63,6 +70,13 @@ const LOBBY_FIELDS = ["bank", "framing", "instance_id", "budget_usd"];
    `lobby_page.NO_INSTRUCTION_KINDS`. */
 const NO_INSTRUCTION_KINDS = ["rational", "oracle"];
 const POLICY_KINDS = ["rational", "oracle"];
+/* The fields the "all model seats" row writes into each seat it applies to. A subset of SEAT_FIELDS, carried on
+   `data-all` exactly as a card's are carried on `data-field`. */
+const ALL_FIELDS = ["model_id", "thinking", "instructions"];
+/* Thinking modes best-first, mirrored from `provider.THINKING_PREFERENCE`: a seat thinks wherever its model
+   allows it, and prefers the explicit request over the model's own default so the episode records the condition
+   it played under. The model's own `thinking_modes` still decides; this only orders that list. */
+const THINKING_PREFERENCE = ["on", "auto", "off"];
 
 const ROUTES = {
   lobby: "/api/lobby",
@@ -85,6 +99,21 @@ function models() { return STATE.models || []; }
 function modelById(id) { return models().find(m => m.model_id === id) || null; }
 function bankById(id) { return (STATE.banks || []).find(b => b.bank_id === id) || null; }
 function seatName(i) { return (STATE.seat_names || [])[i] || ("seat " + i); }
+
+/* The two default rules, mirroring `provider.default_thinking` / `provider.default_model_id`. They run whenever
+   a seat becomes a model seat or changes model — the point where a card would otherwise show whatever happened
+   to be first in the list. */
+function defaultThinking(model) {
+  const modes = (model || {}).thinking_modes || [];
+  if (!modes.length) return "off";
+  return THINKING_PREFERENCE.find(m => modes.indexOf(m) >= 0) || modes[0];
+}
+function defaultModelId() {
+  const rank = (m) => (m.default && m.available !== false) ? 0 : (m.available !== false) ? 1 : m.default ? 2 : 3;
+  let best = null;
+  models().forEach(m => { if (best === null || rank(m) < rank(best)) best = m; });
+  return best ? best.model_id : "";
+}
 
 /* Whether a seat spends money: a model seat whose model is metered. A provider that omits `metered` is assumed
    to charge — the assumption that costs a wasted cap is better than the one that costs a bill. */
@@ -151,6 +180,8 @@ function paint() {
   setStat("lobby-stat-budget", (typeof cap === "number" && isFinite(cap)) ? "$" + cap.toFixed(2) : "—");
   const budget = $("lobby-budget");
   if (budget) budget.required = meteredCount() > 0;
+  const n = seats().filter(s => s.kind === "llm").length;
+  setStat("lobby-all-count", n + " model seat" + (n === 1 ? "" : "s"));
   seats().forEach((s, i) => paintSeatKind(i));
 }
 
@@ -193,16 +224,39 @@ function options(pairs, selected) {
     + (disabled ? " disabled" : "") + ">" + E(label) + "</option>").join("");
 }
 
-/* The two option lists that depend on another choice. Everything else is rendered once by the server. */
+/* The option lists that depend on another choice. Everything else is rendered once by the server. */
+
+/* Refill a thinking picker from a model's declared modes and return the mode now selected. A `current` the model
+   does not accept (the seat was on another model, or nobody has chosen yet) falls to that model's default, which
+   is thinking ON wherever the model allows it. */
+function fillThinking(control, model, current) {
+  const modes = (model || {}).thinking_modes || ["off"];
+  const mode = modes.indexOf(current) >= 0 ? current : defaultThinking(model);
+  if (control) control.innerHTML = options(modes.map(m => [m, m, false]), mode);
+  return mode;
+}
+
 function syncThinking(idx) {
   const seat = seats()[idx], control = control_(idx, "thinking");
   if (!seat || !control) return;
-  const modes = (modelById(seat.model_id) || {}).thinking_modes || ["off"];
-  if (modes.indexOf(seat.thinking) < 0) seat.thinking = modes[0];
-  control.innerHTML = options(modes.map(m => [m, m, false]), seat.thinking);
+  const model = modelById(seat.model_id);
+  seat.thinking = fillThinking(control, model, seat.thinking);
   const hint = $("hint-" + idx + "-thinking");
+  const modes = (model || {}).thinking_modes || ["off"];
   if (hint) hint.textContent = modes.length < 2 ? "this model has one thinking mode"
-                                                : "only the modes this model accepts are offered";
+                                                : "only the modes this model accepts are offered; defaults to on";
+}
+
+/* A seat that has just become a model seat: give it the provider's default model before its thinking picker is
+   filled, so a card that has never been an LLM card does not open on an empty model. */
+function applySeatDefaults(idx) {
+  const seat = seats()[idx];
+  if (!seat || seat.kind !== "llm") return;
+  if (!seat.model_id) {
+    seat.model_id = defaultModelId();
+    setValue(control_(idx, "model_id"), seat.model_id);
+  }
+  syncThinking(idx);
 }
 
 function syncInstances() {
@@ -236,6 +290,13 @@ function onEdit(ev) {
     if (!seat || SEAT_FIELDS.indexOf(t.dataset.field) < 0) return;
     seat[t.dataset.field] = t.value;
     if (t.dataset.field === "model_id") syncThinking(Number(t.dataset.seat));
+    if (t.dataset.field === "kind") applySeatDefaults(Number(t.dataset.seat));
+  } else if (t.dataset.all) {
+    /* The master row is a thing to send, not part of the state: an edit here changes nothing until Apply is
+       pressed, so there is no POST and no repaint beyond its own thinking list. */
+    if (t.dataset.all === "model_id") fillThinking($("lobby-all-thinking"), modelById(t.value), null);
+    allStatus("");
+    return;
   } else if (t.dataset.lobby) {
     const key = t.dataset.lobby;
     if (LOBBY_FIELDS.indexOf(key) < 0) return;
@@ -244,6 +305,44 @@ function onEdit(ev) {
   } else return;
   paint();
   schedulePost();
+}
+
+/* ---------------------------------------------------------------- the "all model seats" row --- */
+function allValue(field) { const c = $("lobby-all-" + field); return c ? c.value : ""; }
+function allStatus(msg) { const el = $("lobby-all-status"); if (el) el.textContent = msg || ""; }
+
+/* Write the master row's values into every seat it targets, then save once.
+
+   Targets: the seats that are already model seats, plus — only with the checkbox ticked — every other seat,
+   which is CONVERTED to a model seat. Model and thinking mode are overwritten on every target (a bulk control
+   whose effect depends on each target's current value cannot be predicted); the shared instructions are written
+   only when the box has something in it, so applying a model change does not silently wipe per-seat personas.
+
+   Per-card edits afterwards are ordinary edits: nothing keeps writing from this row. */
+function applyAll() {
+  const include = !!($("lobby-all-include") || {}).checked;
+  const model_id = allValue("model_id"), instructions = allValue("instructions");
+  const model = modelById(model_id);
+  if (!model_id) { allStatus("no model to apply"); return; }
+  const thinking = ((model || {}).thinking_modes || []).indexOf(allValue("thinking")) >= 0
+    ? allValue("thinking") : defaultThinking(model);
+  let touched = 0, converted = 0;
+  seats().forEach((seat, i) => {
+    if (seat.kind !== "llm" && !include) return;
+    if (seat.kind !== "llm") { seat.kind = "llm"; converted += 1; }
+    seat.model_id = model_id;
+    seat.thinking = thinking;
+    if (instructions.trim()) seat.instructions = instructions;
+    touched += 1;
+  });
+  if (!touched) { allStatus("no seats to apply to — tick the box to convert the others"); return; }
+  syncControls();
+  paint();
+  allStatus("applied " + ((model || {}).label || model_id) + " / thinking " + thinking + " to " + touched
+            + " seat" + (touched === 1 ? "" : "s")
+            + (converted ? " (" + converted + " converted to model seats)" : "")
+            + (instructions.trim() ? ", with the shared instructions" : ""));
+  push();
 }
 
 /* Debounced so typing into the instructions box is one POST at the end of a sentence rather than one per
@@ -345,6 +444,8 @@ const startBtn = $("lobby-start");
 if (startBtn) startBtn.addEventListener("click", start);
 const resetBtn = $("lobby-reset");
 if (resetBtn) resetBtn.addEventListener("click", reset);
+const applyAllBtn = $("lobby-apply-all");
+if (applyAllBtn) applyAllBtn.addEventListener("click", applyAll);
 /* No polling: a lobby with no session has nothing to stream, so a tab catches up when it is looked at again. */
 window.addEventListener("focus", refresh);
 subscribe(STATE.sid);
@@ -354,6 +455,7 @@ paint();
 registerKeys([
   { keys: ["v"], what: "open the live page", run: () => { location.href = ROUTES.play; } },
   { keys: ["r"], what: "reload the lineup from the server", run: refresh },
+  { keys: ["a"], what: "apply the all-model-seats row", run: applyAll },
   { keys: ["?"], what: "show or hide this help", run: () => { const h = $("help"); if (h) h.hidden = !h.hidden; } },
   { keys: ["Escape"], what: "", run: () => { const h = $("help"); if (h) h.hidden = true; } },
 ]);

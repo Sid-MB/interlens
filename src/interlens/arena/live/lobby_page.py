@@ -15,6 +15,7 @@
 #
 # [implement: live-play/lane0] 2026-08-16
 # [implement: live-play/laneC] 2026-08-16
+# [implement: live-play/lobby-defaults] 2026-08-19
 """The lobby: choose a game and decide who plays each seat.
 
 Built on ``viz.page._document``, the same shell the episode pages use, so the lobby inherits the visualizer's
@@ -27,6 +28,11 @@ cannot turn thinking off, Haiku refuses adaptive thinking — so the seat cards 
 declared ``thinking_modes`` and ``supports_temperature`` rather than from a fixed set of controls. A budget cap
 is required before any metered seat can start, for the same reason: it is the only thing standing between a
 click and an unbounded bill.
+
+A seat nobody has configured opens on the provider's own defaults — the model it flagged
+(:func:`~interlens.arena.live.provider.default_model_id`) with thinking on wherever that model allows it
+(:func:`~interlens.arena.live.provider.default_thinking`) — and the "all model seats" row
+(:func:`_all_seats_row`) sets a whole lineup at once. No model id is spelled anywhere in this module.
 
 **Every control is rendered here, in Python, exactly once.** The browser layer changes the VALUES of controls
 that already exist and rebuilds only option lists (the thinking modes a newly picked model allows, the instances
@@ -44,7 +50,7 @@ import json
 from ..viz.chrome import _e, topbar
 from ..viz.page import _document
 from .assets.js_lobby import JS_LOBBY_PAGE
-from .provider import SEAT_KINDS, SeatConfig
+from .provider import SEAT_KINDS, SeatConfig, default_model_id, default_thinking
 from .style import CSS_LIVE
 
 #: What each seat kind is called in the picker, and the one line under it that says what choosing it means. The
@@ -81,6 +87,10 @@ CSS_LOBBY = """
 .seatgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:var(--sp-3);margin-top:var(--sp-2)}
 .startbar{display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap;margin-top:var(--sp-3)}
 .startbar button.primary{border-color:var(--s1);color:var(--s1);font-weight:600;padding:6px 18px}
+.allseats{border:1px dashed var(--ring-2);border-radius:var(--r-2);padding:var(--sp-2) var(--sp-3);margin-top:var(--sp-2)}
+.allseats .hd{display:flex;gap:var(--sp-2);align-items:baseline;flex-wrap:wrap}
+.allseats .applybar{display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap;margin-top:var(--sp-2)}
+.allseats label.inline{display:flex;gap:6px;align-items:center;font-size:var(--t-sm);color:var(--ink-2)}
 .problems{margin:var(--sp-2) 0 0;padding-left:1.15em;font-size:var(--t-sm);color:var(--critical)}
 .problems:empty{display:none}
 .notices{margin:var(--sp-2) 0 0;padding-left:1.15em;font-size:var(--t-sm);color:var(--ink-2)}
@@ -128,6 +138,7 @@ def render_lobby_html(state: dict) -> str:
             f"<section class='card'><h2>Seats</h2>"
             "<div class='sub muted'>One card per party. A seat's kind decides which of its controls apply; the "
             "rest are greyed rather than hidden, so the lineup is readable at a glance.</div>"
+            f"{_all_seats_row(state, models)}"
             f"<div class='seatgrid' id='lobby-seats'>{seats_body}</div></section>"
             f"{_start_bar(state)}"
             f"{_state_script(state)}")
@@ -167,9 +178,13 @@ def _seat_card(idx: int, seat_name: str, config: dict, models: list[dict], polic
         passes its own, so the picker cannot offer a kind the session would refuse to build.
     """
     kind = str(config.get("kind") or "llm")
-    model_id = config.get("model_id") or (models[0]["model_id"] if models else "")
+    # An unconfigured seat shows the provider's defaults rather than the head of the list: the model the provider
+    # flagged, at that model's best thinking mode. Resolved here AND in ``SeatConfig.resolved`` on the server —
+    # same two functions, so the card the operator sees is the seat the session would build from it.
+    model_id = config.get("model_id") or default_model_id(models)
     chosen = next((m for m in models if m.get("model_id") == model_id), None)
     modes = [str(t) for t in ((chosen or {}).get("thinking_modes") or ("off",))]
+    thinking = str(config.get("thinking") or default_thinking(chosen))
     is_llm, is_policy = kind == "llm", kind in ("rational", "oracle")
 
     kind_opts = [(k, SEAT_KIND_LABELS.get(k, (k, ""))[0], False) for k in kinds]
@@ -181,7 +196,7 @@ def _seat_card(idx: int, seat_name: str, config: dict, models: list[dict], polic
 
     kind_hint = SEAT_KIND_LABELS.get(kind, ("", ""))[1]
     thinking_hint = ("this model has one thinking mode" if len(modes) < 2
-                     else "only the modes this model accepts are offered")
+                     else "only the modes this model accepts are offered; defaults to on")
     name_hint = (f"the transcript calls you this; left empty it records {_default_label(kind)}"
                  if kind == "human" else "optional occupant label")
     instr_hint = ("a policy reads no prose" if is_policy
@@ -191,10 +206,67 @@ def _seat_card(idx: int, seat_name: str, config: dict, models: list[dict], polic
             f"<span class='pill'>seat <b>{idx}</b></span></div>"
             f"{_field(idx, 'kind', 'plays as', _select(idx, 'kind', kind_opts, kind), kind_hint)}"
             f"{_field(idx, 'model_id', 'model', _select(idx, 'model_id', model_opts, model_id, not is_llm), '', not is_llm)}"
-            f"{_field(idx, 'thinking', 'thinking', _select(idx, 'thinking', thinking_opts, str(config.get('thinking') or 'off'), not is_llm), thinking_hint, not is_llm)}"
+            f"{_field(idx, 'thinking', 'thinking', _select(idx, 'thinking', thinking_opts, thinking, not is_llm), thinking_hint, not is_llm)}"
             f"{_field(idx, 'policy', 'policy', _select(idx, 'policy', policy_opts, str(config.get('policy') or ''), not is_policy), '', not is_policy)}"
             f"{_field(idx, 'display_name', 'display name', _text(idx, 'display_name', config.get('display_name') or '', 'name shown in the transcript'), name_hint)}"
             f"{_field(idx, 'instructions', 'private instructions', _textarea(idx, 'instructions', config.get('instructions') or '', is_policy), instr_hint, is_policy)}"
+            "</div>")
+
+
+def _all_seats_row(state: dict, models: list[dict]) -> str:
+    """The "all model seats" row: set a model, a thinking mode and one shared instruction block once, then push
+    them into every model seat with one click.
+
+    A five-seat lineup is five identical dropdowns to change by hand, and the interesting live configurations
+    (every seat the same model; every seat the same model but one) start from "make them all X". So this row
+    exists — but it is a WRITE, not a binding: nothing here is part of the lobby state, nothing is sent to the
+    server, and the values only reach the server as ordinary per-seat edits when Apply is pressed. That is the
+    whole reason a later per-card edit is not fighting an invisible master value, and the reason the wire
+    contract is unchanged (``js_lobby.applyAll`` writes the seat cards and the usual whole-seats POST follows).
+
+    Two rules, both stated on the row rather than inferred:
+
+    - **Apply overwrites the model and the thinking mode of every targeted seat.** No merge, no "only the ones
+      that look unset" — a bulk control whose effect depends on each target's current value is a bulk control
+      nobody can predict.
+    - **The shared instructions are appended-to-the-target only when the box is non-empty**, so pressing Apply to
+      change the model does not silently wipe per-seat personas that were typed earlier.
+
+    Targets are the seats that are ALREADY model seats. The checkbox widens that to every seat, converting
+    policy/human/scripted seats to model seats — off by default, because turning the person's own seat into an
+    API model is not something a click labelled "apply" should do by surprise.
+
+    Parameters
+    ----------
+    state : dict
+        The lobby state, for the seat list the row reports its target count from.
+    models : list[dict]
+        The same ``ModelInfo.to_json()`` list the seat cards are built from, so the master picker cannot offer a
+        model a seat could not take.
+    """
+    model_id = default_model_id(models)
+    chosen = next((m for m in models if m.get("model_id") == model_id), None)
+    modes = [str(t) for t in ((chosen or {}).get("thinking_modes") or ("off",))]
+    model_opts = [(m.get("model_id"), _model_label(m), not m.get("available", True)) for m in models] \
+        or [("", "no models offered", True)]
+    n_llm = sum(1 for s in (state.get("seats") or []) if s.get("kind") == "llm")
+    return ("<div class='allseats' id='lobby-all'>"
+            "<div class='hd'><span class='who'>all model seats</span>"
+            f"<span class='pill' id='lobby-all-count'>{_seat_count(n_llm)}</span>"
+            "<span class='sub muted'>set the lineup once instead of card by card</span></div>"
+            "<div class='lobbyrow'>"
+            f"{_all_field('model_id', 'model', _select_all('model_id', model_opts, model_id), 'every targeted seat is set to this model')}"
+            f"{_all_field('thinking', 'thinking', _select_all('thinking', [(t, t, False) for t in modes], default_thinking(chosen)), 'the modes the chosen model accepts')}"
+            f"{_all_field('instructions', 'shared private instructions', _textarea_all('instructions'), 'applied only when non-empty, so Apply never wipes per-seat text')}"
+            "</div>"
+            "<div class='applybar'>"
+            "<button id='lobby-apply-all' type='button'>Apply to all model seats</button>"
+            "<label class='inline' for='lobby-all-include'>"
+            "<input type='checkbox' id='lobby-all-include' data-all='include_non_llm'>"
+            "also convert seats that are not model seats</label>"
+            "<span class='sub' id='lobby-all-status' role='status' aria-live='polite'></span></div>"
+            "<div class='sub muted'>Apply overwrites the model and thinking mode of every seat it touches. Edit "
+            "any card afterwards — nothing here keeps writing to it.</div>"
             "</div>")
 
 
@@ -313,6 +385,41 @@ def _lobby_field(key: str, label: str, control: str, hint: str = "", mark_requir
     hint_html = f"<span class='hint'>{_e(hint)}</span>" if hint else ""
     return (f"<div class='field' data-lobby-field='{_e(key)}'>"
             f"<label for='{_lobby_control_id(key)}'>{_e(label)}{req}</label>{control}{hint_html}</div>")
+
+
+def _seat_count(n: int) -> str:
+    """"3 model seats" — how many seats Apply would touch. One function because the browser layer rewrites this
+    text as the lineup changes and a count that stops agreeing with its noun reads as a bug in the count."""
+    return f"{n} model seat{'' if n == 1 else 's'}"
+
+
+def _all_field(field: str, label: str, control: str, hint: str = "") -> str:
+    """One labelled control on the "all model seats" row. ``field`` is the ``SeatConfig`` field it will WRITE
+    into each targeted seat when Apply is pressed — the same names the per-seat cards carry, so the row and the
+    cards cannot mean different things by ``thinking``."""
+    hint_html = f"<span class='hint'>{_e(hint)}</span>" if hint else ""
+    return (f"<div class='field' data-all-field='{_e(field)}'>"
+            f"<label for='{_all_control_id(field)}'>{_e(label)}</label>{control}{hint_html}</div>")
+
+
+def _all_control_id(field: str) -> str:
+    """The DOM id of the master row's control for ``field``. Same reason as :func:`_lobby_control_id`: a label's
+    ``for`` and its control's ``id`` are written in different places and must not drift."""
+    return f"lobby-all-{field}"
+
+
+def _select_all(field: str, options: list, selected) -> str:
+    """A master-row ``<select>``. ``data-all`` names the seat field it writes, mirroring ``data-field`` on a
+    card and ``data-lobby`` on a game control."""
+    return (f"<select id='{_all_control_id(field)}' data-all='{_e(field)}'>"
+            f"{_options(options, selected)}</select>")
+
+
+def _textarea_all(field: str) -> str:
+    """The master row's shared-instructions box. Starts empty and is never populated from the state: it is a
+    thing to send, not a mirror of what any seat currently holds."""
+    return (f"<textarea id='{_all_control_id(field)}' data-all='{_e(field)}' rows='2' "
+            f"placeholder='private instructions given to every seat this applies to'></textarea>")
 
 
 def _lobby_control_id(key: str) -> str:

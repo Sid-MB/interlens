@@ -15,6 +15,7 @@
 #
 # [implement: live-play/lane0] 2026-08-16
 # [implement: live-play/laneB] 2026-08-16
+# [implement: live-play/lobby-defaults] 2026-08-19
 """``LiveSession``: one live game — the engine thread, the event log, and everything the browser can do to it.
 
 A session owns a running episode and the fanout to however many browsers are watching it. Its threading model is
@@ -128,7 +129,11 @@ class LiveSession:
         self.sid = sid
         self.provider = provider
         self.game = game
-        self.seats = list(seats)
+        # Resolved on the way in, so a session constructed directly (a test, a client that posted a bare model
+        # seat) seats the same occupant the lobby would have shown: the provider's default model at its default
+        # thinking mode. Cheap and idempotent — an already-chosen field is returned untouched.
+        offered = provider.list_models() if any(s.kind == "llm" for s in seats) else ()
+        self.seats = [s.resolved(offered) for s in seats]
         self.run_dir = Path(run_dir)
         self.budget_usd = None if budget_usd is None else float(budget_usd)
         # The cap binds in two places, and it needs both. The METER is the pool's launch gate and the ledger every
@@ -365,6 +370,7 @@ class LiveSession:
                 raise ValueError(f"{seat} is mid-decision — a seat cannot change hands while its player is "
                                  "answering. Swap it once the turn is played.")
             self._humans.pop(seat, None)
+            config = config.resolved(self.provider.list_models() if config.kind == "llm" else ())
             participant = self._build_participant(seat_idx, config)
             label = config.occupant_label()
             previous = self._router.swap(seat, participant, label)
@@ -725,12 +731,17 @@ class SessionManager:
         return self.lobby_state()
 
     def _validated(self, config: SeatConfig) -> SeatConfig:
-        """One seat config checked against what this provider can actually seat. Existence only — availability
-        (a missing API key) is re-checked at start, since a key can appear between editing and playing."""
+        """One seat config checked against what this provider can actually seat, and RETURNED with its unset
+        model-seat choices resolved (:meth:`SeatConfig.resolved`) — a bare ``{"kind": "llm"}`` from any client
+        becomes the provider's default model at that model's default thinking mode, exactly as the lobby page
+        renders it. Existence only — availability (a missing API key) is re-checked at start, since a key can
+        appear between editing and playing."""
         if config.kind not in SEAT_KINDS:
             raise ValueError(f"unknown seat kind {config.kind!r}; choose one of {list(SEAT_KINDS)}")
         if config.kind == "llm":
-            models = {m.model_id: m for m in self.provider.list_models()}
+            offered = self.provider.list_models()
+            config = config.resolved(offered)
+            models = {m.model_id: m for m in offered}
             if config.model_id not in models:
                 raise ValueError(f"unknown model {config.model_id!r}; have {sorted(models)}")
             info = models[config.model_id]

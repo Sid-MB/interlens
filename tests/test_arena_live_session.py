@@ -111,7 +111,8 @@ class StubProvider:
     def list_models(self) -> list[ModelInfo]:
         return [
             ModelInfo("stub-free", "Stub (free)", "stub", ("off",), metered=False),
-            ModelInfo("stub-paid", "Stub (paid)", "stub", ("off", "on"), metered=True),
+            # Flagged, so a seat that names no model resolves to it — the same way the real launcher flags Opus.
+            ModelInfo("stub-paid", "Stub (paid)", "stub", ("off", "on"), metered=True, default=True),
             ModelInfo("stub-gone", "Stub (no key)", "stub", ("off",), available=False,
                       unavailable_reason="STUB_API_KEY is not set"),
         ]
@@ -251,6 +252,30 @@ def test_an_impossible_configuration_is_refused_at_edit_time(tmp_path, patch, me
     check is the one that earns its keep: a model that rejects a mode 400s mid-game and wastes the session."""
     with pytest.raises(ValueError, match=message):
         make_manager(tmp_path).update_lobby(patch)
+
+
+def test_a_bare_model_seat_is_resolved_to_the_flagged_model_with_thinking_on(tmp_path):
+    """A seat that names neither a model nor a mode is the common case — the lobby's card sends what it renders,
+    and what it renders is the provider's default. The server resolves it identically, so a client that posts
+    ``{"kind": "llm"}`` gets a playable seat rather than "unknown model None"."""
+    manager = make_manager(tmp_path)
+    state = manager.update_lobby({"seat_idx": 0, "seat": {"kind": "llm"}})
+    assert state["seats"][0]["model_id"] == "stub-paid" and state["seats"][0]["thinking"] == "on"
+    # A mode chosen by hand is not "unset" and is left alone.
+    off = manager.update_lobby({"seat_idx": 0, "seat": {"kind": "llm", "thinking": "off"}})
+    assert off["seats"][0]["thinking"] == "off"
+
+
+def test_a_swap_onto_a_bare_model_seat_resolves_the_same_defaults(tmp_path):
+    """Mid-game the swap dock sends a SeatConfig too, and it must not be the one path where a missing model is
+    fatal instead of defaulted."""
+    manager = make_manager(tmp_path)
+    session = start(manager, kinds("rational", "rational", "rational"), budget_usd=1.0)
+    wait_for(lambda: session._router is not None, what="the router to exist")
+    session.swap_seat(0, SeatConfig(kind="llm"))
+    assert session.seats[0].model_id == "stub-paid" and session.seats[0].thinking == "on"
+    assert manager.provider.model_seats[-1]["thinking"] == "on"
+    play_out(session)
 
 
 def test_a_short_lineup_is_padded_to_the_games_actual_seat_count(tmp_path):

@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # [implement: live-play/laneC] 2026-08-16
+# [implement: live-play/lobby-defaults] 2026-08-19
 """Tests for the live-play lobby page (``arena/live/lobby_page.py`` + ``assets/js_lobby.py``).
 
 No browser: the lobby renders every control in Python, so the assertions are on real structure in the emitted
@@ -42,14 +43,18 @@ import pytest
 from interlens.arena.live import events
 from interlens.arena.live.assets.js_lobby import JS_LOBBY, JS_LOBBY_PAGE
 from interlens.arena.live.lobby_page import _notices, _problems, render_lobby_html
-from interlens.arena.live.provider import SEAT_KINDS, BankInfo, ModelInfo, SeatConfig
+from interlens.arena.live.provider import (SEAT_KINDS, THINKING_PREFERENCE, BankInfo, ModelInfo, SeatConfig,
+                                           default_model_id, default_thinking)
 
 # A model per interesting capability shape: a metered hosted model that CANNOT turn thinking off (the Claude-5
-# constraint the lobby exists to respect), a free local model that is currently unusable, and an ordinary one.
+# constraint the lobby exists to respect), a free local model that is currently unusable, an ordinary one, and
+# the one the provider flags as what a new model seat should open on.
 FABLE = ModelInfo("claude-fable-5", "Fable 5", "anthropic", thinking_modes=("on",), supports_temperature=False)
 QWEN = ModelInfo("Qwen/Qwen3-8B", "Qwen3 8B", "local", thinking_modes=("off", "on"), available=False,
                  unavailable_reason="no GPU is visible on this host", metered=False)
 HAIKU = ModelInfo("claude-haiku-4-5-20251001", "Haiku 4.5", "anthropic", thinking_modes=("off", "on"))
+OPUS = ModelInfo("claude-opus-5", "Opus 5", "anthropic", thinking_modes=("off", "auto", "on"),
+                 supports_temperature=False, default=True)
 
 BANK = BankInfo("instances_realistic_demo", "Realistic demo", ("dc-01", "dc-02", "dc-03"), 4,
                 "three data-center procurement games")
@@ -68,7 +73,7 @@ def _state(seats=None, **over) -> dict:
         "banks": [BANK.to_json()],
         "framings": [{"framing_id": "datacenter_realistic", "label": "Data center",
                       "description": "a procurement between two operators"}],
-        "models": [FABLE.to_json(), QWEN.to_json(), HAIKU.to_json()],
+        "models": [FABLE.to_json(), QWEN.to_json(), HAIKU.to_json(), OPUS.to_json()],
         "policies": ["bayes-rational", "hardball"],
         "seat_names": ["Avery", "Blake", "Casey", "Devon"],
         "bank": BANK.bank_id,
@@ -183,6 +188,97 @@ def test_thinking_offers_only_the_modes_the_model_accepts():
     assert re.findall(r'<option value="(\w+)"', _select_of(_card(on_haiku, 0), "thinking")) == ["off", "on"]
 
 
+# ------------------------------------------------------------------------------------- the defaults --
+def test_a_new_model_seat_opens_on_the_flagged_model_with_thinking_on():
+    """The two defaults a live operator should never have to set: the provider's flagged model, and the best
+    thinking mode that model accepts. An unconfigured card must show both as SELECTED, not merely offer them."""
+    card = _card(render_lobby_html(_state(seats=[SeatConfig(kind="llm")])), 0)
+    assert f'<option value="{OPUS.model_id}" selected' in _select_of(card, "model_id")
+    assert '<option value="on" selected' in _select_of(card, "thinking")
+
+
+def test_the_default_model_is_the_providers_flag_not_the_head_of_the_list():
+    """No model id is spelled in the page: which one is default travels on ``ModelInfo.default``. A flagged model
+    that cannot be used loses to one that can — pre-selecting a seat that would fail at start helps nobody — but
+    wins when nothing at all is usable, so the lobby still opens on the right name and its reason."""
+    assert default_model_id([FABLE, QWEN, HAIKU, OPUS]) == OPUS.model_id
+    assert default_model_id([FABLE, HAIKU]) == FABLE.model_id           # nothing flagged: the first usable one
+    assert default_model_id([QWEN, HAIKU]) == HAIKU.model_id            # the unavailable one is skipped
+    gone = dataclasses.replace(OPUS, available=False, unavailable_reason="no key")
+    assert default_model_id([gone, HAIKU]) == HAIKU.model_id
+    assert default_model_id([gone, dataclasses.replace(QWEN, default=False)]) == gone.model_id
+    assert default_model_id([]) == ""
+    # And it reads the wire dicts the page renders from as happily as the objects the session validates against.
+    assert default_model_id([m.to_json() for m in (FABLE, OPUS)]) == OPUS.model_id
+
+
+@pytest.mark.parametrize("modes,expected", [
+    (("off", "auto", "on"), "on"),        # the explicit adaptive request, so the episode records its condition
+    (("off", "auto"), "auto"),            # Haiku: refuses the explicit request, so its best "on" is the default
+    (("auto", "on"), "on"),               # Fable: cannot turn thinking off at all
+    (("off",), "off"),                    # a model with nothing else stays off
+    ((), "off"),
+])
+def test_thinking_defaults_to_the_best_mode_the_model_actually_accepts(modes, expected):
+    assert default_thinking(ModelInfo("m", "M", "p", thinking_modes=modes)) == expected
+    assert default_thinking({"model_id": "m", "thinking_modes": list(modes)}) == expected
+
+
+def test_an_unset_seat_resolves_to_exactly_what_the_card_shows():
+    """The page and the server resolve defaults through the same two functions, so a seat POSTed bare becomes the
+    seat the operator was looking at. A mode chosen by hand — including ``off`` — survives resolution."""
+    models = [FABLE, QWEN, HAIKU, OPUS]
+    assert SeatConfig(kind="llm").resolved(models) == SeatConfig(kind="llm", model_id=OPUS.model_id, thinking="on")
+    assert SeatConfig(kind="llm", model_id=HAIKU.model_id).resolved(models).thinking == "on"
+    off = SeatConfig(kind="llm", model_id=HAIKU.model_id, thinking="off")
+    assert off.resolved(models) is off                                  # deliberate, and idempotent
+    policy = SeatConfig(kind="rational", policy="bayes-rational")
+    assert policy.resolved(models) is policy                            # a policy has no model to default
+
+
+def test_thinking_defaults_do_not_offer_a_mode_the_model_rejects():
+    """Fable has no ``off``; the default must be one of the modes on the card, never a mode invented for it."""
+    card = _card(render_lobby_html(_state(seats=[SeatConfig(kind="llm", model_id=FABLE.model_id)])), 0)
+    offered = re.findall(r'<option value="(\w+)"', _select_of(card, "thinking"))
+    selected = re.search(r'<option value="(\w+)" selected', _select_of(card, "thinking")).group(1)
+    assert offered == ["on"] and selected == "on"
+
+
+# -------------------------------------------------------------------------------- all model seats row --
+def test_the_all_seats_row_offers_the_same_choices_a_card_does():
+    """One row configures the whole lineup, so it must not be able to express a seat a card could not."""
+    html = render_lobby_html(_state())
+    row = html.split("<div class='allseats'")[1].split("<div class='seatgrid'")[0]
+    assert f'<option value="{OPUS.model_id}" selected' in row          # same default as a fresh card
+    assert '<option value="on" selected' in row
+    for field in ("model_id", "thinking", "instructions"):
+        assert f"data-all='{field}'" in row
+    assert "id='lobby-apply-all'" in row and "id='lobby-all-include'" in row
+    assert "id='lobby-all-count'" in row
+    # It says what Apply does, because a bulk write nobody can predict is worse than five dropdowns.
+    assert "overwrites the model and thinking mode" in row
+    assert "only when non-empty" in row
+
+
+def test_the_all_seats_row_counts_the_seats_it_would_touch():
+    """The pill is the "how many will this hit" the operator needs before pressing a bulk button."""
+    html = render_lobby_html(_state())                                  # one llm seat of four
+    assert "id='lobby-all-count'>1 model seat<" in html
+    every = render_lobby_html(_state(seats=[SeatConfig(kind="llm", model_id=HAIKU.model_id)] * 3))
+    assert "id='lobby-all-count'>3 model seats<" in every
+    # And the browser rewrites the whole phrase, so the count cannot drift from its noun.
+    assert '"lobby-all-count", n + " model seat"' in JS_LOBBY
+
+
+def test_the_shared_instruction_box_starts_empty_rather_than_mirroring_a_seat():
+    """It is a thing to send, not a view of any seat: populating it from one card would make Apply quietly
+    rewrite the other cards with that card's persona."""
+    seats = [SeatConfig(kind="llm", model_id=HAIKU.model_id, instructions="only Avery knows this")]
+    row = render_lobby_html(_state(seats=seats)).split("<div class='allseats'")[1].split("<div class='seatgrid'")[0]
+    assert "id='lobby-all-instructions' data-all='instructions' rows='2'" in row
+    assert "only Avery knows this" not in row
+
+
 def test_model_controls_are_disabled_off_an_llm_seat():
     """The controls stay in the document so the card's shape never changes as a kind is cycled."""
     card = _card(render_lobby_html(_state()), 1)          # a rational seat
@@ -291,6 +387,37 @@ def test_the_kinds_the_script_greys_match_the_page():
     assert _js_list("NO_INSTRUCTION_KINDS") == list(NO_INSTRUCTION_KINDS)
     assert _js_list("POLICY_KINDS") == ["rational", "oracle"]
     assert set(_js_list("POLICY_KINDS")) <= set(SEAT_KINDS)
+
+
+def test_the_script_mirrors_the_thinking_preference_rather_than_choosing_its_own():
+    """Which mode a seat defaults to is decided in ``provider.THINKING_PREFERENCE``; the browser re-applies it
+    when a model changes, so the two orders must be the same order."""
+    assert _js_list("THINKING_PREFERENCE") == list(THINKING_PREFERENCE)
+    assert "defaultThinking" in JS_LOBBY and "defaultModelId" in JS_LOBBY
+    # The flag, not a model id: nothing in the browser layer may name anybody's favourite model.
+    assert "claude" not in JS_LOBBY.lower()
+    assert "m.default" in JS_LOBBY
+
+
+def test_the_all_seats_row_writes_only_fields_a_seat_has():
+    """``data-all`` names the ``SeatConfig`` field it will write, so the bulk row cannot invent a field the cards
+    and the server do not share."""
+    all_fields = _js_list("ALL_FIELDS")
+    assert set(all_fields) < {f.name for f in dataclasses.fields(SeatConfig)}
+    assert set(all_fields) == {"model_id", "thinking", "instructions"}
+    html = render_lobby_html(_state())
+    for field in all_fields:
+        assert f"data-all='{field}'" in html
+
+
+def test_apply_all_overwrites_the_lineup_and_leaves_the_wire_shape_alone():
+    """The bulk row is a client-side write followed by the ordinary whole-seats POST: it must reach for ``push``
+    rather than a route of its own, or the server would grow a second way to configure a lineup."""
+    body = re.search(r"function applyAll\(\) \{(.*?)\n\}", JS_LOBBY, re.S).group(1)
+    assert "seat.model_id = model_id" in body and "seat.thinking = thinking" in body
+    assert "instructions.trim()" in body                 # empty box leaves per-seat prose alone
+    assert 'seat.kind = "llm"' in body and "include" in body
+    assert "push()" in body and "fetch(" not in body
 
 
 def test_the_script_keeps_blockers_and_notices_apart_the_same_way_the_page_does():

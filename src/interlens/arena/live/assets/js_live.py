@@ -16,6 +16,7 @@
 # [implement: live-play/lane0] 2026-08-16
 # [implement: live-play/laneD] 2026-08-16
 # [implement: live-play/laneE] 2026-08-17
+# [implement: live-play/lobby-defaults] 2026-08-19
 """The live page's browser layer: subscribe, merge, redraw, and take the player's move.
 
 The merge rule is one line and worth stating exactly, because everything else follows from it: a
@@ -398,7 +399,10 @@ document.querySelectorAll("[data-swap-seat]").forEach(btn => {
   btn.addEventListener("click", () => {
     const val = id => { const n = $(id + "-" + idx); return n ? n.value : ""; };
     const config = { kind: val("swap-kind"), model_id: val("swap-model") || null,
-                     policy: val("swap-policy") || null, thinking: val("swap-thinking") || "off",
+                     /* No thinking control in the dock: an empty mode means "this model's default" and the
+                        session resolves it (`SeatConfig.resolved`), so a seat handed to a model mid-game thinks
+                        wherever that model allows it, exactly as it would have from the lobby. */
+                     policy: val("swap-policy") || null, thinking: val("swap-thinking"),
                      display_name: val("swap-name"), instructions: "" };
     swapError(idx, "");
     fetch(API + "/swap", { method: "POST", headers: { "Content-Type": "application/json" },

@@ -15,6 +15,7 @@
 #
 # [implement: live-play/lane0] 2026-08-16
 # [implement: live-play/laneD] 2026-08-16
+# [implement: live-play/lobby-defaults] 2026-08-19
 """The live episode page: the visualizer's episode view, plus the controls to play in it.
 
 This is deliberately the EXISTING episode page and not a new one. The body is assembled from the same fragments
@@ -51,7 +52,7 @@ from ..viz.assets import JS
 from ..viz.chrome import _e, _num, quick_stats, summary_strip, topbar
 from ..viz.page import _document, _legend, _reference_table, _sidebar, _threshold
 from .assets import JS_LIVE
-from .provider import SEAT_KINDS
+from .provider import SEAT_KINDS, default_model_id
 from .style import CSS_LIVE
 
 __all__ = ["render_live_html"]
@@ -200,13 +201,18 @@ def _swap_dock(occupants: dict, lobby: dict, seat_names: list | None = None) -> 
     policies = lobby.get("policies") or []
     names = list(seat_names or [])
     buildable = lobby.get("seat_kinds") or SEAT_KINDS
+    # A seat that is not a model seat has no model to pre-select, and the browser would silently select whichever
+    # option happens to be first. Handing a seat to a model mid-game should offer the same model the lobby would
+    # have — the provider's flagged default — so the dock asks the same function the lobby card does.
+    fallback_model = default_model_id(models)
     cards = []
     for i, config in enumerate(seats):
         name = (names[i] if i < len(names) else None) or config.get("display_name") or f"seat {i}"
         kinds = "".join(f"<option value='{_e(k)}'{' selected' if config.get('kind') == k else ''}>"
                         f"{_e(SEAT_KIND_LABELS.get(k, k))}</option>" for k in buildable)
+        seat_model = config.get("model_id") or fallback_model
         model_options = "".join(
-            f"<option value='{_e(m.get('model_id'))}'{' selected' if config.get('model_id') == m.get('model_id') else ''}>"
+            f"<option value='{_e(m.get('model_id'))}'{' selected' if seat_model == m.get('model_id') else ''}>"
             f"{_e(m.get('label') or m.get('model_id'))}</option>" for m in models)
         policy_options = "".join(
             f"<option value='{_e(p)}'{' selected' if config.get('policy') == p else ''}>{_e(p)}</option>"
