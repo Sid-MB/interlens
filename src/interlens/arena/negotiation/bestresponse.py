@@ -137,18 +137,69 @@ def conditional_vote_values(accept_prob: np.ndarray, proposer: int | None, agent
 
     ``proposer=None`` values a vote on a facilitator-tabled offer, which no seat implicitly supports (see
     :func:`passage_probability`).
+
+    One offer is the ``K = 1`` case of :func:`conditional_vote_values_batch`, which is where the arithmetic
+    actually lives — a turn with many live offers should call that instead of this in a loop.
     """
-    row = np.array(np.asarray(accept_prob, dtype=float)[int(deal_index):int(deal_index) + 1], copy=True)
-    for seat in forced_yes:
-        row[0, int(seat)] = 1.0
-    for seat in forced_no:
-        row[0, int(seat)] = 0.0
-    yes, no = np.array(row, copy=True), np.array(row, copy=True)
-    yes[0, int(agent)], no[0, int(agent)] = 1.0, 0.0
-    p = None if proposer is None else int(proposer)
-    q_yes = float(passage_probability(yes, p, min_accept=min_accept, veto_seats=veto_seats)[0])
-    q_no = float(passage_probability(no, p, min_accept=min_accept, veto_seats=veto_seats)[0])
-    s, c = float(deal_surplus), float(continuation)
+    yes_v, no_v, q_yes, q_no = conditional_vote_values_batch(
+        accept_prob, [proposer], agent, [deal_index], [deal_surplus], continuation,
+        min_accept=min_accept, veto_seats=veto_seats, forced_yes=[forced_yes], forced_no=[forced_no])
+    return float(yes_v[0]), float(no_v[0]), float(q_yes[0]), float(q_no[0])
+
+
+def conditional_vote_values_batch(accept_prob: np.ndarray, proposers, agent: int, deal_indices,
+                                  deal_surpluses, continuation: float, *, min_accept: int | None = None,
+                                  veto_seats=(), forced_yes=None, forced_no=None) -> tuple:
+    """:func:`conditional_vote_values` for ``K`` offers at once; returns four ``(K,)`` arrays.
+
+    Same semantics per offer — each gets its own proposer, deal, already-cast ``forced_yes`` / ``forced_no``
+    votes, and surplus — but the Poisson-binomial solves are BATCHED. The DP in
+    :func:`passage_probability` is elementwise across its deal axis, so stacking K independent single-offer
+    rows into one call returns each row's own answer, bitwise identical to solving it alone. Offers are
+    grouped by proposer (the one argument the DP takes per call rather than per row), so a turn costs at most
+    two solves per distinct proposer instead of two per offer — the difference between O(live offers) and
+    O(seats) numpy calls on a turn, and the reason a long-horizon episode, whose live-offer list grows every
+    round, stops being quadratic.
+
+    Parameters
+    ----------
+    accept_prob : np.ndarray
+        ``(D, n)`` acceptance probabilities (full-information 0/1 or posterior).
+    proposers : sequence[int | None]
+        Per-offer proposing seat, or ``None`` for a facilitator-tabled offer with no implicit supporter.
+    agent : int
+        The seat whose yes/no vote is being valued (the same seat for every offer).
+    deal_indices, deal_surpluses : sequence
+        Per-offer row into ``accept_prob`` and the payoff agreement pays ``agent``.
+    continuation : float
+        What failing to pass is worth to ``agent`` — shared by every offer, since it is a property of the turn.
+    forced_yes, forced_no : sequence[sequence[int]] | None
+        Per-offer already-cast votes; ``None`` means none for any offer.
+    """
+    ap = np.asarray(accept_prob, dtype=float)
+    idx = [int(d) for d in deal_indices]
+    K = len(idx)
+    forced_yes = list(forced_yes or [()] * K)
+    forced_no = list(forced_no or [()] * K)
+    if not (len(proposers) == len(deal_surpluses) == len(forced_yes) == len(forced_no) == K):
+        raise ValueError("proposers, deal_indices, deal_surpluses and forced votes must be the same length")
+    rows = np.array(ap[idx], copy=True) if K else np.zeros((0, ap.shape[1]))
+    for k in range(K):
+        for seat in forced_yes[k]:
+            rows[k, int(seat)] = 1.0
+        for seat in forced_no[k]:
+            rows[k, int(seat)] = 0.0
+    yes, no = np.array(rows, copy=True), np.array(rows, copy=True)
+    yes[:, int(agent)], no[:, int(agent)] = 1.0, 0.0
+    q_yes, q_no = np.zeros(K), np.zeros(K)
+    groups: dict = {}
+    for k, p in enumerate(proposers):
+        groups.setdefault(None if p is None else int(p), []).append(k)
+    for p, ks in groups.items():
+        q_yes[ks] = passage_probability(yes[ks], p, min_accept=min_accept, veto_seats=veto_seats)
+        q_no[ks] = passage_probability(no[ks], p, min_accept=min_accept, veto_seats=veto_seats)
+    s = np.asarray(deal_surpluses, dtype=float)
+    c = float(continuation)
     return q_yes * s + (1.0 - q_yes) * c, q_no * s + (1.0 - q_no) * c, q_yes, q_no
 
 
@@ -227,6 +278,38 @@ def value_to_go_full_info(tables: GameTables, proposer_seq, T: int, discount: fl
     return V
 
 
+def value_to_go_full_info_cached(tables: GameTables, proposer_seq, T: int, discount: float = 0.95, *,
+                                 min_accept: int | None = None, veto_seats=()) -> np.ndarray:
+    """:func:`value_to_go_full_info` memoized on the game tables — the whole ``V`` curve, computed ONCE.
+
+    The joint value curve depends only on ``(tables, proposer_seq, T, discount, min_accept, veto_seats)``,
+    every one of which is fixed for an episode; a turn varies only which ROW of ``V`` it reads. Recomputing
+    the full backward induction on every turn therefore costs ``O(T)`` Poisson-binomial solves per turn and
+    ``O(T^2)`` per episode, which is what made a long-horizon omniscient seat expensive the moment it started
+    planning the real deadline. The cache lives on the ``GameTables`` instance (one per game, already cached
+    on the game itself), so it is per-game rather than global and needs no eviction policy; the stored array
+    is marked read-only so a caller cannot mutate a shared curve. Falls back to a plain recompute if the
+    tables object refuses the attribute.
+    """
+    key = (tuple(int(p) for p in proposer_seq), int(T), float(discount),
+           None if min_accept is None else int(min_accept), tuple(sorted(int(v) for v in veto_seats)))
+    cache = getattr(tables, "_value_to_go_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            tables._value_to_go_cache = cache
+        except Exception:      # a tables object that cannot carry the cache still gets correct values
+            return value_to_go_full_info(tables, proposer_seq, T, discount, min_accept=min_accept,
+                                         veto_seats=veto_seats)
+    hit = cache.get(key)
+    if hit is None:
+        hit = value_to_go_full_info(tables, proposer_seq, T, discount, min_accept=min_accept,
+                                    veto_seats=veto_seats)
+        hit.flags.writeable = False
+        cache[key] = hit
+    return hit
+
+
 def _proposal_full_info(tables: GameTables, proposer: int, cont: np.ndarray, *,
                         min_accept: int | None = None, veto_seats=()) -> tuple:
     """The proposer's subgame-perfect offer given the discounted continuation vector ``cont``: returns
@@ -266,11 +349,38 @@ def value_to_go_beliefs(tables: GameTables, agent: int, proposer_seq, T: int, di
     S = tables.surplus[:, agent] if objective is None else np.asarray(objective, dtype=float)   # (D,)
     n = tables.n_agents
     Vi = np.zeros(T + 2, dtype=float)
+    # The passage probabilities do NOT depend on the round: this seat's own p_pass is a function of
+    # ``accept_prob`` alone, and an opponent's conditional yes/no pair is a function of ``(p, opp_proposal[p])``
+    # alone — only the continuation value ``cont_i`` moves with ``t``. Memoizing them here makes the recursion's
+    # cost O(1) Poisson-binomial solves per DISTINCT proposer instead of one per round, which is what stops a
+    # deep horizon costing O(T) solves per turn (and, over an episode's O(T) turns, O(T^2) per episode). The
+    # cached values are the same float64 the loop computed before, in the same order, so every ``Vi[t]`` is
+    # bitwise unchanged; they are computed lazily, so a round the loop never reaches still costs nothing.
+    memo: dict = {}
+
+    def own_pass() -> np.ndarray:
+        if "own" not in memo:
+            memo["own"] = passage_probability(accept_prob, agent, min_accept=min_accept,
+                                              veto_seats=veto_seats)
+        return memo["own"]
+
+    def opp_votes(p: int, d: int) -> tuple:
+        key = (p, d)
+        if key not in memo:
+            # Under a non-unanimous rule, rejecting need not block passage. Value both votes by forcing the
+            # deciding seat's probability to 1/0 while leaving all other posterior votes unchanged.
+            yes = np.array(accept_prob[d:d + 1], copy=True)
+            no = np.array(yes, copy=True)
+            yes[0, agent], no[0, agent] = 1.0, 0.0
+            memo[key] = (float(passage_probability(yes, p, min_accept=min_accept, veto_seats=veto_seats)[0]),
+                         float(passage_probability(no, p, min_accept=min_accept, veto_seats=veto_seats)[0]))
+        return memo[key]
+
     for t in range(T, 0, -1):
         p = int(proposer_seq[(t - 1) % len(proposer_seq)])
         cont_i = discount * Vi[t + 1]
         if p == agent:
-            p_pass = passage_probability(accept_prob, agent, min_accept=min_accept, veto_seats=veto_seats)
+            p_pass = own_pass()
             ev = p_pass * S + (1.0 - p_pass) * cont_i
             Vi[t] = max(float(ev.max()), cont_i)
         else:
@@ -278,13 +388,7 @@ def value_to_go_beliefs(tables: GameTables, agent: int, proposer_seq, T: int, di
             if d is None:
                 Vi[t] = cont_i
                 continue
-            # Under a non-unanimous rule, rejecting need not block passage. Value both votes by forcing the
-            # deciding seat's probability to 1/0 while leaving all other posterior votes unchanged.
-            yes = np.array(accept_prob[d:d + 1], copy=True)
-            no = np.array(yes, copy=True)
-            yes[0, agent], no[0, agent] = 1.0, 0.0
-            q_yes = float(passage_probability(yes, p, min_accept=min_accept, veto_seats=veto_seats)[0])
-            q_no = float(passage_probability(no, p, min_accept=min_accept, veto_seats=veto_seats)[0])
+            q_yes, q_no = opp_votes(p, int(d))
             accept_val = q_yes * float(S[d]) + (1.0 - q_yes) * cont_i
             reject_val = q_no * float(S[d]) + (1.0 - q_no) * cont_i
             Vi[t] = max(accept_val, reject_val)
@@ -372,7 +476,8 @@ class BestResponseOracle(Oracle):
         offer_votes = _offer_vote_records(game, history)
 
         if self.accept_prob is None:
-            V = value_to_go_full_info(tables, seq, T, disc, min_accept=min_accept, veto_seats=veto_seats)
+            V = value_to_go_full_info_cached(tables, seq, T, disc, min_accept=min_accept,
+                                             veto_seats=veto_seats)
             cont_vec = disc * V[min(t + 1, T + 1)]
         else:
             opp_prop = self.opp_proposal or self._model_opp_proposals(
@@ -402,6 +507,37 @@ class BestResponseOracle(Oracle):
                 except (KeyError, ValueError, TypeError):
                     pass
 
+        # Vote valuation is done in ONE batched pass rather than per action. A turn's legal set carries an
+        # Accept and a Reject for every live offer, and the live-offer list grows every round, so the old
+        # per-action call made this oracle O(live offers) Poisson-binomial solves per turn — quadratic over a
+        # long-horizon episode. Collected here in ``legal`` order and solved together below; the per-action
+        # values are then read back, so ``vote_diagnostics`` keeps the order it always had.
+        votes = [a for a in legal if isinstance(a, (Accept, Reject)) and a.offer_id in offers]
+        vote_ids, seen_ids = [], set()
+        for a in votes:
+            if a.offer_id not in seen_ids:
+                seen_ids.add(a.offer_id)
+                vote_ids.append(a.offer_id)
+        vote_rows, vote_proposers, vote_surplus, vote_yes, vote_no = [], [], [], [], []
+        for oid in vote_ids:
+            idx = tables.index[offers[oid]]
+            record = offer_votes.get(oid, {})
+            proposer = record.get("proposer")
+            if proposer is None and not record.get("facilitator"):
+                supporters = sorted(record.get("accepts", ()))
+                proposer = supporters[0] if supporters else int(seq[(max(t, 1) - 1) % len(seq)])
+            vote_rows.append(idx)
+            vote_proposers.append(proposer)
+            vote_surplus.append(tables.surplus[idx, agent])
+            vote_yes.append(record.get("accepts", ()))
+            vote_no.append(set(record.get("rejects", ())) | walked)
+        yes_vals, no_vals, q_yeses, q_nos = conditional_vote_values_batch(
+            vote_ap, vote_proposers, agent, vote_rows, vote_surplus, cont_i,
+            min_accept=min_accept, veto_seats=veto_seats, forced_yes=vote_yes, forced_no=vote_no)
+        solved = {oid: (float(yes_vals[k]), float(no_vals[k]), float(q_yeses[k]), float(q_nos[k]),
+                        vote_proposers[k])
+                  for k, oid in enumerate(vote_ids)}
+
         values: dict = {}
         vote_diagnostics: list[dict] = []
         for a in legal:
@@ -409,17 +545,7 @@ class BestResponseOracle(Oracle):
                 idx = tables.index.get(tuple(int(x) for x in a.deal))
                 values[a] = float(prop_vals[idx]) if idx is not None else _NEG
             elif isinstance(a, (Accept, Reject)) and a.offer_id in offers:
-                idx = tables.index[offers[a.offer_id]]
-                record = offer_votes.get(a.offer_id, {})
-                proposer = record.get("proposer")
-                if proposer is None and not record.get("facilitator"):
-                    supporters = sorted(record.get("accepts", ()))
-                    proposer = supporters[0] if supporters else int(seq[(max(t, 1) - 1) % len(seq)])
-                yes_v, no_v, q_yes, q_no = conditional_vote_values(
-                    vote_ap, proposer, agent, idx, tables.surplus[idx, agent], cont_i,
-                    min_accept=min_accept, veto_seats=veto_seats,
-                    forced_yes=record.get("accepts", ()),
-                    forced_no=set(record.get("rejects", ())) | walked)
+                yes_v, no_v, q_yes, q_no, proposer = solved[a.offer_id]
                 values[a] = yes_v if isinstance(a, Accept) else no_v
                 vote_diagnostics.append({"offer_id": a.offer_id, "p_pass_if_accept": q_yes,
                                          "p_pass_if_reject": q_no, "accept_value": yes_v,

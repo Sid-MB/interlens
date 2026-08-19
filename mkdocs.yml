@@ -127,6 +127,7 @@ nav:
                       - rollout: reference/interlens/arena/negotiation/analysis/rollout.md
                       - surplus: reference/interlens/arena/negotiation/analysis/surplus.md
                       - taxonomy: reference/interlens/arena/negotiation/analysis/taxonomy.md
+                  - belief_accuracy: reference/interlens/arena/negotiation/belief_accuracy.md
                   - beliefs: reference/interlens/arena/negotiation/beliefs.md
                   - bestresponse: reference/interlens/arena/negotiation/bestresponse.md
                   - equilibrium: reference/interlens/arena/negotiation/equilibrium.md

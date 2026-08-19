@@ -952,12 +952,14 @@ class BayesianRationalPolicy(Policy):
         br = BestResponseOracle(state.seat, discount=disc, accept_prob=ap,
                                 min_accept=state.min_accept, veto_seats=state.veto_seats)
 
-        def acc_fn(deal):
-            row = tables.index[tuple(int(x) for x in deal)]
-            return float(passage_probability(
-                ap[row:row + 1], state.seat, min_accept=state.min_accept,
-                veto_seats=state.veto_seats)[0])
-        acceptor = AcceptanceOracle(state.seat, discount=disc, accept_prob_fn=acc_fn)
+        # The acceptance oracle needs P(this seat's offer passes) for EVERY deal. Solve them in one batched
+        # Poisson-binomial call and hand the oracle the vector: its per-deal callable path would re-enter
+        # ``passage_probability`` once per deal, which profiled as the single largest cost of a long-horizon
+        # private-information episode. The DP is elementwise across the deal axis, so row ``d`` of this vector
+        # is the same float64 the per-deal call returned.
+        pass_vec = passage_probability(ap, state.seat, min_accept=state.min_accept,
+                                       veto_seats=state.veto_seats)
+        acceptor = AcceptanceOracle(state.seat, discount=disc, accept_prob_vec=pass_vec)
         r_left = max(state.deadline - state.round + 1, 1)
         v = acceptor.reservation(tables, r_left, objective=obj)
 

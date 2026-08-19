@@ -437,12 +437,14 @@ def dm_graph(auction: dict, payload: dict) -> str:
         f"<td>{int(e.get('n_coordination_talk') or 0)}</td>"
         f"<td class='muted'>{_e(', '.join(f'{k}:{v}' for k, v in sorted((e.get('by_stage') or {}).items())) or '—')}</td>"
         f"</tr>" for e in edges)
+    # Whether DM text is present is READ from the record, never assumed. Both states are real across the
+    # program's vintages, and the difference decides whether the coordination-talk screen saw the DM channel at
+    # all — a page that assumed either way would misdescribe half the runs.
     text_note = ("" if channel.get("dm_text_persisted") else
-                 "<div class='warn'><b>DM text is not in this record.</b> This vintage persisted DM "
-                 "<em>counts</em> (<code>outcome.dm_graph</code>) but not DM payloads, so the graph's weights "
-                 "are real and the coordination-talk screen can only see broadcast text. Persisting "
-                 "<code>state['dm'].records</code> in the scenario's <code>score()</code> is what makes the "
-                 "remaining ordered dyads readable at all.</div>")
+                 "<div class='warn'><b>DM text is not in this record.</b> The graph's weights come from the "
+                 "recorded DM <em>counts</em> (<code>outcome.dm_graph</code>) and are real, but no DM payload "
+                 "was stored, so the coordination-talk screen below could only read broadcast text on this "
+                 "episode.</div>")
     return f"""<section class='card' id='channel'><h2>Who talked to whom</h2>
  <div class='sub'>A directed edge is one seat DM'ing another, its width the message count. Every stage's edges
  are in the page; the buttons restrict the drawing to one stage at a time. Beside it, the same counts as

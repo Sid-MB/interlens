@@ -42,6 +42,8 @@ sequence), so stored episodes replay and rescore exactly (``arena/replay.py``).
 """
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 
 from ..actions import (Accept, Action, FACILITATOR, FACILITATOR_SEAT, LEGALITY, OfferRegistry, ParseResult,
@@ -132,6 +134,16 @@ class ScorableNegotiation(Scenario):
 			raise ValueError(f"unknown arm {arm!r}; expected one of {ARMS}")
 		cfg = cfg or {}
 		spec = self._spec(instance)
+		# The deadline the episode is actually played to. ``cfg["rounds"]`` overrides the bank's own value (the
+		# rounds-sweep flag), and the OVERRIDE has to reach the spec, not just ``st["rounds"]``: every oracle
+		# reads its horizon off the game it is handed (``BestResponseOracle``'s backward-induction depth,
+		# ``rounds_left`` for the acceptance oracle's reservation), so a spec still carrying the bank's four
+		# rounds makes them score a 256-round episode against a four-round horizon. Nothing else reads
+		# ``spec.rounds`` — the protocol itself runs off ``st["rounds"]`` below — so when no override is
+		# present this is the identical object and every frozen cell is untouched.
+		rounds = int(cfg.get("rounds", spec.rounds))
+		if rounds != spec.rounds:
+			spec = dataclasses.replace(spec, rounds=rounds)
 		n = spec.n_parties
 		names = list(PERSONAS[:n])  # neutral, de-anchored seat labels (decorrelated from any role semantics)
 		personas = cfg.get("personas")
@@ -161,7 +173,7 @@ class ScorableNegotiation(Scenario):
 			"proposer_base": spec.proposer if cfg.get("fixed_proposer") else (spec.proposer + seed) % n,
 			# knobs (recorded in the episode's cell_cfg)
 			"cell": cfg.get("cell", "base"),
-			"rounds": cfg.get("rounds", spec.rounds),
+			"rounds": rounds,
 			"history_window": cfg.get("history_window"),      # None => full history
 			"show_own_scores": cfg.get("show_own_scores", True),
 			# emit the machine-readable negotiation_state block (a PolicyParticipant reads it authoritatively;

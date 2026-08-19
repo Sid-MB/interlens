@@ -965,11 +965,11 @@ INDEX_COLUMNS = [("page", "label", "link"), ("model", "model", "text"), ("arm", 
 #: design.md §10; ``suppression`` and ``efficiency`` are the two the campaign reads first, so they lead.
 AUCTION_INDEX_COLUMNS = [("page", "label", "link"), ("cell", "cell", "text"), ("arm", "arm", "text"),
                          ("format", "family", "text"), ("channel", "channel", "text"),
-                         ("T", "horizon", "num"), ("instance", "instance", "text"),
+                         ("T", "horizon", "int"), ("instance", "instance", "text"),
                          ("difficulty", "difficulty", "num"), ("parameter tags", "difficulty_tags", "tags"),
-                         ("seed", "seed", "num"), ("efficiency", "efficiency", "bar"),
+                         ("seed", "seed", "int"), ("efficiency", "efficiency", "bar"),
                          ("suppression", "suppression", "num"), ("rev / bench", "revenue_ratio", "num"),
-                         ("onset", "onset", "onset"), ("messages", "messages", "num"),
+                         ("onset", "onset", "onset"), ("messages", "messages", "int"),
                          ("cf agreement", "cf_agreement_pct", "num"),
                          ("fabricated", "fabricated_pct", "pct"), ("hazards", "hazards", "hazards")]
 
@@ -979,7 +979,17 @@ def _index_cell(row: dict, key: str, kind: str, scale: float) -> str:
     rendered as (``"10.0"`` sorts before ``"9.0"`` as text, and an em dash must sink rather than count as zero)."""
     v = row.get(key)
     if kind == "link":
+        # A row with no page gets plain text, not an empty anchor. An `href=''` renders as a live link that
+        # reloads the index, which is worse than no link: it tells a reader a page exists and then does nothing.
+        if not row.get("href"):
+            return f"<td data-sort='{_e(v)}'>{_e(v)}<span class='muted'> (no page)</span></td>"
         return f"<td data-sort='{_e(v)}'><a href='{_e(row['href'])}'>{_e(v)}</a></td>"
+    if kind == "int":
+        # A whole-number column (a horizon, a seed, a message count) formatted as one. `num`'s three decimals
+        # turn a horizon of 8 into "8.000", which reads as a measurement rather than a count.
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            return "<td data-sort=''>—</td>"
+        return f"<td data-sort='{v}'>{int(v):,}</td>"
     if kind == "deal":
         return (f"<td data-sort='{1 if row.get('deal') else 0}'>"
                 f"{'deal' if row.get('deal') else '<span class=neg>no deal</span>'}</td>")

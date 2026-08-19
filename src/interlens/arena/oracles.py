@@ -45,6 +45,11 @@ import numpy as np
 from .actions import Action, action_from_json, action_from_key, action_key
 
 
+#: Types that are already JSON-safe leaves. Matched by EXACT type (not ``isinstance``) so a subclass — an
+#: ``IntEnum``, a numpy scalar registered against a Python ABC — still takes the full path below.
+_PASSTHROUGH = frozenset({str, int, float, bool, type(None)})
+
+
 def _jsonify(value: Any) -> Any:
 	"""Recursively coerce an oracle's free-form ``beliefs`` / ``extra`` payload to JSON-safe data, so the
 	episode's oracle log stays ``json.dumps``-able no matter what an oracle stashes there. THE single coercion for
@@ -54,7 +59,15 @@ def _jsonify(value: Any) -> Any:
 	numpy array/scalar → list/py-scalar; a dataclass (e.g. OpponentType) → its fields; an ``Action`` → its
 	``to_json()``; a dict KEYED BY actions → the same ``[{"action", "value"}]`` list as ``action_values`` (a JSON
 	object key can't be an object — the case that crashed a best-response oracle's action-keyed table); any other
-	non-string dict key is stringified; lists/tuples recurse; primitives pass through."""
+	non-string dict key is stringified; lists/tuples recurse; primitives pass through.
+
+	The exact-type test below is a fast path, not a rule change: a ``str``/``int``/``float``/``bool``/``None``
+	already falls through every branch to the same ``return value``, so this only skips the six failing checks
+	on its way there. It matters because the leaves outnumber everything else — a long-horizon turn's
+	``surplus_loss`` is thousands of small dicts of exactly these, and the ``isinstance`` chain over them was
+	the largest single cost of a deep-horizon episode."""
+	if type(value) in _PASSTHROUGH:
+		return value
 	if isinstance(value, np.ndarray):
 		return value.tolist()
 	if isinstance(value, np.generic):

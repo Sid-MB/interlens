@@ -40,6 +40,7 @@ Multilateral handling: one independent model per opponent (the standard independ
 """
 from __future__ import annotations
 
+import collections
 import functools
 import itertools
 from dataclasses import dataclass
@@ -187,7 +188,11 @@ def _prepared_default_grid(option_counts: tuple, tau_levels: tuple, max_rankings
     space, so per-turn acceptance probabilities over ALL deals collapse to a single ``posterior @
     accept_matrix`` matmul instead of rebuilding the (|types| x |D|) utility tensor per opponent per turn.
     ``accept_matrix`` is float64 so the per-turn ``posterior(float64) @ accept_matrix`` is a single BLAS gemv
-    (a float32 store would force a per-call upcast that bypasses BLAS). Safe to share — nothing is mutated."""
+    (a float32 store would force a per-call upcast that bypasses BLAS). Safe to share — nothing is mutated.
+
+    The underlying ``(|types| x |D|)`` utility tensor the two derived matrices are cut from is returned as well
+    (:meth:`BeliefState.type_utility_matrix`), since it is already built here and a belief-accuracy diagnostic
+    needs the utilities themselves rather than their threshold indicator or their rescaled surplus."""
     types = tuple(build_type_grid(option_counts, tau_levels=tau_levels, max_rankings=max_rankings, seed=seed))
     W, S, TAU, ideal = _build_arrays(types, option_counts)
     deals_arr = np.array(list(itertools.product(*[range(o) for o in option_counts])), dtype=int)  # (D, J)
@@ -202,7 +207,8 @@ def _prepared_default_grid(option_counts: tuple, tau_levels: tuple, max_rankings
     bt = Xt.max(axis=1)
     znorm = (Xt / np.where(bt > 0.0, bt, 1.0)[:, None]).astype(np.float64)                         # (T, D)
     znorm.flags.writeable = False
-    return types, W, S, TAU, ideal, accept, znorm
+    U_all.flags.writeable = False
+    return types, W, S, TAU, ideal, accept, znorm, U_all
 
 
 # --------------------------------------------------------------------------------------------------------- #
@@ -237,6 +243,14 @@ class FrequencyModel:
         """Induced utility of ``deal`` in ``[0, 1]`` (per-issue value normalized to its max)."""
         w = self.weights()
         return float(sum(w[j] * (self._value[j][deal[j]] / self._value[j].max()) for j in range(self.J)))
+
+    def copy(self) -> "FrequencyModel":
+        """An independent model with the same counts — the fold state a cached replay hands out."""
+        clone = FrequencyModel(self.option_counts)
+        clone._weight = self._weight.copy()
+        clone._value = [v.copy() for v in self._value]
+        clone._last = self._last
+        return clone
 
 
 # --------------------------------------------------------------------------------------------------------- #
@@ -279,16 +293,17 @@ class BeliefState:
         if types is None:
             # reuse the cached immutable default grid + arrays + acceptance matrix (shared read-only)
             (grid, self._W, self._S, self._TAU, self._ideal, self._accept_matrix,
-             self._znorm_matrix) = _prepared_default_grid(
+             self._znorm_matrix, self._utility_matrix) = _prepared_default_grid(
                 self.option_counts, tuple(tau_levels), int(max_rankings), int(seed))
             self.types = list(grid)
         else:
             self.types = list(types)
             self._W, S, self._TAU, self._ideal = _build_arrays(self.types, self.option_counts)
             self._S = list(S)
-            # small custom grid: acceptance and normalized surplus are computed on the fly (cheap)
+            # small custom grid: acceptance, normalized surplus and the utility tensor are computed on the fly
             self._accept_matrix = None
             self._znorm_matrix = None
+            self._utility_matrix = None
         self.sigma = float(sigma)
         self.lam = float(lam)
         self.floor = float(floor)
@@ -417,6 +432,26 @@ class BeliefState:
         U = sum(self._W[:, j][:, None] * self._S[j][:, deals_arr[:, j]] for j in range(deals_arr.shape[1]))
         return self.posterior() @ (U >= self._TAU[:, None])
 
+    def type_thresholds(self) -> np.ndarray:
+        """The ``(|types|,)`` reservation ``tau`` of every grid type, aligned with ``self.types`` (read-only on
+        the shared default grid). The vector form of the per-type ``threshold`` attribute, exposed so a
+        diagnostic can compare a whole grid against a known reservation without rebuilding it from the
+        dataclasses."""
+        return self._TAU
+
+    def type_utility_matrix(self, deals_arr: np.ndarray) -> np.ndarray:
+        """The ``(|types|, D)`` per-type utility tensor for a batch of deals: entry ``[t, d]`` is type ``t``'s
+        ``[0, 1]``-scale utility of deal ``d``.
+
+        The raw quantity :meth:`accept_prob_matrix` thresholds and :meth:`expected_normalized_surplus_matrix`
+        rescales, exposed because a *diagnostic* needs the utilities themselves — posterior-expected opponent
+        utility is ``posterior() @ type_utility_matrix(...)``, one gemv. Returns the cached read-only tensor
+        when the batch is the full enumerated space (the common case) and builds it on the fly otherwise, so
+        the two paths agree numerically."""
+        if self._utility_matrix is not None and self._utility_matrix.shape[1] == deals_arr.shape[0]:
+            return self._utility_matrix
+        return sum(self._W[:, j][:, None] * self._S[j][:, deals_arr[:, j]] for j in range(deals_arr.shape[1]))
+
     def expected_normalized_surplus_matrix(self, deals_arr: np.ndarray) -> np.ndarray:
         """Posterior-expected **normalized surplus** for a whole batch of deals: ``deals_arr`` is the ``(D, J)``
         int option-index array (``GameTables.deals_arr``); returns a ``(D,)`` vector in ``[0, 1]``.
@@ -451,6 +486,84 @@ class BeliefState:
         """The cheap frequency-model readout of the opponent's utility of ``deal`` (control comparison)."""
         return self._freq.utility(deal)
 
+    def copy(self) -> "BeliefState":
+        """An independent belief with the same posterior, sharing the immutable type grid.
+
+        Only the fold state is duplicated (log-posterior, posterior, last observed offer, frequency counts);
+        the grid arrays and the cached type-by-deal matrices are read-only and shared, so a copy costs two
+        ``|types|`` vectors rather than a grid rebuild. This is what :func:`replay_belief` hands callers, so a
+        cached posterior can never be mutated by whoever received it."""
+        clone = object.__new__(BeliefState)
+        clone.__dict__.update(self.__dict__)
+        clone.types = self.types                 # the shared immutable grid (never mutated)
+        clone._logpost = self._logpost.copy()
+        clone._post = self._post.copy()
+        clone._freq = self._freq.copy()
+        clone._last = self._last
+        return clone
+
+
+# --------------------------------------------------------------------------------------------------------- #
+# Cached incremental replay: the same offer prefix is folded ONCE per process, not once per turn.
+# --------------------------------------------------------------------------------------------------------- #
+#: How many distinct offer-prefix posteriors to keep. Each entry costs two ``|types|`` float64 vectors (~93 KB
+#: on the default five-seat grid), so the default is a few hundred MB at most — a deliberate memory-for-CPU
+#: trade. Only the IMMEDIATELY preceding prefix is needed to extend a sequence by one offer, and that entry is
+#: the most recently used, so a modest cache serves many concurrent episodes; raise it only if a profile shows
+#: prefix misses.
+REPLAY_CACHE_ENTRIES = 4096
+
+_REPLAY_CACHE: "collections.OrderedDict[tuple, BeliefState]" = collections.OrderedDict()
+
+
+def replay_belief(option_counts, offers, **kwargs) -> BeliefState:
+    """A :class:`BeliefState` that has observed ``offers`` in order — reusing the longest cached prefix.
+
+    ``observe`` is a pure left fold: the state after ``[d1 ... dk]`` depends on nothing but that sequence, so
+    replaying a prefix and then folding in the remaining offers gives *exactly* the state a from-scratch
+    replay would (same operations, same order, same float64). A negotiation turn extends its opponent's offer
+    list by at most one entry, so the cached prefix is almost always all but the last offer, and each turn
+    folds ONE observation instead of the whole history — which is what stops a seat's per-turn belief cost
+    growing with the round number.
+
+    Returns a private :meth:`BeliefState.copy` every time, so the caller may mutate or further ``observe`` on
+    the result without touching the cache. Grid-identity ``kwargs`` (``sigma``/``lam``/``floor``/``mode``/
+    ``anchor_first``/``seed``/``tau_levels``/``max_rankings``) are part of the cache key; passing an explicit
+    ``types=`` grid bypasses the cache entirely, since a caller-supplied grid has no stable identity.
+    """
+    offers = tuple(tuple(int(x) for x in d) for d in offers)
+    option_counts = tuple(int(x) for x in option_counts)
+    if kwargs.get("types") is not None:
+        state = BeliefState(option_counts, **kwargs)
+        for deal in offers:
+            state.observe(deal)
+        return state
+    kwargs.pop("types", None)
+    ident = (option_counts, tuple(sorted((k, tuple(v) if isinstance(v, (list, tuple)) else v)
+                                         for k, v in kwargs.items())))
+    for cut in range(len(offers), -1, -1):
+        hit = _REPLAY_CACHE.get((ident, offers[:cut]))
+        if hit is not None:
+            _REPLAY_CACHE.move_to_end((ident, offers[:cut]))
+            state = hit.copy()
+            break
+    else:                                        # nothing cached, not even the empty prefix
+        cut, state = 0, BeliefState(option_counts, **kwargs)
+    for k in range(cut, len(offers)):
+        state.observe(offers[k])
+        _REPLAY_CACHE[(ident, offers[:k + 1])] = state.copy()
+    if cut == 0 and not offers:
+        _REPLAY_CACHE[(ident, ())] = state.copy()
+    while len(_REPLAY_CACHE) > REPLAY_CACHE_ENTRIES:
+        _REPLAY_CACHE.popitem(last=False)
+    return state
+
+
+def clear_replay_cache() -> None:
+    """Drop every cached offer-prefix posterior. Only needed to reclaim memory or to measure cold timings —
+    correctness never depends on the cache, since a hit and a miss produce the same state."""
+    _REPLAY_CACHE.clear()
+
 
 # --------------------------------------------------------------------------------------------------------- #
 # BeliefOracle: manage one BeliefState per opponent and mount as an interlens Oracle.
@@ -474,19 +587,16 @@ class BeliefOracle(Oracle):
         self._types = types
         self.states: dict[int, BeliefState] = {}
 
-    def _ensure(self, opponent: int, option_counts):
-        if opponent not in self.states:
-            self.states[opponent] = BeliefState(option_counts, types=self._types, **self._kw)
-        return self.states[opponent]
-
     def update_from_offers(self, offers_by_opponent: dict, option_counts):
         """Feed each opponent's ordered list of proposed deals into its belief state (idempotent rebuild:
-        resets and replays, so it is safe to call each turn with the full history)."""
+        resets and replays, so it is safe to call each turn with the full history).
+
+        The replay goes through :func:`replay_belief`, which reuses the longest cached offer prefix, so
+        "rebuild from scratch every turn" costs one folded observation per turn rather than the whole history.
+        The result is identical either way — that function returns a private copy of a pure fold."""
         self.states.clear()
         for opp, offers in offers_by_opponent.items():
-            st = self._ensure(int(opp), option_counts)
-            for d in offers:
-                st.observe(tuple(int(x) for x in d))
+            self.states[int(opp)] = replay_belief(option_counts, offers, types=self._types, **self._kw)
         return self
 
     def evaluate(self, game, history, agent, legal):

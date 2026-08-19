@@ -98,7 +98,7 @@ def reservation_values(values, probs, T: int, *, cost: float = 0.0, discount: fl
 # Offer distribution induced by beliefs.
 # --------------------------------------------------------------------------------------------------------- #
 def offer_surplus_pmf(tables: GameTables, agent: int, accept_prob_fn=None, *, only_closable: bool = True,
-                      only_ir: bool = True, objective=None):
+                      only_ir: bool = True, objective=None, accept_weights=None):
     """The distribution ``F`` of the surplus ``agent`` expects to *receive*, induced by the belief posterior.
 
     Each deal ``d`` is weighted by ``P(all opponents accept d)`` (so only deals that can actually close carry
@@ -113,7 +113,14 @@ def offer_surplus_pmf(tables: GameTables, agent: int, accept_prob_fn=None, *, on
     accept_prob_fn : callable | None
         ``accept_prob_fn(deal) -> P(all opponents accept deal)``. Typically
         ``lambda d: prod_j belief_states[j].accept_prob(d)``. If None, all closable = uniform (full-info
-        proxy: every IR deal equally offerable).
+        proxy: every IR deal equally offerable). Ignored when ``accept_weights`` is given.
+    accept_weights : np.ndarray | None
+        The SAME per-deal acceptance probabilities as a ready ``(|D|,)`` vector in ``tables.deals`` order —
+        the vectorized form of ``accept_prob_fn``, and the one to prefer. ``passage_probability`` already
+        solves every deal at once (its Poisson-binomial DP is elementwise across the deal axis, so a row of
+        the batched result is bitwise identical to solving that row alone), whereas calling ``accept_prob_fn``
+        here runs one numpy-heavy call per deal — |D| times per turn, per seat, which measured as the single
+        largest cost in a long-horizon private-information episode.
     only_closable : bool
         Drop deals with zero acceptance probability.
     only_ir : bool
@@ -131,7 +138,12 @@ def offer_surplus_pmf(tables: GameTables, agent: int, accept_prob_fn=None, *, on
     """
     surplus = tables.surplus[:, agent] if objective is None else np.asarray(objective, dtype=float)
     D = tables.n_deals
-    if accept_prob_fn is None:
+    if accept_weights is not None:
+        w = np.asarray(accept_weights, dtype=float)
+        if w.shape != (D,):
+            raise ValueError(f"accept_weights must have shape ({D},) in tables.deals order, got {w.shape}")
+        w = np.array(w, copy=True)   # nothing below mutates w today; copy so it can never start silently doing so
+    elif accept_prob_fn is None:
         w = np.ones(D)
     else:
         w = np.array([float(accept_prob_fn(d)) for d in tables.deals])
@@ -167,6 +179,11 @@ class AcceptanceOracle(Oracle):
         Disagreement flow while unagreed.
     accept_prob_fn : callable | None
         ``deal -> P(all opponents accept)`` from the belief oracle; None = full-info uniform-offer proxy.
+    accept_prob_vec : np.ndarray | None
+        The vectorized form of ``accept_prob_fn``: a ``(|D|,)`` array of the same probabilities in
+        ``tables.deals`` order (see :func:`offer_surplus_pmf`). Prefer it — a caller that already holds the
+        posterior acceptance table can produce it with ONE ``passage_probability`` call, where the callable
+        form re-solves the same Poisson-binomial once per deal. Takes precedence over ``accept_prob_fn``.
     outside_value : float | None
         Optional reservation floor (outside option).
     """
@@ -174,12 +191,13 @@ class AcceptanceOracle(Oracle):
     name = "acceptance"
 
     def __init__(self, agent: int, *, discount: float | None = None, cost: float = 0.0, flow: float = 0.0,
-                 accept_prob_fn=None, outside_value: float | None = None):
+                 accept_prob_fn=None, outside_value: float | None = None, accept_prob_vec=None):
         self.agent = int(agent)
         self.discount = None if discount is None else float(discount)
         self.cost = float(cost)
         self.flow = float(flow)
         self.accept_prob_fn = accept_prob_fn
+        self.accept_prob_vec = None if accept_prob_vec is None else np.asarray(accept_prob_vec, dtype=float)
         self.outside_value = outside_value
 
     def _disc(self, override=None) -> float:
@@ -202,7 +220,7 @@ class AcceptanceOracle(Oracle):
         table welfare it expects to reach by continuing, and it should accept iff the standing offer's welfare
         clears it."""
         vals, ps = offer_surplus_pmf(tables, self.agent if agent is None else int(agent), self.accept_prob_fn,
-                                     objective=objective)
+                                     objective=objective, accept_weights=self.accept_prob_vec)
         curve = reservation_values(vals, ps, max(rounds_left, 0), cost=self.cost,
                                    discount=self._disc(discount), flow=self.flow,
                                    outside_value=self.outside_value)
@@ -212,7 +230,8 @@ class AcceptanceOracle(Oracle):
                           agent: int | None = None) -> list:
         """The full endogenous reservation curve ``tau_i(rounds_left)`` for ``rounds_left = 0..T``. ``agent`` as
         in :meth:`reservation`."""
-        vals, ps = offer_surplus_pmf(tables, self.agent if agent is None else int(agent), self.accept_prob_fn)
+        vals, ps = offer_surplus_pmf(tables, self.agent if agent is None else int(agent), self.accept_prob_fn,
+                                     accept_weights=self.accept_prob_vec)
         return reservation_values(vals, ps, T, cost=self.cost, discount=self._disc(discount), flow=self.flow,
                                   outside_value=self.outside_value)
 

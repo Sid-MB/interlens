@@ -38,6 +38,7 @@ Three pieces:
 """
 from __future__ import annotations
 
+import functools
 import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Container
@@ -422,8 +423,29 @@ def action_key(action: Action | None) -> str | None:
 	One definition serves two needs that must agree: an ``OracleVerdict``'s ``action_values`` is keyed by action,
 	and JSON object keys must be strings; and the oracles sort their scored actions by this key so a stored
 	verdict is byte-reproducible regardless of the order the legal actions arrived in. :func:`action_from_key`
-	is the exact inverse."""
-	return None if action is None else json.dumps(action.to_json(), sort_keys=True)
+	is the exact inverse.
+
+	Memoized when it can be: every ``Action`` is a frozen dataclass, so the key is a pure function of an
+	immutable value and a cache hit returns the identical string. It earns its keep because the oracles call
+	this once per legal action per turn to SORT them, and a long-horizon turn carries an accept and a reject
+	for every live offer — the same few actions, re-created and re-serialized every round. An action that is
+	nonetheless unhashable (a ``Propose`` built with a list ``deal`` rather than the decoded tuple) still
+	works: it takes the uncached path and gets the same string, so memoization can never narrow what this
+	function accepts."""
+	if action is None:
+		return None
+	try:
+		return _action_key_cached(action)
+	except TypeError:                       # unhashable action — serialize it directly
+		return _action_key_uncached(action)
+
+
+def _action_key_uncached(action: Action) -> str:
+	"""The key itself; see :func:`action_key`, which adds ``None`` handling and the cache."""
+	return json.dumps(action.to_json(), sort_keys=True)
+
+
+_action_key_cached = functools.lru_cache(maxsize=8192)(_action_key_uncached)
 
 
 def action_from_key(key: str | None) -> Action | None:
