@@ -244,6 +244,27 @@ def test_thinking_defaults_do_not_offer_a_mode_the_model_rejects():
     assert offered == ["on"] and selected == "on"
 
 
+# -------------------------------------------------------------------------------------- shuffle bar --
+def test_the_shuffle_button_says_what_the_last_shuffle_did():
+    """Who plays which party is an experimental variable — the proposer order rotates from the proposer base —
+    so the page shows the applied permutation in the seats' own names rather than only scrambling the cards."""
+    html = render_lobby_html(_state(last_shuffle=[2, 0, 1, 3]))
+    assert "id='lobby-shuffle'" in html and "Shuffle seats" in html
+    note = html.split("id='lobby-shuffle-note'>")[1].split("</span>")[0]
+    assert note == "last shuffle: Avery ← Casey, Blake ← Avery, Casey ← Blake"     # Devon did not move
+    assert "who plays which party is as you set it" in render_lobby_html(_state())
+    assert "left the lineup unchanged" in render_lobby_html(_state(last_shuffle=[0, 1, 2, 3]))
+
+
+def test_the_shuffle_button_asks_the_server_to_permute():
+    """The permutation happens server-side so it can be recorded on the game that gets played; the button is a
+    one-key POST and the page re-renders from the answer, so there is no second shuffle implementation."""
+    body = re.search(r"async function shuffleSeats\(\) \{(.*?)\n\}", JS_LOBBY, re.S).group(1)
+    assert 'JSON.stringify({ shuffle: true })' in body
+    assert "applyState(body)" in body
+    assert "Math.random" not in JS_LOBBY, "the lineup is permuted by the server, not by the browser"
+
+
 # -------------------------------------------------------------------------------- all model seats row --
 def test_the_all_seats_row_offers_the_same_choices_a_card_does():
     """One row configures the whole lineup, so it must not be able to express a seat a card could not."""

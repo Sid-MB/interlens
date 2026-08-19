@@ -182,6 +182,7 @@ function paint() {
   if (budget) budget.required = meteredCount() > 0;
   const n = seats().filter(s => s.kind === "llm").length;
   setStat("lobby-all-count", n + " model seat" + (n === 1 ? "" : "s"));
+  shuffleNote();
   seats().forEach((s, i) => paintSeatKind(i));
 }
 
@@ -345,6 +346,40 @@ function applyAll() {
   push();
 }
 
+/* ---------------------------------------------------------------- shuffling the lineup --- */
+/* Randomize who plays which party. The SERVER permutes (`update_lobby({shuffle: true})`) and answers with the
+   new lineup, which the page re-renders from like any other edit — so the permutation is recorded on the game
+   that gets played rather than living only here, and there is no second shuffle implementation to keep in step.
+   Seat names and parties do not move: only the occupant configurations do. */
+async function shuffleSeats() {
+  const btn = $("lobby-shuffle");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(ROUTES.lobby, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shuffle: true }) });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) { status(body.error || ("shuffle refused (" + r.status + ")"), true); return; }
+    applyState(body);                                  /* repaints the cards and the note */
+    status("shuffled", false);
+  } catch (e) {
+    status("could not reach the server: " + e, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/* What the last shuffle did, in the seats' own names — the same line the server rendered, rewritten as the
+   state changes so a hand edit afterwards stops it claiming a permutation that no longer describes anything. */
+function shuffleNote() {
+  const note = $("lobby-shuffle-note");
+  if (!note) return;
+  const order = STATE.last_shuffle || [];
+  const moved = order.map((src, i) => [i, src]).filter(([i, src]) => i !== src);
+  note.textContent = !order.length ? "who plays which party is as you set it"
+    : !moved.length ? "last shuffle left the lineup unchanged — every arrangement of it looks the same"
+    : "last shuffle: " + moved.map(([i, src]) => seatName(i) + " ← " + seatName(src)).join(", ");
+}
+
 /* Debounced so typing into the instructions box is one POST at the end of a sentence rather than one per
    keystroke; the state on the page is already correct, this only catches the server up. */
 function schedulePost() {
@@ -446,6 +481,8 @@ const resetBtn = $("lobby-reset");
 if (resetBtn) resetBtn.addEventListener("click", reset);
 const applyAllBtn = $("lobby-apply-all");
 if (applyAllBtn) applyAllBtn.addEventListener("click", applyAll);
+const shuffleBtn = $("lobby-shuffle");
+if (shuffleBtn) shuffleBtn.addEventListener("click", shuffleSeats);
 /* No polling: a lobby with no session has nothing to stream, so a tab catches up when it is looked at again. */
 window.addEventListener("focus", refresh);
 subscribe(STATE.sid);
@@ -456,6 +493,7 @@ registerKeys([
   { keys: ["v"], what: "open the live page", run: () => { location.href = ROUTES.play; } },
   { keys: ["r"], what: "reload the lineup from the server", run: refresh },
   { keys: ["a"], what: "apply the all-model-seats row", run: applyAll },
+  { keys: ["s"], what: "shuffle who plays which party", run: shuffleSeats },
   { keys: ["?"], what: "show or hide this help", run: () => { const h = $("help"); if (h) h.hidden = !h.hidden; } },
   { keys: ["Escape"], what: "", run: () => { const h = $("help"); if (h) h.hidden = true; } },
 ]);

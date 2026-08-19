@@ -15,6 +15,7 @@
 #
 # [implement: live-play/laneB] 2026-08-16
 # [implement: live-play/laneE] 2026-08-17
+# [implement: live-play/lobby-defaults] 2026-08-19
 """``LiveSession`` and ``SessionManager``: lobby to table, and the stream a live game emits.
 
 Every test here plays a REAL episode through the real engine — a two-issue, three-seat scorable negotiation with
@@ -32,6 +33,7 @@ from __future__ import annotations
 import functools
 import json
 import queue
+import random
 import threading
 import time
 
@@ -42,7 +44,7 @@ from interlens.arena.live.human import HumanParticipant
 from interlens.arena.live.payload import bubble_html, turn_delta
 from interlens.arena.live.provider import BankInfo, ModelInfo, PreparedGame, SeatConfig
 from interlens.arena.live.session import (DEFAULT_BUDGET_USD, INSTRUCTION_HEADER, LiveSession, SessionManager,
-                                          apply_private_instructions)
+                                          apply_private_instructions, shuffled_seats)
 from interlens.arena.negotiation.games import build_preset_instance
 from interlens.arena.negotiation.policy_participant import PolicyParticipant
 from interlens.arena.negotiation.sheets import GameSpec
@@ -195,7 +197,7 @@ def test_the_lobby_state_carries_every_key_its_three_readers_need(tmp_path):
     state = make_manager(tmp_path).lobby_state()
     assert {"banks", "framings", "models", "policies", "seat_kinds", "seat_names", "bank", "framing",
             "instance_id", "seats", "budget_usd", "running", "sid", "phase", "episode_id",
-            "error"} <= set(state)
+            "last_shuffle", "error"} <= set(state)
     assert state["seat_names"] == list(PERSONAS[:3])
     assert state["instance_id"] == "", '"" is how the lobby says "let the provider choose"'
     assert state["running"] is False and state["sid"] is None and state["error"] == ""
@@ -275,6 +277,70 @@ def test_a_swap_onto_a_bare_model_seat_resolves_the_same_defaults(tmp_path):
     session.swap_seat(0, SeatConfig(kind="llm"))
     assert session.seats[0].model_id == "stub-paid" and session.seats[0].thinking == "on"
     assert manager.provider.model_seats[-1]["thinking"] == "on"
+    play_out(session)
+
+
+# ------------------------------------------------------------------------------ shuffling the lineup --
+def test_the_shuffle_is_a_pinned_permutation_of_the_same_seats(tmp_path):
+    """The pure function, with the RNG injected: an exact permutation rather than "something moved", and the
+    order it reports is the map that produced it (``new[i] is seats[order[i]]``)."""
+    seats = [SeatConfig(kind="llm", model_id="stub-paid"), SeatConfig(kind="rational", policy="bayes-rational"),
+             SeatConfig(kind="human", display_name="Sid")]
+    shuffled, order = shuffled_seats(seats, random.Random(0))
+    assert sorted(order) == [0, 1, 2] and order != [0, 1, 2]
+    assert shuffled == [seats[i] for i in order]
+    assert random.Random(0) and shuffled_seats(seats, random.Random(0))[1] == order       # reproducible
+    # The seats themselves are untouched objects, so a shuffle can never edit a lineup it only moved.
+    assert all(s in seats for s in shuffled)
+
+
+def test_a_lineup_with_no_distinguishable_arrangement_is_returned_unchanged(tmp_path):
+    """Three identical policy seats have exactly one arrangement. Reporting the identity is the honest answer;
+    re-drawing forever would hang the lobby on the one lineup where nothing can move."""
+    seats = [SeatConfig(kind="rational", policy="bayes-rational") for _ in range(3)]
+    shuffled, order = shuffled_seats(seats, random.Random(1))
+    assert order == [0, 1, 2] and [s.to_json() for s in shuffled] == [s.to_json() for s in seats]
+
+
+def test_shuffling_the_lobby_moves_the_configs_and_records_what_it_did(tmp_path):
+    """The seat NAMES stay put — Avery is still party 0 with party 0's sheet — and the configurations move among
+    them. What the lobby posts back is the same multiset it had, plus the permutation as a record."""
+    manager = SessionManager(StubProvider(3), tmp_path, rng=random.Random(0))
+    lineup = [SeatConfig(kind="llm", model_id="stub-paid"), SeatConfig(kind="oracle", policy="bayes-rational"),
+              SeatConfig(kind="human", display_name="Sid")]
+    # The lineup as the SERVER holds it (its model seat has been resolved to a model and a thinking mode), which
+    # is what a shuffle permutes — comparing against the raw configs would be comparing two different lineups.
+    before = manager.update_lobby({"seats": [s.to_json() for s in lineup]})["seats"]
+    assert manager.lobby_state()["last_shuffle"] == []                # nothing drawn yet
+    state = manager.update_lobby({"shuffle": True})
+    order = state["last_shuffle"]
+    assert sorted(order) == [0, 1, 2] and order != [0, 1, 2]
+    assert state["seat_names"] == list(PERSONAS[:3])                  # the parties did not move
+    assert sorted(json.dumps(s, sort_keys=True) for s in state["seats"]) == \
+           sorted(json.dumps(s, sort_keys=True) for s in before)
+    assert state["seats"] == [before[src] for src in order]
+
+
+def test_a_hand_edit_after_a_shuffle_stops_the_record_claiming_it(tmp_path):
+    """A permutation that no longer maps the lineup to a previous one describes nothing, so an ordinary seat
+    edit clears it rather than leaving a stale provenance line on the page."""
+    manager = SessionManager(StubProvider(3), tmp_path, rng=random.Random(0))
+    manager.update_lobby({"seats": [s.to_json() for s in kinds("rational", "oracle", "scripted")]})
+    assert manager.update_lobby({"shuffle": True})["last_shuffle"] != []
+    assert manager.update_lobby({"seat_idx": 0, "seat": {"kind": "rational",
+                                                         "policy": "bayes-rational"}})["last_shuffle"] == []
+
+
+def test_a_shuffled_lineup_records_its_permutation_on_the_episode(tmp_path):
+    """Seat position carries a protocol advantage (the proposer order rotates from the proposer base), so a
+    randomized lineup is a fact about the game — it rides into the episode's cfg, beside the per-turn occupant
+    stamps that remain the ground truth for who actually played where."""
+    manager = SessionManager(StubProvider(3), tmp_path, rng=random.Random(0))
+    manager.update_lobby({"seats": [s.to_json() for s in kinds("oracle", "rational", "scripted")],
+                          "budget_usd": 1.0})
+    order = manager.update_lobby({"shuffle": True})["last_shuffle"]
+    session = manager.start()
+    assert session.game.cfg["live_seat_shuffle"] == order
     play_out(session)
 
 

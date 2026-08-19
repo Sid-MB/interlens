@@ -32,7 +32,9 @@ click and an unbounded bill.
 A seat nobody has configured opens on the provider's own defaults — the model it flagged
 (:func:`~interlens.arena.live.provider.default_model_id`) with thinking on wherever that model allows it
 (:func:`~interlens.arena.live.provider.default_thinking`) — and the "all model seats" row
-(:func:`_all_seats_row`) sets a whole lineup at once. No model id is spelled anywhere in this module.
+(:func:`_all_seats_row`) sets a whole lineup at once. No model id is spelled anywhere in this module. The
+:func:`_shuffle_bar` button randomizes who plays which party — seat position is not neutral, since the proposer
+order rotates from the proposer base — and shows the permutation the server applied.
 
 **Every control is rendered here, in Python, exactly once.** The browser layer changes the VALUES of controls
 that already exist and rebuilds only option lists (the thinking modes a newly picked model allows, the instances
@@ -87,6 +89,7 @@ CSS_LOBBY = """
 .seatgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:var(--sp-3);margin-top:var(--sp-2)}
 .startbar{display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap;margin-top:var(--sp-3)}
 .startbar button.primary{border-color:var(--s1);color:var(--s1);font-weight:600;padding:6px 18px}
+.seatstools{display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap;margin-top:var(--sp-2)}
 .allseats{border:1px dashed var(--ring-2);border-radius:var(--r-2);padding:var(--sp-2) var(--sp-3);margin-top:var(--sp-2)}
 .allseats .hd{display:flex;gap:var(--sp-2);align-items:baseline;flex-wrap:wrap}
 .allseats .applybar{display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap;margin-top:var(--sp-2)}
@@ -138,6 +141,7 @@ def render_lobby_html(state: dict) -> str:
             f"<section class='card'><h2>Seats</h2>"
             "<div class='sub muted'>One card per party. A seat's kind decides which of its controls apply; the "
             "rest are greyed rather than hidden, so the lineup is readable at a glance.</div>"
+            f"{_shuffle_bar(state)}"
             f"{_all_seats_row(state, models)}"
             f"<div class='seatgrid' id='lobby-seats'>{seats_body}</div></section>"
             f"{_start_bar(state)}"
@@ -211,6 +215,32 @@ def _seat_card(idx: int, seat_name: str, config: dict, models: list[dict], polic
             f"{_field(idx, 'display_name', 'display name', _text(idx, 'display_name', config.get('display_name') or '', 'name shown in the transcript'), name_hint)}"
             f"{_field(idx, 'instructions', 'private instructions', _textarea(idx, 'instructions', config.get('instructions') or '', is_policy), instr_hint, is_policy)}"
             "</div>")
+
+
+def _shuffle_bar(state: dict) -> str:
+    """The **Shuffle seats** button and what the last shuffle did.
+
+    Randomizing who sits where is worth one click because seat POSITION is not neutral: the proposer order
+    rotates from the proposer base, so a lineup where the model always opens is testing the opening as much as
+    the model. The button permutes the seat CONFIGURATIONS among the parties — Avery is still party 0 with party
+    0's sheet — and the server does the permuting (``SessionManager.update_lobby({"shuffle": True})``), so the
+    permutation exists somewhere it can be recorded on the game rather than only in a browser.
+
+    ``last_shuffle`` is that record, as source indices: it is shown here in the seats' own names so the operator
+    can see what moved, and it is cleared by any later hand edit, which the line then stops claiming.
+    """
+    order = [int(i) for i in (state.get("last_shuffle") or [])]
+    names = _seat_names(state, len(state.get("seats") or []))
+    if order and len(order) == len(names) and order != sorted(order):
+        moved = ", ".join(f"{names[i]} ← {names[src]}" for i, src in enumerate(order) if i != src)
+        note = f"last shuffle: {moved}"
+    elif order:
+        note = "last shuffle left the lineup unchanged — every arrangement of it looks the same"
+    else:
+        note = "who plays which party is as you set it"
+    return ("<div class='seatstools'>"
+            "<button id='lobby-shuffle' type='button'>Shuffle seats</button>"
+            f"<span class='sub muted' id='lobby-shuffle-note'>{_e(note)}</span></div>")
 
 
 def _all_seats_row(state: dict, models: list[dict]) -> str:

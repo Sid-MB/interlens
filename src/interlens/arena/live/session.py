@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import random
 import threading
 import uuid
 from pathlib import Path
@@ -100,6 +101,47 @@ def apply_private_instructions(participant: Any, instructions: str) -> Any:
     existing = tuple(participant.private_context or ())
     participant.private_context = existing + (f"{INSTRUCTION_HEADER} {instructions}",)
     return participant
+
+
+#: How many times a shuffle re-draws before accepting an arrangement identical to the one it started from. A
+#: uniform permutation returns the lineup unchanged often enough to look broken (always, for a lineup of one
+#: distinct seat; half the time for two), and a button that appears to do nothing is worse than a slightly
+#: non-uniform draw. Bounded rather than looping: a lineup whose seats are all identical has NO different
+#: arrangement, and the honest answer there is to return it unchanged and say so.
+SHUFFLE_REDRAWS = 8
+
+
+def shuffled_seats(seats: list[SeatConfig], rng: random.Random) -> tuple[list[SeatConfig], list[int]]:
+    """Permute WHO plays which seat, leaving the seats themselves alone.
+
+    Returns the new lineup and the permutation that produced it as source indices: ``order[i]`` is the index the
+    seat now at position ``i`` came from, so ``new[i] is seats[order[i]]`` and ``order`` is what gets recorded.
+    Seat NAMES and parties do not move — Avery is still party 0 with party 0's score sheet — only the occupant
+    configurations do, which is the thing worth randomizing when seat position carries a protocol advantage (the
+    proposer order rotates from the proposer base, so "the model always opens" is a property of the lineup, not
+    of the model).
+
+    Uniform over permutations, re-drawn while the resulting ARRANGEMENT is the one it started from (see
+    :data:`SHUFFLE_REDRAWS`) — so it is uniform over the arrangements that visibly differ, and returns the input
+    unchanged, with the identity order, when no different arrangement exists.
+
+    Parameters
+    ----------
+    seats : list[SeatConfig]
+        The current lineup, in seat order.
+    rng : random.Random
+        The source of randomness, passed in rather than reached for so a caller can make a shuffle reproducible
+        (and so the test can pin an exact permutation instead of asserting that something moved).
+    """
+    order = list(range(len(seats)))
+    before = [s.to_json() for s in seats]
+    for _ in range(SHUFFLE_REDRAWS):
+        rng.shuffle(order)
+        if [before[i] for i in order] != before:
+            break
+    else:
+        order = list(range(len(seats)))           # every draw looked the same: say so rather than pretend
+    return [seats[i] for i in order], order
 
 
 class LiveSession:
@@ -558,9 +600,12 @@ class SessionManager:
     with the same lineup is one click.
     """
 
-    def __init__(self, provider: ScenarioProvider, run_dir: Any):
+    def __init__(self, provider: ScenarioProvider, run_dir: Any, rng: random.Random | None = None):
         self.provider = provider
         self.run_dir = Path(run_dir)
+        # The lobby's own source of randomness (currently just the seat shuffle). Injectable so a caller can make
+        # a sitting reproducible and a test can pin the permutation rather than assert that something moved.
+        self._rng = rng or random.Random()
         self._lock = threading.RLock()
         self._sessions: dict[str, LiveSession] = {}
         self._active: LiveSession | None = None
@@ -573,6 +618,12 @@ class SessionManager:
             "budget_usd": DEFAULT_BUDGET_USD,
             "seats": [s.to_json() for s in self._default_seats(banks[0].n_parties if banks else 2)],
             "overrides": {},
+            # The permutation the last shuffle applied, as source indices (see :func:`shuffled_seats`), or ``[]``
+            # when the lineup has not been shuffled. Recorded rather than merely applied: seat position carries a
+            # protocol advantage, so "this lineup was randomized" is a fact about the game about to be played. It
+            # rides into the episode's cfg at start; the per-turn occupant stamp remains the ground truth for who
+            # actually played where.
+            "last_shuffle": [],
             # The last refused edit, shown in the lobby's status strip. Kept HERE rather than only raised,
             # because a page that re-renders from the state it was handed has nowhere else to read it from.
             "error": "",
@@ -610,6 +661,12 @@ class SessionManager:
                                          dict(cfg.get("overrides") or {}))
             seats = self._seats_for(game)
             self._lobby["seats"] = [s.to_json() for s in seats]
+            if self._lobby.get("last_shuffle"):
+                # Provenance on the episode itself: seat position carries a protocol advantage (the proposer
+                # order rotates from the proposer base), so a randomized lineup is a fact about the game, not
+                # about the lobby session that configured it. The per-turn occupant stamp stays authoritative
+                # for who actually played where; this only says the arrangement was drawn rather than chosen.
+                game.cfg["live_seat_shuffle"] = list(self._lobby["last_shuffle"])
             session = LiveSession(uuid.uuid4().hex[:12], self.provider, game, seats, self.run_dir,
                                   budget_usd=cfg.get("budget_usd"))
             session.start()
@@ -679,7 +736,10 @@ class SessionManager:
 
         Recognized keys: ``bank``, ``framing``, ``instance_id`` (``""`` = let the provider choose),
         ``budget_usd`` (``null`` = uncapped, which only a lineup with no metered seat may start),
-        ``overrides``, and the seats. ``seats`` is the whole list; a single-card edit may instead send
+        ``overrides``, ``shuffle`` (``true`` permutes the current lineup among the seats — see
+        :func:`shuffled_seats` — and records the permutation in ``last_shuffle``; any later seat edit clears that
+        record, since a permutation that no longer maps the lineup to a previous one describes nothing), and the
+        seats. ``seats`` is the whole list; a single-card edit may instead send
         ``{"seat_idx": i, "seat": {...}}`` (``index`` is accepted as a synonym), so a lobby with six seats does
         not have to round-trip all six to change one. Both forms are supported — send whichever the page finds
         simpler.
@@ -718,8 +778,17 @@ class SessionManager:
             self._lobby["budget_usd"] = None if budget in (None, "") else float(budget)
         if "overrides" in patch:
             self._lobby["overrides"] = dict(patch["overrides"] or {})
+        if patch.get("shuffle"):
+            # Applied HERE rather than in the browser so the permutation exists on the server, where it can be
+            # recorded on the game that gets played. The page posts ``{"shuffle": true}`` and re-renders from the
+            # answer, so there is no second permutation implementation to keep in step.
+            seats = [SeatConfig.from_json(s) for s in self._lobby["seats"]]
+            shuffled, order = shuffled_seats(seats, self._rng)
+            self._lobby["seats"] = [s.to_json() for s in shuffled]
+            self._lobby["last_shuffle"] = order
         if "seats" in patch:
             self._lobby["seats"] = [self._validated(SeatConfig.from_json(s)).to_json() for s in patch["seats"]]
+            self._lobby["last_shuffle"] = []       # hand-edited afterwards: the recorded permutation is stale
         if "seat" in patch:
             idx = int(patch.get("seat_idx", patch.get("index", 0)))
             seats = list(self._lobby["seats"])
@@ -727,6 +796,7 @@ class SessionManager:
                 seats.append(SeatConfig(kind="rational", policy="bayes-rational").to_json())
             seats[idx] = self._validated(SeatConfig.from_json(patch["seat"])).to_json()
             self._lobby["seats"] = seats
+            self._lobby["last_shuffle"] = []
         self._lobby["error"] = ""
         return self.lobby_state()
 
