@@ -15,6 +15,7 @@
 #
 # [implement: live-play/laneC] 2026-08-16
 # [implement: live-play/lobby-defaults] 2026-08-19
+# [implement: live-play/lobby-redirect-fix] 2026-08-20
 """Tests for the live-play lobby page (``arena/live/lobby_page.py`` + ``assets/js_lobby.py``).
 
 No browser: the lobby renders every control in Python, so the assertions are on real structure in the emitted
@@ -373,6 +374,41 @@ def test_a_running_session_offers_the_live_page_and_an_end_button():
     html = render_lobby_html(_state(running=True, sid="s1", phase="running"))
     assert "A session is already running" in html
     assert "href='/play'" in html and "id='lobby-reset'" in html
+    # Shown, not merely present: the banner is in every document and hidden until it applies.
+    banner = html.split("id='lobby-running'")[1].split(">")[0]
+    assert "hidden" not in banner
+
+
+def test_the_lobby_stays_reachable_while_a_game_runs():
+    """A lobby opened mid-game must not bounce to /play — the "End the session" button lives here, and a page
+    that redirects on load puts the only way to end a game behind the game itself. So the banner ships hidden in
+    every document rather than being rendered only when it applies, and the browser layer shows it."""
+    idle = render_lobby_html(_state())
+    assert "id='lobby-running'" in idle
+    assert "hidden" in idle.split("id='lobby-running'")[1].split(">")[0]
+    assert "id='lobby-goto-play'" in idle and "id='lobby-reset'" in idle       # wired on load, both states
+    assert 'const running = $("lobby-running")' in JS_LOBBY
+    assert "running.hidden = !STATE.running" in JS_LOBBY
+
+
+def test_only_the_tab_that_pressed_start_follows_the_game():
+    """The stream replays its whole log to every new subscriber, so ``episode_started`` arrives at a lobby opened
+    mid-game exactly as it would at one watching a game begin. Navigating on it unconditionally is the redirect
+    bug; the gate is a flag this page sets when IT starts the game, claimed before the POST because the event can
+    beat the response. Every other tab records the session as running and repaints instead."""
+    started = re.search(r"async function start\(\) \{(.*?)\n\}", JS_LOBBY, re.S).group(1)
+    assert re.search(r"startedHere = true;\s*\n\s*try \{", started), "the claim must precede the request"
+    # A refusal releases it, or a later replay would bounce a page whose start never happened.
+    assert started.count("startedHere = false") == 3
+
+    handler = re.search(r"source\.addEventListener\(EV\.episode_started, \(\) => \{(.*?)\n  \}\);",
+                        JS_LOBBY, re.S).group(1)
+    assert "if (startedHere) { location.href = ROUTES.play; return; }" in handler
+    # And the ungated path asks the server rather than inferring: a replayed frame says a game started, not that
+    # one is running now, and the session it describes may already be over.
+    assert "refresh()" in handler and "STATE.running = true" not in handler
+    # Nowhere else may jump to the game unasked: the gated event, the initiator's own POST, and the `v` key.
+    assert JS_LOBBY.count("location.href = ROUTES.play") == 3
 
 
 # ------------------------------------------------------------------------------- the JS/HTML contract --

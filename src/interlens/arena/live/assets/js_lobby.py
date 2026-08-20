@@ -16,6 +16,7 @@
 # [implement: live-play/lane0] 2026-08-16
 # [implement: live-play/laneC] 2026-08-16
 # [implement: live-play/lobby-defaults] 2026-08-19
+# [implement: live-play/lobby-redirect-fix] 2026-08-20
 """The lobby's browser layer: edit the seat lineup, then start the game.
 
 Every edit is POSTed to ``/api/lobby`` and the server's response is what the page re-renders from — the server
@@ -45,6 +46,14 @@ from ``defaultModelId`` / ``defaultThinking``, mirroring ``provider.default_mode
 ``provider.default_thinking`` — the provider flags its default model, so no model id is spelled in this file. The
 "all model seats" row writes those same fields into many seats at once (``applyAll``) and then saves through the
 ordinary whole-seats POST, which is why a bulk edit needs no wire change of its own.
+
+**Only the tab that pressed Start follows the game.** The event stream REPLAYS its whole log to every new
+subscriber (that is what makes a reconnect lossless), so a lobby opened while a game is running hears the old
+``episode_started`` as if it had just happened. Navigating on it would bounce that tab straight to ``/play`` and
+put the lobby — and its "End the session" button — out of reach for as long as the game lasts. So the redirect is
+gated on :js:data:`startedHere`, set by this page's own Start click; every other tab stays on the lobby and shows
+the running banner (``lobby_page._running_banner``, rendered on every load and unhidden by ``paint``) with its
+link to the live page.
 
 **Validation here is a courtesy.** ``validate`` mirrors the server's two rules so Start is disabled before it is
 clicked rather than after — the click that costs money should not be the thing that discovers the budget cap is
@@ -92,6 +101,10 @@ const EV = { lobby_state: "lobby_state", episode_started: "episode_started", err
    control is read out of it and written back into it, and the server's response replaces it wholesale. */
 let STATE = JSON.parse($("lobby-state").textContent);
 let postTimer = null, source = null;
+/* Whether THIS page started the game. The only thing that distinguishes a live `episode_started` from the one the
+   stream replays to every new subscriber, and therefore the only safe gate on the redirect to /play. Set before
+   the POST goes out, so an event that beats the response still counts as ours. */
+let startedHere = false;
 
 /* ---------------------------------------------------------------- reading the state --- */
 function seats() { return STATE.seats || []; }
@@ -173,6 +186,10 @@ function paint() {
   if (notes) notes.innerHTML = notices().map(n => "<li>" + E(n) + "</li>").join("");
   const start = $("lobby-start");
   if (start) start.disabled = problems.length > 0 || !!STATE.running;
+  /* The banner is in the document on every load and shown by state, so a tab that was sitting on the lobby when
+     someone else started the game grows the same "watch it or end it" affordance the server would have rendered. */
+  const running = $("lobby-running");
+  if (running) running.hidden = !STATE.running;
   const cap = STATE.budget_usd;
   setStat("lobby-stat-phase", STATE.phase || (STATE.running ? "running" : "lobby"));
   setStat("lobby-stat-seats", String(seats().length));
@@ -432,17 +449,22 @@ async function start() {
   const btn = $("lobby-start");
   if (btn) btn.disabled = true;
   status("starting…", false);
+  /* Claimed before the request, not after: `episode_started` can arrive on the stream while the POST is still in
+     flight, and the tab that clicked must follow the game either way. Released again on every failure path, so a
+     refusal cannot leave a stale claim that a later replay would act on. */
+  startedHere = true;
   try {
     const r = await fetch(ROUTES.start, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
     const body = await r.json().catch(() => ({}));
-    if (!r.ok) { status(body.error || ("could not start (" + r.status + ")"), true); paint(); return; }
+    if (!r.ok) { startedHere = false; status(body.error || ("could not start (" + r.status + ")"), true); paint(); return; }
     /* The session id is what says a game exists. `episode_id` is null here by design — the engine mints it
        inside run_episode, after the thread is spawned — so gating the redirect on it would strand the page on
        a lobby whose game is already running. */
-    if (!body.sid) { status("the server started nothing it could name; staying here", true); paint(); return; }
+    if (!body.sid) { startedHere = false; status("the server started nothing it could name; staying here", true); paint(); return; }
     location.href = ROUTES.play;
   } catch (e) {
+    startedHere = false;
     status("could not reach the server: " + e, true);
     paint();
   }
@@ -458,15 +480,26 @@ async function reset() {
 
 /* ---------------------------------------------------------------- the stream --- */
 /* Only a running session has a stream, so this attaches when one exists: a `lobby_state` broadcast keeps a
-   second tab's lineup honest, and `episode_started` is how a tab that did not click Start still follows the
-   game to the live page. */
+   second tab's lineup honest, and `episode_started` says a game is now on.
+
+   That last one is REPLAYED to every new subscriber — the log replay is what makes a reconnect lossless — so it
+   is not evidence that anything just happened. A tab that did not press Start therefore re-reads the lobby from
+   the server and repaints (Start greys, the banner appears) instead of navigating; the banner's link and the `v`
+   key are how someone gets to the game from here, and staying put is what keeps "End the session" reachable
+   while one is in progress. */
 function subscribe(sid) {
   if (!sid || source || typeof EventSource === "undefined") return;
   source = new EventSource(ROUTES.events(sid));
   source.addEventListener(EV.lobby_state, (ev) => {
     try { applyState(JSON.parse(ev.data)); } catch (e) { /* a malformed frame must not blank the lobby */ }
   });
-  source.addEventListener(EV.episode_started, () => { location.href = ROUTES.play; });
+  source.addEventListener(EV.episode_started, () => {
+    if (startedHere) { location.href = ROUTES.play; return; }
+    /* A replayed frame says a game STARTED, not that one is running now — the session it describes may already
+       have finished. So the page asks the server what is true instead of setting `running` from the event, and
+       repaints from the answer: the banner, the greyed Start and the phase cell all follow from that one fetch. */
+    refresh();
+  });
   source.addEventListener(EV.error, (ev) => {
     try { status(JSON.parse(ev.data).message, true); } catch (e) { /* unparseable: nothing useful to show */ }
   });

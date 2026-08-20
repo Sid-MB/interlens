@@ -16,6 +16,7 @@
 # [implement: live-play/lane0] 2026-08-16
 # [implement: live-play/laneC] 2026-08-16
 # [implement: live-play/lobby-defaults] 2026-08-19
+# [implement: live-play/lobby-redirect-fix] 2026-08-20
 """The lobby: choose a game and decide who plays each seat.
 
 Built on ``viz.page._document``, the same shell the episode pages use, so the lobby inherits the visualizer's
@@ -361,12 +362,17 @@ def _strip(state: dict) -> str:
 
 def _running_banner(state: dict) -> str:
     """Shown when a session is already live: this server runs ONE at a time, so the honest options are to watch
-    it or to end it, and both are offered rather than letting Start fail with a message about it."""
-    if not state.get("running"):
-        return ""
-    return ("<div class='warn' id='lobby-running'><b>A session is already running.</b> This server plays one game "
-            "at a time. <a href='/play'>Open the live page</a> to watch or play it, or end it to configure a new "
-            "one. <button id='lobby-reset' type='button'>End the session</button></div>")
+    it or to end it, and both are offered rather than letting Start fail with a message about it.
+
+    Always rendered, ``hidden`` until it applies, for two reasons. A lobby loaded mid-game must NOT be redirected
+    away — the replayed ``episode_started`` used to bounce it and take "End the session" with it — and a lobby
+    that was already open when someone else pressed Start has to grow the same affordance without a reload, which
+    ``js_lobby.paint`` does by unhiding this element. A banner built in JavaScript instead would be the second
+    copy of this markup, and only one of the two would keep the reset button wired."""
+    return (f"<div class='warn' id='lobby-running'{'' if state.get('running') else ' hidden'}>"
+            "<b>A session is already running.</b> This server plays one game "
+            "at a time. <a href='/play' id='lobby-goto-play'>Open the live page</a> to watch or play it, or end it "
+            "to configure a new one. <button id='lobby-reset' type='button'>End the session</button></div>")
 
 
 def _start_bar(state: dict) -> str:
