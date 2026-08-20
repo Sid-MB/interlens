@@ -503,6 +503,141 @@ function occupantBadge(t, defaults) {
     human ? "played by " : "now "}${E(label)}</span>`;
 }
 
+/* ---------------------------------------------------------------- the advised seat's turn --
+   An advised turn carries `t.advice` (the run's advice_trace sidecar, joined per turn upstream): the evidence
+   the seat's private planner ran on, the ranking it produced, and the stored verdict on whether the seat played
+   it. Three blocks, in the order the loop ran — what was known, what was advised, what was done — because a
+   recommendation is unreadable before its inputs and a verdict is unreadable before both.
+
+   The verdict is NEVER computed here. `advice.followed` is the arm's own uptake census, decided by the code the
+   compliance gate is evaluated on; this layer only paints it. Nor is anything claimed about how the seat
+   DESCRIBED its advice: the public message sits in this same card, a few lines below, and the reader compares. */
+const CLAIM_DIRECTION = { favours: "favours", opposes: "opposes" };
+
+function packageWords(pkg) {
+  if (!pkg || typeof pkg !== "object" || !Object.keys(pkg).length) return "—";
+  return Object.entries(pkg).map(([k, v]) => `${E(k)}: <b>${E(v)}</b>`).join(" · ");
+}
+
+/* One formatter for the advised package and the played one — they arrive in the same {issue: option} shape, and
+   rendering them in two notations would defeat the comparison the panel exists to make. */
+function adviceAction(a) {
+  if (!a || typeof a !== "object") return "—";
+  const kind = String(a.atype || a.action || "—").toUpperCase();
+  const pkg = a.deal_named || a.deal;
+  const offer = a.offer_id || a.offer;
+  if (pkg && typeof pkg === "object" && !Array.isArray(pkg)) return `<b>${E(kind)}</b> ${packageWords(pkg)}`;
+  return `<b>${E(kind)}</b>${offer ? " " + E(offer) : ""}`;
+}
+
+/* (a) INPUTS, half one: the formal move ledger. These counts are machine-readable public record — who tabled a
+   package, who accepted one — and they are what the planner would have had with no interpreter at all, so they
+   are the baseline the parsed claims are read against. */
+function adviceEvidence(rows) {
+  if (!rows || !rows.length) return "";
+  return `<div class="tablewrap"><table class="advice-evidence"><thead><tr><th>opponent</th>
+    <th>packages tabled</th><th>offers accepted</th><th>claims folded in</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${E(r.seat)}</td><td>${E(r.n_proposals)}</td><td>${E(r.n_accepts)}</td>
+      <td>${E(r.n_claims)}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+/* (a) INPUTS, half two: the chat-derived claims, each with the verbatim span it was read off. A rejected claim
+   is shown WITH its rejection reason rather than dropped — a parser that invents a preference is a fact about
+   the arm, and a panel that only showed the admitted rows would hide exactly that. */
+function adviceClaims(rows, parse) {
+  if (!parse) return `<div class="sub muted">No parse call on this turn — the forced final vote is on one named
+    offer and is a function of this seat's own sheet, so the loop skips it.</div>`;
+  if (!rows || !rows.length) return `<div class="sub muted">The parse call returned no preference claims
+    (${E(parse.n_rows || 0)} row(s) read from ${E(parse.n_tokens_in || 0)} tokens of public text).</div>`;
+  return `<div class="tablewrap"><table class="advice-claims"><thead><tr><th>about</th><th>reads</th>
+    <th>confidence</th><th>ledger weight</th><th>read off this published sentence</th></tr></thead><tbody>
+    ${rows.map(r => `<tr class="${r.kept ? "" : "dropped"}">
+      <td>${E(r.seat)}</td>
+      <td>${E(CLAIM_DIRECTION[r.direction] || r.direction)} <b>${E(r.option)}</b>
+        <div class="sub">${E(r.issue)}</div></td>
+      <td>${N(r.confidence, 2)} <span class="sub">${E(r.strength)}</span></td>
+      <td>${r.kept ? N(r.weight, 2) : `<span class="neg">dropped: ${E(r.reason || "not resolvable")}</span>`}</td>
+      <td class="quote">${r.quote ? `&ldquo;${E(r.quote)}&rdquo;` : "—"}</td></tr>`).join("")}
+    </tbody></table>
+    <div class="sub">Every quote is checked against the public text the parser was given before its claim may
+    move the plan, so a fabricated preference cannot enter the ledger. ${E(parse.n_kept || 0)} of
+    ${E(parse.n_rows || 0)} claims survived that check on this turn.</div></div>`;
+}
+
+/* (b) ADVICE -> ACTION. The rung the seat played is marked on the candidate itself rather than stated
+   separately, so "it took the third choice" is one glance. `rank_taken` is the stored verdict's own column. */
+function adviceCandidates(adv) {
+  const cands = adv.candidates || [];
+  const rank = (adv.uptake || {}).advice_rank_taken;
+  if (!cands.length) {
+    return adv.recommended_action
+      ? `<div class="advice-single">The planner recommended <span class="act">${adviceAction(adv.recommended_action)}</span>
+         <div class="sub">A forced final vote is on one named offer, so there is nothing to rank.</div></div>`
+      : `<div class="sub muted">No candidates were ranked on this turn.</div>`;
+  }
+  return `<div class="tablewrap"><table class="advice-candidates"><thead><tr><th>rank</th><th>package</th>
+    <th>least willing party, estimated</th><th>your points</th><th>role</th></tr></thead><tbody>
+    ${cands.map((c, i) => `<tr class="${i === rank ? "taken" : ""}">
+      <td>${i + 1}${i === rank ? ' <span class="badge advice-followed">played</span>' : ""}</td>
+      <td>${packageWords(c.package)}${c.already_on_the_table_as
+        ? ` <span class="sub">already tabled as ${E(c.already_on_the_table_as)}</span>` : ""}</td>
+      <td>${N(c.min_consensus_estimate, 3)}</td><td>${N(c.your_points, 0)}
+        <span class="sub">surplus ${N(c.your_surplus, 0)}</span></td>
+      <td class="sub">${E(c.role)}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function adviceVerdictBadge(adv) {
+  const rank = (adv.uptake || {}).advice_rank_taken;
+  if (adv.followed === true)
+    return `<span class="badge advice-followed" title="the seat played a package the planner ranked">${
+      rank === null || rank === undefined ? "TOOK THE ADVICE" : `TOOK RANK ${rank + 1}`}</span>`;
+  if (adv.followed === false)
+    return `<span class="badge advice-override" title="the seat played something the planner did not rank — this
+      turn measures the model's own choice, not the advisor's">OVERRODE THE ADVICE</span>`;
+  return `<span class="badge" title="no stored verdict for this turn">ADVISED</span>`;
+}
+
+function advicePanel(t) {
+  const adv = t.advice;
+  if (!adv) return "";
+  const u = adv.uptake || {};
+  const p = adv.planner || {};
+  const toward = u.advice_overridden_toward;
+  const overrideNote = adv.followed === false
+    ? `<div class="gap advice-overridenote"><b>The seat did not play any package the planner ranked.</b>
+       It played <span class="act">${adviceAction(adv.emitted_action)}</span>${
+       typeof toward === "number" && isFinite(toward)
+         ? `, which is worth <b class="${toward >= 0 ? "pos" : "neg"}">${SIGN(toward, 1)}</b> points to this seat
+            against the planner's top pick` : ""}. Read this turn as the model's own decision.</div>`
+    : "";
+  const unjoined = adv.joined === false
+    ? `<div class="gap neg">This turn's advice could not be matched to the run's parse sidecar, so the evidence
+       below is omitted rather than guessed.</div>` : "";
+  return `<details class="advicebox${adv.followed === false ? " override" : ""}">
+   <summary>Private advisor — what it knew, what it recommended, what happened ${adviceVerdictBadge(adv)}</summary>
+   <div class="body">
+    ${unjoined}${overrideNote}
+    <h3>1 · What the planner knew</h3>
+    <div class="sub">Public evidence only: the formal move ledger, plus preference claims parsed out of the chat
+     this turn. It never saw another seat's score sheet.</div>
+    ${adviceEvidence(adv.evidence)}
+    ${adviceClaims(adv.claims, adv.parse)}
+    <h3>2 · What it recommended</h3>
+    <div class="sub">Ranked by the estimated willingness of the LEAST willing party, since a deal needs every
+     party to sign. Advisory, not prescriptive: the block told the seat the estimates can be wrong and that it
+     may propose something unlisted.${p.n_claims_applied
+       ? ` ${E(p.n_claims_applied)} parsed claim(s) entered this ranking.` : " No parsed claim entered this ranking."}</div>
+    ${adviceCandidates(adv)}
+    <h3>3 · What the seat played</h3>
+    <div class="act">${adviceAction(adv.emitted_action)}</div>
+    ${adv.shadow_prescriptive ? `<div class="sub">For reference, the wave-1 prescriptive advisor would have said
+      <b>${adviceAction(adv.shadow_prescriptive)}</b> on this same state. It was recorded as a diagnostic and was
+      never shown to the model.</div>` : ""}
+    <div class="sub muted">How the seat described any of this in public is not labelled anywhere — the message it
+     published is in this card below, next to the advice, and the comparison is yours to make.</div>
+   </div></details>`;
+}
+
 function turnCard(t, game, oracle, opts) {
   const a = t.action || {};
   const k = actKind(a.atype);
@@ -544,22 +679,27 @@ function turnCard(t, game, oracle, opts) {
   const selectedOracle = (t.oracles || {})[oracle];
   const prefix = opts.idPrefix || "turn-";
   const atCap = Boolean(t.cap && (t.n_tokens_out || 0) >= t.cap - 2);
+  /* An advised turn that went its own way is marked on the card edge and in the scrubber, in a colour used for
+     nothing else on the page: half of this arm's advised turns overrode their advisor, and a reader scrolling
+     the transcript is looking at two different kinds of turn with nothing to tell them apart. */
+  const overrode = Boolean(t.advice && t.advice.followed === false);
   return `<article class="turn ${k.cls} k-${E(t.kind)}${t.gen_failed ? " fabricated" : ""}${
-     t.silent ? " silent" : ""}" id="${prefix}${t.idx}" data-turnidx="${t.idx}">
+     t.silent ? " silent" : ""}${overrode ? " advice-overridden" : ""}" id="${prefix}${t.idx}" data-turnidx="${t.idx}">
    <div class="turnhd" role="button" tabindex="0" aria-label="turn ${t.idx}, ${E(t.seat)}, ${E(k.word)}${
-     t.silent ? ", published nothing" : ""}">
+     t.silent ? ", published nothing" : ""}${overrode ? ", overrode its advisor" : ""}">
      <span class="who"><span class="idx">${t.idx}</span> ${E(t.seat)}
        <span class="badge ${E(t.kind)}">${E(t.kind)}</span>${occupantBadge(t, opts.occupantDefaults)}
        <span class="kind ${k.cls}">${k.glyph} ${E(k.word)}</span>${
        t.gen_failed ? ` <span class="badge fabricated" title="${E(t.gen_failure || "")}">NOT GENERATED</span>` : ""}${
        t.silent && !t.gen_failed ? ` <span class="badge silent" title="generation succeeded but published no
-         answer — the engine's placeholder stands in for it">SAID NOTHING</span>` : ""}</span>
+         answer — the engine's placeholder stands in for it">SAID NOTHING</span>` : ""}${
+       t.advice ? " " + adviceVerdictBadge(t.advice) : ""}</span>
      <span class="sub">${E(t.phase)} · round ${t.round}${t.n_tokens_out ? " · " + t.n_tokens_out + " tok out" : ""}${
        atCap ? ` <span class="badge atcap" title="output reached the ${E(t.cap)}-token cap stamped on this
          request, so the turn was cut off rather than finished">AT CAP ${E(t.cap)}</span>` : ""}${
        t.parse_ok ? "" : " · <b class='neg'>parse error</b>"}</span>
    </div>
-   ${fabricatedNote}${silentNote}
+   ${fabricatedNote}${silentNote}${advicePanel(t)}
    ${opts.showCounterfactual ? `<div class="cols">
      <div class="col acted"><div class="hd">the model acted</div><div class="act">${E(a.label || a.atype)}</div>${dealLink}
        ${w ? `<div class="pills"><span class="pill">USW <b>${N(w.usw, 1)}</b></span><span class="pill">worst-off <b class="${w.esw >= 0 ? "pos" : "neg"}">${SIGN(w.esw, 1)}</b></span>${w.n_below_threshold ? `<span class="pill"><b class="neg">${w.n_below_threshold}</b> below τ</span>` : ""}</div>` : ""}
@@ -600,9 +740,12 @@ function scrubberHtml(turns, idPrefix) {
   const prefix = idPrefix || "turn-";
   return `<div class="scrub" role="navigation" aria-label="jump to a turn">` + turns.map(t => {
     const k = actKind((t.action || {}).atype);
-    return `<button class="chip ${k.cls}${t.gen_failed ? " fab" : ""}${t.silent ? " silent" : ""}" data-goturn="${prefix}${t.idx}" data-turnidx="${t.idx}"
+    const overrode = Boolean(t.advice && t.advice.followed === false);
+    return `<button class="chip ${k.cls}${t.gen_failed ? " fab" : ""}${t.silent ? " silent" : ""}${
+      overrode ? " advice-overridden" : ""}" data-goturn="${prefix}${t.idx}" data-turnidx="${t.idx}"
       title="turn ${t.idx} · ${E(t.seat)} · ${E(k.word)}${t.gen_failed ? " · NOT GENERATED" : ""}${
-        t.silent && !t.gen_failed ? " · SAID NOTHING" : ""}">${t.idx}</button>`;
+        t.silent && !t.gen_failed ? " · SAID NOTHING" : ""}${
+        overrode ? " · OVERRODE THE ADVICE" : (t.advice ? " · took the advice" : "")}">${t.idx}</button>`;
   }).join("") + `</div>`;
 }
 

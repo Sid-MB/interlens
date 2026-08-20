@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Sequence
 
 from .auction_geometry import index_row
 from .chrome import distance_to_nbs, inject_nav, nav_group
@@ -201,19 +202,35 @@ def export_episode(run: str | Path, episode_path: str | Path, out_dir: str | Pat
 
 
 def export_run(run: str | Path, out_dir: str | Path, *, limit: int | None = None,
-               reconstruct: bool = True, annotations_dirname: str = "annotations") -> dict:
+               episode_ids: Sequence[str] | None = None, reconstruct: bool = True,
+               annotations_dirname: str = "annotations") -> dict:
     """Render every episode of a run to its own page in ``out_dir``, plus an ``index.html`` listing them with the
     numbers that say which are worth opening. Returns a manifest (also written as ``manifest.json``).
 
     ``limit`` renders only the first ``limit`` episodes in sorted path order — the fast path for a spot check on a
     campaign cell with hundreds of episodes. ``annotations_dirname`` selects which per-run annotation subdirectory
     the post-hoc oracles are read from (default ``"annotations"``; e.g. ``"annotations_v1"`` for a re-annotated
-    set — see :class:`~interlens.arena.viz.episode.RunDir`)."""
+    set — see :class:`~interlens.arena.viz.episode.RunDir`).
+
+    ``episode_ids`` publishes a CHOSEN subset instead, in the order given. A campaign cell of a hundred-plus
+    Opus episodes is tens of megabytes of pages, so a published hub is routinely a representative selection
+    rather than the whole cell — and a selection made by a caller's own rule (spanning outcomes, seats, or a
+    behaviour of interest) is worth far more than the first N in path order. The chosen ids are recorded in the
+    manifest as ``selection``, so a hub can state which episodes it published and which it did not; an id the run
+    does not hold is reported in ``failures`` rather than silently skipped. ``limit`` still applies afterwards.
+    """
     run_dir = RunDir(run, annotations_dirname=annotations_dirname)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    files = run_dir.episode_files()[:limit] if limit is not None else run_dir.episode_files()
-    rows, paths, failures = [], [], []
+    files, failures = run_dir.episode_files(), []
+    if episode_ids is not None:
+        by_id = {f.stem: f for f in files}
+        failures = [{"episode": str(eid), "error": f"no episode {eid} in {run_dir.root}"}
+                    for eid in episode_ids if eid not in by_id]
+        files = [by_id[eid] for eid in episode_ids if eid in by_id]
+    if limit is not None:
+        files = files[:limit]
+    rows, paths = [], []
     is_auction = False
     for f in files:
         try:
@@ -249,6 +266,10 @@ def export_run(run: str | Path, out_dir: str | Path, *, limit: int | None = None
     )
     manifest = {"run": str(run_dir.root), "out_dir": str(out_dir), "n_episodes": len(rows),
                 "index": str(out_dir / "index.html"), "failures": failures,
+                # What this export chose to publish, so a hub can say what it is NOT showing. ``None`` means
+                # "every episode of the run" and is the only value that needs no caveat on the page.
+                "selection": (list(episode_ids) if episode_ids is not None else None),
+                "n_episodes_in_run": len(run_dir.episode_files()),
                 "pages": [str(out_dir / r["href"]) for r in rows]}
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1))
     return manifest

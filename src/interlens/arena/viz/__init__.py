@@ -60,7 +60,8 @@ See :func:`~interlens.arena.viz.serve.serve_directory` to do the same from Pytho
 from __future__ import annotations
 
 from . import references
-from . import ballots, hazards
+from . import advice, ballots, hazards
+from .advice import ADVICE_SIDECAR, advice_card, advice_summary, advice_trace, attach_advice, episode_advice
 from .ballots import DERIVATION_SIDECAR, ballot_table, final_ballots, vote_derivation
 from .census import census_strip, turn_census
 from .chrome import (NAV_MARKER, distance_to_nbs, inject_nav, nav_group, slim_payload, summary_strip,
@@ -76,10 +77,12 @@ from .page import SIDEBAR_TABS, render_compare_html, render_episode_html, render
 from .serve import DEFAULT_HOST, make_server, serve_banner, serve_directory
 
 __all__ = [
+    "ADVICE_SIDECAR",
     "DEFAULT_HOST", "DEFAULT_PAIR_KEY", "DERIVATION_SIDECAR", "DealGeometry", "FROZEN_TURN_CAPS", "GameGeometry",
     "NAV_MARKER", "RAW_EXCERPT_CHARS", "RETRY_SOURCE", "RunDir",
-    "SELECTIONS", "SIDEBAR_TABS", "align", "ballot_table", "ballots", "census_strip", "compare_payload", "distance_to_nbs",
-    "episode_payload", "export_comparison",
+    "SELECTIONS", "SIDEBAR_TABS", "advice", "advice_card", "advice_summary", "advice_trace", "align",
+    "attach_advice", "ballot_table", "ballots", "census_strip", "compare_payload", "distance_to_nbs",
+    "episode_advice", "episode_payload", "export_comparison",
     "export_episode", "export_run", "final_ballots", "focal_seats", "generation_budget", "inject_nav",
     "hazards", "make_server", "nav_group", "pair_key",
     "pair_runs", "public_ledger", "reconstruct_views", "references", "render_compare", "render_compare_html",

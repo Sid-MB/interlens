@@ -270,6 +270,26 @@ function snapshot(label, hovered) {
     vintage_quick: (q(".quick .vintagequick") || {}).textContent || "",
     budget_quick: (q(".quick .budgetbadge") || {}).textContent || "",
     budget_note: (q(".warn.budgetnote") || {}).textContent || "",
+    // --- the advised seat. Reported as structure for the same reason the reference grid is: the claims are
+    // relational (which turn is marked, which candidate row is the one that was played, which claims were
+    // dropped and why), and a text blob would let a panel that shows every row identically pass.
+    advice_overridden_turns: all("#turnlist .turn.advice-overridden").map(n => n.id),
+    advice_override_chips: all(".scrub .chip.advice-overridden").map(n => n.getAttribute("title") || ""),
+    // Grouped BY PANEL, not flattened across the page: every advised turn renders its own claim and candidate
+    // tables, so a flat list cannot say which turn played which rung — which is the whole claim under test.
+    advice_panels: all("#turnlist .advicebox").map(box => ({
+      turn: (box.closest(".turn") || {}).id || "",
+      override: (box.getAttribute("class") || "").includes("override"),
+      verdict: ((box.querySelector("summary .badge") || {}).textContent || "").trim(),
+      evidence: Array.from(box.querySelectorAll("table.advice-evidence tbody tr")).map(tr =>
+        Array.from(tr.children).map(td => td.textContent.trim())),
+      claims: Array.from(box.querySelectorAll("table.advice-claims tbody tr")).map(tr => ({
+        dropped: (tr.getAttribute("class") || "").includes("dropped"),
+        cells: Array.from(tr.children).map(td => td.textContent.replace(/\s+/g, " ").trim()) })),
+      candidates: Array.from(box.querySelectorAll("table.advice-candidates tbody tr")).map(tr => ({
+        taken: (tr.getAttribute("class") || "").includes("taken"),
+        cells: Array.from(tr.children).map(td => td.textContent.replace(/\s+/g, " ").trim()) })),
+    })),
     silent_turns: all("#turnlist .turn.silent").map(n => n.id),
     silent_badges: all("#turnlist .badge.silent").length,
     at_cap_badges: all("#turnlist .badge.atcap").length,

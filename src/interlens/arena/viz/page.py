@@ -41,6 +41,7 @@ from markdown_it import MarkdownIt
 
 from .assets import CSS, JS, JS_AUCTION, JS_COMPARE, JS_EPISODE, JS_INDEX_PAGE
 from .auction_page import auction_body, auction_info_panel, auction_setup_panel, auction_summary_strip
+from .advice import advice_card
 from .ballots import ballot_table
 from .census import census_strip
 from .chrome import (_e, _num, distance_to_nbs, help_overlay, nav_group, quick_stats, slim_payload,
@@ -734,6 +735,7 @@ def render_episode_html(payload: dict) -> str:
 {summary_strip(payload)}{census_strip(payload.get('census'))}
 {_contamination_banner(payload)}{budget_note(payload.get('budget'))}{no_cf}
 {ballot_table(payload.get('ballots'))}
+{advice_card(payload)}
 <div class='layout'><div>
 {chart}{regret}
 {_system_prompt_audit(payload)}

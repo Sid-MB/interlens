@@ -2707,3 +2707,181 @@ def test_an_unclosed_comment_falls_back_to_the_filename_rather_than_quoting_itse
     record = viz.vintage_provenance(tmp_path)
     assert record is not None and record["headline"] == "VINTAGE_PROVENANCE.md"
     assert "forgot to close" not in record["headline"] + record["summary"]
+
+
+# --------------------------------------------------- the advised seat: evidence, advice, and overrides --
+# [implement f: rational-informed LLM, reading inputs] 2026-08-20
+#
+# An advised arm gives one seat a private planner and lets the model keep the decision. Two facts then decide
+# whether the arm's numbers mean anything, and the transcript alone shows neither: what evidence the planner
+# ran on (a formal-move ledger plus preference claims parsed out of the chat, each with the sentence it was read
+# off), and whether the seat did what it was told. On the wave-2 cell 46% of advised turns did something else,
+# so half the transcript is a different kind of turn with nothing to distinguish it.
+#
+# The load-bearing property under test is a NEGATIVE one: the renderer must not re-decide compliance. The
+# verdict is the arm's own uptake census, and the page paints what it is given — asserted by flipping the stored
+# verdict while leaving every action untouched and watching the page follow.
+
+def _advice_trace(payload: dict) -> dict:
+    """A trace over three of the fixture episode's turns: one that took the top pick, one that took a lower rung,
+    one that overrode the ranking entirely, plus one claim the provenance guard dropped."""
+    played = payload["turns"][0]["action"].get("deal_named")
+    other = {**played, "issue0": "opt1"}
+    candidates = [
+        {"rank": 1, "package": other, "min_consensus_estimate": 0.9, "your_points": 151.0,
+         "your_surplus": 91.0, "role": "high-capture candidate", "already_on_the_table_as": None},
+        {"rank": 2, "package": played, "min_consensus_estimate": 0.6, "your_points": 120.0,
+         "your_surplus": 60.0, "role": "deadline-safe fallback", "already_on_the_table_as": None},
+    ]
+    claims = [
+        {"seat": "Blake", "issue": "issue1", "option": "opt0", "direction": "favours", "strength": "high",
+         "confidence": 0.95, "quote": "opt0 on issue1 is the one thing I actually need", "kept": True,
+         "reason": "", "weight": 0.95, "seat_index": 1, "issue_index": 1, "option_index": 0},
+        {"seat": "Nobody", "issue": "issue1", "option": "opt0", "direction": "opposes", "strength": "low",
+         "confidence": 0.4, "quote": "a sentence nobody published", "kept": False, "reason": "unknown_seat",
+         "weight": None, "seat_index": None, "issue_index": None, "option_index": None},
+    ]
+    parse = {"round": 1, "n_rows": 2, "n_kept": 1, "n_offers": 1, "n_tokens_in": 851, "n_tokens_out": 14,
+             "flags": {"n_spans": 2}, "stop_reason": "end_turn", "cost_usd": 0.004}
+    evidence = [{"seat_index": 1, "seat": "Blake", "n_proposals": 2, "n_accepts": 0, "n_claims": 1},
+                {"seat_index": 2, "seat": "Casey", "n_proposals": 1, "n_accepts": 1, "n_claims": 0}]
+
+    def row(turn_idx, rank_taken, followed, emitted):
+        return {"round": 1, "phase": "turn", "seat": payload["turns"][turn_idx]["seat"], "joined": True,
+                "planner": {"planner": "five_seat_min_consensus_ledger_v1", "phase": "negotiate",
+                            "n_claims_applied": 1, "deadline": 4},
+                "candidates": candidates, "recommended_action": None, "evidence": evidence,
+                "parse": parse, "claims": claims,
+                "shadow_prescriptive": {"action": "propose", "deal": other},
+                "emitted_action": emitted,
+                "uptake": {"advice_action_match": float(followed), "advice_rank_taken": rank_taken,
+                           "advice_overridden_toward": (None if followed else 12.5),
+                           "emitted_kind": "propose", "n_candidates_offered": 2},
+                "followed": followed}
+
+    return {"schema": "five-seat-interpreter-advice-trace-v1",
+            "episodes": {payload["episode"]["episode_id"]: {
+                "0": row(0, 0, True, {"atype": "propose", "deal_named": other}),
+                "1": row(1, 1, True, {"atype": "propose", "deal_named": played}),
+                "2": row(2, None, False, {"atype": "walk"})}}}
+
+
+@pytest.fixture(scope="module")
+def advised_payload(episode):
+    """The fixture episode rendered as an advised arm: three turns carry the run's advice sidecar."""
+    ep, inst = episode
+    bare = viz.episode_payload(ep, inst)
+    return viz.episode_payload(ep, inst, advice=_advice_trace(bare))
+
+
+def test_only_the_advised_turns_carry_advice_and_the_rest_are_untouched(advised_payload, payload):
+    """The trace attaches by turn index, and an arm with no advised seat must be byte-identical to before —
+    every other run in the corpus renders through this same code path."""
+    advised = {t["idx"] for t in advised_payload["turns"] if t.get("advice")}
+    assert advised == {0, 1, 2}
+    assert not any(t.get("advice") for t in payload["turns"]), "no sidecar means no turn gains a key"
+    stripped = [{k: v for k, v in t.items() if k != "advice"} for t in advised_payload["turns"]]
+    assert stripped == payload["turns"], "attaching advice must change nothing else about a turn"
+
+
+def test_the_overview_names_the_evidence_the_advice_and_the_verdict_per_turn(advised_payload):
+    """The server-rendered audit above the transcript, which is what a reader with scripting off gets: one row
+    per advised turn, the planner's top pick beside the move actually played, and the stored verdict."""
+    html = viz.advice_card(advised_payload)
+    assert not _missing(
+        html, "3 advised turn(s)", "2 followed", "1 overrode the advice",
+        "3 of 6 parsed claims entered the ledger",          # summed over the three turns; drops stay dropped
+        "rung taken: 1x rank 1, 1x rank 2",                 # which rung, not just whether
+        "<a href='#turn-2'>turn 2</a>", "WALK",             # the override's own move, named
+        "own surplus +12.5", "class='card advice hazard'")
+    summary = viz.advice_summary({str(t["idx"]): t["advice"]
+                                  for t in advised_payload["turns"] if t.get("advice")})
+    assert summary["n_followed"] == 2 and summary["n_overridden"] == 1 and summary["n_unverdicted"] == 0
+    assert viz.advice_card({"turns": [{"idx": 0}]}) == "", "an unadvised episode renders no section at all"
+
+
+def test_the_page_paints_the_stored_verdict_and_never_re_decides_it(advised_payload):
+    """The property the whole design rests on. Compliance is decided by the arm's uptake census, which owns the
+    comparison rules the gate is evaluated on; a second implementation in the renderer would be an unaccountable
+    second opinion. So flipping ONLY the stored verdict — every action, package and claim left exactly as it
+    was — must flip what the page says."""
+    turns = {str(t["idx"]): t["advice"] for t in advised_payload["turns"] if t.get("advice")}
+    assert "1 overrode the advice" in viz.advice_card(advised_payload)
+    flipped = {k: {**v, "followed": True, "uptake": {**v["uptake"], "advice_action_match": 1.0}}
+               for k, v in turns.items()}
+    same_actions = {**advised_payload,
+                    "turns": [({**t, "advice": flipped[str(t["idx"])]} if t.get("advice") else t)
+                              for t in advised_payload["turns"]]}
+    assert "0 overrode the advice" in viz.advice_card(same_actions)
+    assert viz.advice_summary(flipped)["n_overridden"] == 0
+
+
+def test_a_turn_with_no_stored_verdict_is_unknown_rather_than_compliant(advised_payload):
+    """A trace that could not join its sidecar must not fall into the followed column — the safe direction for a
+    missing verdict is 'we do not know', because the alternative silently inflates an uptake gate."""
+    turns = {str(t["idx"]): t["advice"] for t in advised_payload["turns"] if t.get("advice")}
+    unknown = {**turns, "2": {**turns["2"], "followed": None, "joined": False}}
+    summary = viz.advice_summary(unknown)
+    assert summary["n_followed"] == 2 and summary["n_overridden"] == 0 and summary["n_unverdicted"] == 1
+    assert summary["n_turns_unjoined"] == 1
+
+
+def test_a_malformed_advice_sidecar_costs_one_panel_not_the_render(tmp_path):
+    """Same rule as the ballot sidecar: an audit file that cannot be read degrades to absent."""
+    assert viz.advice_trace(tmp_path) is None, "an absent file is absent, not an error"
+    (tmp_path / viz.ADVICE_SIDECAR).write_text("{not json")
+    assert viz.advice_trace(tmp_path) is None
+    (tmp_path / viz.ADVICE_SIDECAR).write_text('["a list, not the expected object"]')
+    assert viz.advice_trace(tmp_path) is None
+
+
+def test_the_advised_turn_shows_its_inputs_advice_and_override_mark_in_a_dom(advised_payload, tmp_path):
+    """The per-turn panel, in a real DOM, because it is built by the browser layer and none of it exists until
+    the page's own script runs: the ledger evidence beside the parsed claims and their provenance quotes, the
+    ranked candidates with the played rung marked, and the override marking on the card and the scrubber chip."""
+    if not _dom_harness():
+        pytest.skip("the DOM harness needs node + linkedom (see _dom_harness)")
+    report = _run_harness(viz.render_episode_html(advised_payload), [], tmp_path)
+    assert report["ok"] and not report["errors"]
+    step = report["steps"][0]
+
+    # (c) the override marking: exactly the turn whose stored verdict is False, on the card AND in the scrubber.
+    assert step["advice_overridden_turns"] == ["turn-2"]
+    assert len(step["advice_override_chips"]) == 1
+    assert "OVERRODE THE ADVICE" in step["advice_override_chips"][0]
+    panels = {p["turn"]: p for p in step["advice_panels"]}
+    assert [p["verdict"] for p in step["advice_panels"]] == ["TOOK RANK 1", "TOOK RANK 2", "OVERRODE THE ADVICE"]
+    assert [t for t, p in panels.items() if p["override"]] == ["turn-2"]
+
+    # (a) the inputs: what the planner had from the formal move ledger, and what it read out of the chat.
+    first = panels["turn-0"]
+    assert first["evidence"][0] == ["Blake", "2", "0", "1"]
+    kept, dropped = first["claims"]
+    assert not kept["dropped"] and dropped["dropped"]
+    assert "opt0 on issue1 is the one thing I actually need" in kept["cells"][4], "the provenance quote is shown"
+    assert "favours opt0" in kept["cells"][1] and "0.95" in kept["cells"][2]
+    assert "unknown_seat" in dropped["cells"][3], "a dropped claim says why, rather than vanishing"
+
+    # (b) the advice, and which rung of it the seat played — a different rung on each of the two compliant turns,
+    # and none marked on the turn that overrode the ranking.
+    def taken_rank(turn):
+        marked = [r for r in panels[turn]["candidates"] if r["taken"]]
+        return marked[0]["cells"][0] if len(marked) == 1 else marked
+    assert taken_rank("turn-0") == "1 played" and taken_rank("turn-1") == "2 played"
+    assert taken_rank("turn-2") == [], "an override marks no candidate as played"
+
+
+def test_a_run_can_publish_a_chosen_subset_and_the_manifest_says_which(episode, tmp_path):
+    """A published hub is routinely a representative selection, not a whole hundred-episode cell — so which
+    episodes it chose has to be a recorded fact, and an id the run does not hold must be reported rather than
+    quietly dropped (a typo'd id would otherwise publish a shorter hub than the caller asked for, silently)."""
+    ep, inst = episode
+    three = [{**ep, "episode_id": f"{ep['episode_id']}-{n}"} for n in ("a", "b", "c")]
+    run = _write_run(tmp_path, "three", three, inst)
+    chosen = [three[2]["episode_id"], three[0]["episode_id"]]
+    manifest = viz.export_run(run, tmp_path / "picked", episode_ids=chosen + ["scorable_negotiation-nope"])
+    assert manifest["n_episodes"] == 2 and manifest["n_episodes_in_run"] == 3
+    assert manifest["selection"] == chosen + ["scorable_negotiation-nope"]
+    assert [Path(p).stem for p in manifest["pages"]] == chosen, "published in the order asked for"
+    assert len(manifest["failures"]) == 1 and "scorable_negotiation-nope" in manifest["failures"][0]["error"]
+    assert viz.export_run(run, tmp_path / "all")["selection"] is None, "an unfiltered export needs no caveat"

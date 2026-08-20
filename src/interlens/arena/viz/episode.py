@@ -51,6 +51,7 @@ from ..actions import action_from_json
 from ..engine import EMPTY_TURN_PLACEHOLDER, gen_failures
 from . import references
 from .auction_geometry import AuctionGeometry, auction_trace, is_auction_instance, json_safe
+from .advice import ADVICE_SIDECAR, advice_trace, attach_advice, episode_advice
 from .ballots import DERIVATION_SIDECAR, final_ballots, vote_derivation
 from .census import turn_census
 from .geometry import GameGeometry
@@ -608,7 +609,8 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
                     manifest: dict | None = None, geometry: GameGeometry | None = None,
                     reconstruct: bool = True, paths: dict | None = None,
                     annotations_source: str | None = None, vintage: dict | None = None,
-                    derivation: dict | None = None, auction_counterfactuals: bool = True) -> dict:
+                    derivation: dict | None = None, advice: dict | None = None,
+                    auction_counterfactuals: bool = True) -> dict:
     """The complete render payload for one episode.
 
     Parameters
@@ -647,6 +649,13 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
         :func:`~interlens.arena.viz.ballots.vote_derivation`), which lets the final-vote tally show what each
         computable seat's own policy re-derives beside what the record holds. ``None`` renders the recorded
         ballots alone.
+    advice : dict, optional
+        The run's optional ``advice_trace.json`` sidecar (see
+        :func:`~interlens.arena.viz.advice.advice_trace`), which carries, per advised turn, the evidence the
+        seat's private planner ran on — the formal-move ledger counts and the chat-derived preference claims
+        with their provenance quotes — its ranked recommendation, and the stored verdict on whether the seat
+        played it. Attached to each advised turn as ``advice``. ``None`` on any run with no advised seat, which
+        is every arm but the advised ones; the transcript then renders exactly as before.
     auction_counterfactuals : bool
         On an AUCTION episode, whether to compute the per-turn rational and oracle counterfactual bids (see
         :func:`~interlens.arena.viz.auction_geometry.auction_trace`). On by default because they are the
@@ -722,7 +731,9 @@ def episode_payload(episode: dict, instance: dict | None = None, annotation: dic
                    "party": i, "kind": kinds["kinds"].get(s.get("name"), "llm")}
                   for i, s in enumerate(episode.get("seats") or [])],
         "seat_kind_source": {"source": kinds["source"], "detail": kinds["detail"]},
-        "turns": rows,
+        # Advised turns carry the private planner's evidence, its ranking and the stored compliance verdict; on
+        # every other run this is the identity and no turn gains a key.
+        "turns": attach_advice(rows, episode_advice(advice, episode.get("episode_id"))),
         "trajectory": trajectory,
         # the public offer ledger the conversation and issue views read (see public_ledger)
         "offers": ledger["offers"],
@@ -784,9 +795,11 @@ class RunDir:
         self.manifest = json.loads(manifest.read_text()) if manifest.is_file() else None
         # Two optional run-level sidecars, read once here because every episode of the run shares them: the
         # vintage hazard file that says this run must not be pooled with a repaired one, and the gate's
-        # re-derivation of each computable seat's ballot. Both are ``None`` when absent.
+        # re-derivation of each computable seat's ballot, and — on an advised arm — the per-turn audit of what
+        # the advised seat's planner knew and whether the seat took its advice. All ``None`` when absent.
         self.vintage = vintage_provenance(self.root)
         self.derivation = vote_derivation(self.root)
+        self.advice = advice_trace(self.root)
         self._geometry: dict[str, GameGeometry | None] = {}
 
     def episode_files(self) -> list[Path]:
@@ -829,11 +842,13 @@ class RunDir:
             paths["vintage"] = self.vintage["path"]
         if self.derivation is not None:
             paths["vote_derivation"] = str((self.root / DERIVATION_SIDECAR).resolve())
+        if self.advice is not None:
+            paths["advice_trace"] = str((self.root / ADVICE_SIDECAR).resolve())
         return episode_payload(episode, instance, annotation, manifest=self.manifest,
                                geometry=self.geometry(instance_id, episode.get("cell_cfg")),
                                reconstruct=reconstruct, paths=paths,
                                annotations_source=(self.annotations_dirname if annotation is not None else None),
-                               vintage=self.vintage, derivation=self.derivation,
+                               vintage=self.vintage, derivation=self.derivation, advice=self.advice,
                                auction_counterfactuals=auction_counterfactuals)
 
 

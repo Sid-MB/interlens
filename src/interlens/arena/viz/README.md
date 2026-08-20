@@ -3,6 +3,7 @@
 <!-- [rational_agents: viz-sidebar] 2026-08-03 — the tabbed, scroll-synced sidebar -->
 <!-- [rational_agents: viz-hovers] 2026-08-03 — rich hover cards on every chart point, with the solution-concept definitions -->
 <!-- [rational_agents: viz-upgrades] 2026-08-12 — four-type decision references with per-type units, run hazard badges, the silent-turn census, the final-vote tally -->
+<!-- [implement f: rational-informed LLM, reading inputs] 2026-08-20 — the advised seat: parse evidence, ranked advice, and the override marking -->
 
 # `interlens.arena.viz` — interactive episode visualizer
 
@@ -82,6 +83,7 @@ viz.serve_directory(out_dir, port=0)                         # serve rendered pa
 | `README.md` | optional run description above the index table | omitted; the index starts with the table |
 | `VINTAGE_PROVENANCE.md` | the hazard banner and index tag marking a run whose agents carry a known defect | no hazard is claimed, which is the healthy case |
 | `vote_derivation.json` | the final-vote tally's *derived ballot* column (written by gate G3 with `--viz-sidecar`) | the recorded ballots are tabulated alone, and the page says how to fill the column |
+| `advice_trace.json` | the advised seat's per-turn audit — its evidence, its ranked advice, and whether the seat took it (written by the experiment's `build_advice_trace.py`) | no advice panel and no override marking, which is the right answer for every arm with no advised seat |
 
 The run README is rendered as CommonMark with embedded HTML disabled, so rollout documentation can explain the
 campaign and its caveats without becoming executable page content. It is included by `--run`; a `--compare`
@@ -321,6 +323,47 @@ offline answer; re-deriving it in the renderer would be a second opinion with no
 reads gate G3's own output from `vote_derivation.json` (`gate_seeded_offer_votes.py --viz-sidecar`) and names a
 recorded-vs-derived disagreement a harness bug in the row itself.
 
+## The advised seat: what it knew, what it was told, and whether it listened
+
+Some arms hand one seat a private advisor and let the model keep the decision. The transcript then shows only
+half the turn. An **interpreter** arm is the sharpest case: each focal turn runs a separate public-only parse call
+that turns the chat into structured preference claims, folds them into a planner's revealed-preference ledger
+beside the formal move record, and appends the re-planned ranked advice to that seat's private view. Three
+different records, and a reader auditing one turn needs all three at once.
+
+`advice_trace.json` at the run root supplies them, and each advised turn's row is attached to its turn payload as
+`advice`. The page then shows, per advised turn, in the order the loop ran:
+
+1. **What the planner knew** — the formal move ledger per opponent (packages tabled, offers accepted: the
+   machine-readable channel it would have had with no interpreter) beside the chat-derived claims, each with its
+   direction, strength, confidence, the ledger weight it carried, and **the verbatim published sentence it was
+   read off**. A claim the provenance guard rejected stays on the page, struck through and carrying its rejection
+   reason, because a parser inventing a preference is a fact about the arm and a panel showing only the admitted
+   rows would hide exactly that.
+2. **What it recommended** — the ranked candidate packages with their estimated least-willing-party consensus and
+   the focal seat's own points, and the rung the seat actually played marked on the candidate itself.
+3. **What the seat played**, beside the wave-1 prescriptive advisor's shadow recommendation on the same state
+   where the run recorded one.
+
+Above the transcript, one server-rendered section repeats the audit as a table — one row per advised turn, top
+pick against played move against verdict — so the compliance record reads with scripting off.
+
+**A turn that overrode its advisor is marked, and the mark is not a hazard style.** The arm is designed to let
+the seat decide, so an override is not a defect; it does change what the turn *measures*, from the advisor's
+policy to the model's own choice, and on the wave-2 cell 46% of advised turns were overrides. The card takes the
+reference accent on its **right** edge (the left edge already encodes the action type) plus a faint tint, the
+scrubber chip an outline, and both carry the words `OVERRODE THE ADVICE` — colour is the last of four encodings,
+never the only one.
+
+**The verdict is read, never computed.** Whether a turn followed its advice is decided by the experiment's own
+uptake census, which owns the comparison rules the arm's compliance gate is evaluated on — deal identity for a
+propose, offer id for an accept, which rung of a ranked list was played. Re-deriving it in the renderer would be
+a second opinion with no authority, exactly as with the derived ballot column. The test for this flips the stored
+verdict while leaving every action, package and claim untouched, and asserts the page follows. Equally, the page
+makes **no claim about how the seat described its advice in public**: that judgement is not in the record and no
+classifier is run to manufacture one, so the advice and the published message are placed together and the reading
+is left to the reader.
+
 ## Seat-swap comparison
 
 Pairs episodes on `(instance_id, seed, arm, cell)` — a key, not a heuristic; an unmatched episode is reported, never approximately matched. The page opens with a **verdict strip** — which side won, on how many metrics, and the largest move in each direction, using each metric's own better-direction so a lower Gini counts as a win for whoever lowered it, and stating the ties rather than dropping them. Below it: a table of paired deltas (right minus left), one shared frontier carrying both trajectories, and two synchronized transcript columns with the first behavioural divergence marked. Each column renders with its own element-id prefix (`lturn-` / `rturn-`), because both sides number their turns from zero and a single prefix put duplicate ids on one page. The columns show each turn's action by default; a **Show each turn's post-hoc oracle counterfactual** toggle adds the per-turn oracle column and its value gap inside each side.
@@ -344,6 +387,7 @@ Where several seats were swapped at once (a `mixed` table against `all_llm` repl
 | `census.py` | the per-episode count of turns that carried nothing, and its header strip |
 | `hazards.py` | the vintage hazard file, the generation budget, and their badges/banners |
 | `ballots.py` | the final-vote tally and the optional re-derivation sidecar |
+| `advice.py` | the advised seat's audit sidecar: the per-turn attach, the compliance summary, and the server-side overview card |
 | `chrome.py` | the shell shared by all three page kinds: top bar, nav slot, help overlay, summary strip, and `slim_payload` (the pooled wire form) |
 | `page.py` | pure `payload -> HTML`; renders every number server-side |
 | `assets/` | the inline stylesheet and browser layer, split by job (see below) |

@@ -321,6 +321,32 @@ svg .infodot:hover text,svg .infodot:focus-visible text{fill:var(--s1)}
 .chip.silent{outline:2px dotted var(--warn);outline-offset:-2px}
 .bubble.silent .fabtag{color:var(--warn)}
 
+/* --- the advised seat: advice taken, and advice overridden -------------------------------------------------
+   An override is not a hazard — the arm is designed to let the seat decide — but it changes what the turn
+   MEASURES, so it needs to be as visible as one. It cannot take the left edge, which already encodes the action
+   type, and it must not take a status colour, which would read as "something went wrong". So it takes the right
+   edge in the reference accent and a faint tint, plus the word OVERRODE THE ADVICE on the card, the scrubber
+   chip's tooltip and the badge: colour is the last of four encodings here, never the only one. */
+.turn.advice-overridden{background:color-mix(in oklab,var(--reference-alt) 6%,var(--surface-1));
+ box-shadow:inset -4px 0 0 var(--reference-alt)}
+.chip.advice-overridden{outline:2px solid var(--reference-alt);outline-offset:-2px}
+.badge.advice-override{color:var(--reference-alt);border-color:var(--reference-alt);font-weight:700}
+.badge.advice-followed{color:var(--good);border-color:color-mix(in oklab,var(--good) 45%,transparent);
+ font-weight:600}
+.advice-overridenote{border:1px solid var(--reference-alt);color:var(--ink)}
+.advicebox{margin-top:var(--sp-2);border:1px solid var(--ring);border-radius:var(--r-1)}
+.advicebox.override{border-color:color-mix(in oklab,var(--reference-alt) 55%,transparent)}
+.advicebox > summary{font-size:var(--t-sm);font-weight:600}
+.advicebox .body{padding:0 10px 10px}
+.advicebox .act{font-size:var(--t-md);font-weight:600}
+/* A dropped claim stays on the page — a parser inventing a preference is a fact about the arm — but it is
+   recessive and struck through, so it cannot be misread as evidence the plan ran on. */
+table.advice-claims tr.dropped td{color:var(--muted)}
+table.advice-claims tr.dropped td:first-child{text-decoration:line-through}
+table.advice-claims td.quote{font-style:italic;color:var(--ink-2);max-width:34em}
+table.advice-candidates tr.taken td{background:color-mix(in oklab,var(--good) 8%,transparent)}
+.card.advice.hazard{border-color:color-mix(in oklab,var(--reference-alt) 55%,transparent)}
+
 /* --- the decision-reference grid (four references on two axes) ------------------------------------------- */
 /* Rows are objectives and are in DIFFERENT UNITS, so the row header carries the unit and the two objective rows
    are visually separated rather than reading as one continuous table of comparable numbers. */
