@@ -49,6 +49,17 @@ on:
         required: false
         default: true
         type: boolean
+      # Callers must opt in, but native push events (empty inputs context) sync via the `toJSON(inputs)`
+      # guard on the docsync steps — interlens itself is a source in sidmb, so its own releases refresh the docs.
+      docsync:
+        description: "Whether to trigger a documentation sync of this repository's docs into Sid-MB/sidmb after publishing."
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      DOCSYNC_GITHUB_TOKEN:
+        description: "Fine-grained PAT with Actions read/write on Sid-MB/sidmb. Required when docsync is true."
+        required: false
   workflow_dispatch:
     inputs:
       license:
@@ -65,6 +76,11 @@ on:
         description: "Create a GitHub Release for the new tag"
         required: false
         default: true
+        type: boolean
+      docsync:
+        description: "Trigger a documentation sync of this repository's docs into Sid-MB/sidmb after publishing"
+        required: false
+        default: false
         type: boolean
 
 # Serialize releases so two quick pushes can't race to claim the same version.
@@ -100,6 +116,19 @@ jobs:
           fi
           if [ "$LICENSE_ENABLED" = "true" ] && [ ! -f .licenserc.yaml ]; then
             echo "::error title=Missing license configuration::The license input is true, but .licenserc.yaml is missing. Add a configuration based on https://github.com/Sid-MB/interlens/blob/main/.licenserc.yaml or disable license checks."
+            exit 1
+          fi
+
+      # Fail before doing any release work if docsync was requested without the token that powers it —
+      # callers must pass DOCSYNC_GITHUB_TOKEN (a fine-grained PAT with Actions read/write on Sid-MB/sidmb)
+      # via `secrets:` or `secrets: inherit`.
+      - name: Validate docsync configuration
+        if: ${{ toJSON(inputs) == '{}' || inputs.docsync }}
+        env:
+          TOKEN_SET: ${{ secrets.DOCSYNC_GITHUB_TOKEN != '' }}
+        run: |
+          if [ "$TOKEN_SET" != "true" ]; then
+            echo "::error title=Missing DOCSYNC_GITHUB_TOKEN::docsync is true but the DOCSYNC_GITHUB_TOKEN secret is not set. Pass it from the calling workflow via secrets: (or secrets: inherit); it must be a fine-grained PAT with Actions read/write access to Sid-MB/sidmb."
             exit 1
           fi
 
@@ -186,3 +215,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "v${{ steps.bump.outputs.version }}" dist/* --generate-notes
+
+      - name: Trigger documentation sync in Sid-MB/sidmb
+        if: ${{ (toJSON(inputs) == '{}' || inputs.docsync) && github.ref_name == github.event.repository.default_branch }}
+        env:
+          GH_TOKEN: ${{ secrets.DOCSYNC_GITHUB_TOKEN }}
+        # Fine-grained PATs cannot use the GraphQL API gh needs to resolve the target's default branch, so look it up over REST and pass it explicitly.
+        run: |
+          ref=$(gh api repos/Sid-MB/sidmb --jq .default_branch)
+          gh workflow run sync-ext-docs.yml --repo Sid-MB/sidmb --ref "$ref" -f "source=${GITHUB_REPOSITORY#*/}"
