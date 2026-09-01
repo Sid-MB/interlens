@@ -180,7 +180,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag "v$next"
 
+      # Pin the version explicitly instead of letting hatch-vcs infer it from the tags: a run that failed after pushing its tag leaves that commit already tagged, so a re-run gives the same commit multiple v* tags and `git describe` can pick the wrong one — that is how Sid-MB/fwd pushed v0.1.15 but published fwdit 0.1.14. hatch-vcs delegates to setuptools-scm, which honours SETUPTOOLS_SCM_PRETEND_VERSION even inside `python -m build`'s isolated environment, and the unsuffixed variable applies to whichever package the calling repository builds.
       - name: Build sdist + wheel
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ steps.bump.outputs.version }}
         run: |
           python -m pip install --upgrade build
           python -m build
