@@ -346,6 +346,11 @@ table.advice-claims tr.dropped td:first-child{text-decoration:line-through}
 table.advice-claims td.quote{font-style:italic;color:var(--ink-2);max-width:34em}
 table.advice-candidates tr.taken td{background:color-mix(in oklab,var(--good) 8%,transparent)}
 .card.advice.hazard{border-color:color-mix(in oklab,var(--reference-alt) 55%,transparent)}
+/* The all-seats round view. A row is tinted by its verdict rather than only badged, because the point of the
+   table is the SHAPE of a round read down the column — how many of the five went their own way at once. */
+table.advice-round tr.overrode td{background:color-mix(in oklab,var(--reference-alt) 6%,transparent)}
+table.advice-round tr.took td{background:color-mix(in oklab,var(--good) 5%,transparent)}
+table.advice-round td:nth-child(4){font-variant-numeric:tabular-nums;white-space:nowrap}
 
 /* --- the decision-reference grid (four references on two axes) ------------------------------------------- */
 /* Rows are objectives and are in DIFFERENT UNITS, so the row header carries the unit and the two objective rows

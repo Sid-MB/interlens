@@ -2885,3 +2885,48 @@ def test_a_run_can_publish_a_chosen_subset_and_the_manifest_says_which(episode, 
     assert [Path(p).stem for p in manifest["pages"]] == chosen, "published in the order asked for"
     assert len(manifest["failures"]) == 1 and "scorable_negotiation-nope" in manifest["failures"][0]["error"]
     assert viz.export_run(run, tmp_path / "all")["selection"] is None, "an unfiltered export needs no caveat"
+
+
+def test_a_sharded_advice_trace_reads_one_episode_without_the_corpus(advised_payload, tmp_path):
+    """An all-advised arm advises every turn, so its trace runs to tens of megabytes where a one-seat arm's is a
+    few. Published as one blob, a reader auditing a single episode downloads all of it to read a fraction of a
+    percent — so the writer splits it into an index plus one file per episode, and the loader reads either shape.
+
+    The index says which shape it is rather than the loader inferring it from which keys are present, and a shard
+    that has gone missing costs that episode's panel, not the render."""
+    episode_id = advised_payload["episode"]["episode_id"]
+    turns = {str(t["idx"]): t["advice"] for t in advised_payload["turns"] if t.get("advice")}
+    (tmp_path / viz.ADVICE_SIDECAR).write_text(json.dumps({
+        "schema": "five-seat-interpreter-advice-trace-v1", "sharded": True, "shard_dir": "advice_trace",
+        "summary": {"n_advised_turns": len(turns)}, "episode_ids": [episode_id]}))
+    shards = tmp_path / "advice_trace"
+    shards.mkdir()
+    (shards / f"{episode_id}.json").write_text(json.dumps({"episode_id": episode_id, "turns": turns}))
+
+    trace = viz.advice_trace(tmp_path)
+    assert trace["sharded"] is True and "episodes" not in trace, "the index carries no episode bodies"
+    assert viz.episode_advice(trace, episode_id) == turns, "the shard is read on demand"
+    assert viz.episode_advice(trace, "an-episode-with-no-shard") == {}, "a missing shard is not an error"
+
+    # The inline shape keeps working unchanged — it is what every single-advised-seat arm already publishes.
+    (tmp_path / viz.ADVICE_SIDECAR).write_text(json.dumps({"episodes": {episode_id: turns}}))
+    inline = viz.advice_trace(tmp_path)
+    assert not inline.get("sharded") and viz.episode_advice(inline, episode_id) == turns
+
+
+def test_a_sharded_trace_stays_portable_when_the_entry_is_moved(advised_payload, tmp_path):
+    """The shard location is resolved from where the index was READ, not stored inside it. A trace written into a
+    run directory and then copied into a published pages entry must keep working, and an absolute path baked
+    into the file would strand it on the machine that built it."""
+    episode_id = advised_payload["episode"]["episode_id"]
+    turns = {str(t["idx"]): t["advice"] for t in advised_payload["turns"] if t.get("advice")}
+    for name in ("built_here", "published_there"):
+        root = tmp_path / name
+        (root / "advice_trace").mkdir(parents=True)
+        (root / viz.ADVICE_SIDECAR).write_text(json.dumps(
+            {"sharded": True, "shard_dir": "advice_trace", "episode_ids": [episode_id]}))
+        (root / "advice_trace" / f"{episode_id}.json").write_text(
+            json.dumps({"episode_id": episode_id, "turns": turns}))
+        assert viz.episode_advice(viz.advice_trace(root), episode_id) == turns
+    written = json.loads((tmp_path / "published_there" / viz.ADVICE_SIDECAR).read_text())
+    assert str(tmp_path) not in json.dumps(written), "no absolute path may be written into the file"

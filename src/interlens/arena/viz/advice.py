@@ -65,9 +65,19 @@ from .chrome import _e, _num
 #: The file an experiment writes into a run root to give the pages their advice audit.
 ADVICE_SIDECAR = "advice_trace.json"
 
+#: Key the loader stamps on a trace so :func:`episode_advice` can find its shards. Not written to disk — the
+#: file records only a RELATIVE ``shard_dir``, so a published trace stays portable between machines.
+ROOT_KEY = "_root"
+
 
 def advice_trace(run_root: str | Path | None) -> dict | None:
     """The optional advice sidecar for a run, or ``None`` when it is absent or unreadable.
+
+    Two shapes are read, because one blob does not serve both arm sizes. A single-advised-seat arm's trace is a
+    few megabytes and ships whole, with its episodes inline. An **all-advised** arm's is tens of megabytes — every
+    turn is advised, so there are five times the turns and five times the claims — and is written as an index
+    plus one file per episode; a reader auditing one episode then fetches that episode rather than the corpus.
+    The index says which shape it is (``sharded``), so nothing is inferred from the presence of a key.
 
     Unreadable is treated as absent for the same reason the ballot sidecar is: a malformed audit file must cost
     the page one optional panel, not the whole render.
@@ -81,17 +91,34 @@ def advice_trace(run_root: str | Path | None) -> dict | None:
         data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    # Where the shards live is resolved here and not stored in the file, so moving a published trace between a
+    # run directory and a pages entry does not strand it.
+    return {**data, ROOT_KEY: str(Path(run_root))} if data.get("sharded") else data
 
 
 def episode_advice(trace: dict | None, episode_id: str | None) -> dict[str, dict]:
     """One episode's advised turns from the trace, keyed by turn index as a string.
 
-    Returns an empty dict for an episode the trace does not cover — an unadvised arm, an episode that errored, or
-    a run with no sidecar at all — which is what makes every caller a no-op rather than a special case.
+    Reads an inline ``episodes`` map or, on a sharded trace, the one shard for this episode. Returns an empty
+    dict for an episode the trace does not cover — an unadvised arm, an episode that errored, a run with no
+    sidecar, or a shard that has gone missing — which is what makes every caller a no-op rather than a special
+    case, and what keeps one absent shard from costing the whole render.
     """
-    episodes = (trace or {}).get("episodes") or {}
-    turns = episodes.get(str(episode_id))
+    if not trace or not episode_id:
+        return {}
+    if trace.get("sharded"):
+        shard = (Path(trace.get(ROOT_KEY) or ".") / str(trace.get("shard_dir") or "advice_trace")
+                 / f"{episode_id}.json")
+        if not shard.is_file():
+            return {}
+        try:
+            turns = (json.loads(shard.read_text()) or {}).get("turns")
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return turns if isinstance(turns, dict) else {}
+    turns = (trace.get("episodes") or {}).get(str(episode_id))
     return turns if isinstance(turns, dict) else {}
 
 
@@ -183,6 +210,102 @@ def _turn_row(idx: str, row: dict) -> str:
             f"<td>{advised}<div class='sub'>{_e(len(row.get('candidates') or []))} candidate(s) ranked · "
             f"{evidence}</div></td>"
             f"<td>{_action_words(row.get('emitted_action'))}</td><td>{verdict}</td></tr>")
+
+
+def round_ledger(turns: dict[str, dict]) -> list[dict]:
+    """Per round, every advised seat's turn side by side — the shape an all-advised arm is read in.
+
+    On a one-advised-seat arm a round holds one advised turn and this is the transcript in a narrower column. On
+    an ALL-advised arm a round holds five, each seat deciding against its own planner at the same table state,
+    and the question that matters is no longer "did this seat take its advice" but "what did the five of them do
+    to each other" — which is a question this view lets a reader put, not one it answers.
+
+    **It reports arithmetic and asserts no mechanism.** The intuitive account — that simultaneous concessions
+    cancel where a lone concession transfers — was written down as a prediction with a falsifier and tested on
+    an all-advised corpus; both prespecified correlations came back null, so it is a conjecture and this view
+    must not be captioned as showing it. What the view is FOR is being the substrate a design that *assigns* the
+    number of advised seats would be read against.
+
+    Each round reports its rows plus the arithmetic over them: how many seats overrode, and the total own-surplus
+    those overrides moved. ``conceded`` sums only the NEGATIVE deltas and ``claimed`` only the positive ones,
+    kept apart rather than netted, because a round where two seats each gave up twenty points is not the same
+    round as one where nobody moved, and a single net figure cannot tell them apart.
+
+    ``advice_overridden_toward`` is defined only where a seat proposed a package of its own (an accept names an
+    offer, not a deal), so ``n_measured`` reports the denominator beside the sums rather than letting a round
+    with one measurable override read like a round with five.
+    """
+    rounds: dict[int, list[dict]] = {}
+    for idx, row in sorted(turns.items(), key=lambda kv: int(kv[0])):
+        rounds.setdefault(int(row.get("round") or 0), []).append({**row, "turn_idx": idx})
+    ledger = []
+    for number, rows in sorted(rounds.items()):
+        deltas = [float((r.get("uptake") or {}).get("advice_overridden_toward"))
+                  for r in rows if (r.get("uptake") or {}).get("advice_overridden_toward") is not None]
+        ledger.append({
+            "round": number, "rows": rows, "n_advised": len(rows),
+            "n_overrode": sum(1 for r in rows if r.get("followed") is False),
+            "n_measured": len(deltas),
+            "conceded": -sum(d for d in deltas if d < 0),
+            "claimed": sum(d for d in deltas if d > 0),
+        })
+    return ledger
+
+
+def round_ledger_card(payload: dict) -> str:
+    """The per-round, all-seats view, or ``""`` on an episode that advises fewer than two seats.
+
+    Rendered server-side, one block per round, so the picture reads with scripting off and every number on it is
+    in the page rather than computed in the browser. Omitted entirely on a single-advised-seat arm, where five
+    columns would be four empty ones.
+    """
+    turns = {str(row["idx"]): row["advice"] for row in (payload.get("turns") or []) if row.get("advice")}
+    if len({row.get("seat") for row in turns.values() if row.get("seat")}) < 2:
+        return ""
+    blocks = []
+    for entry in round_ledger(turns):
+        rows = "".join(
+            f"<tr class='{'overrode' if row.get('followed') is False else 'took'}'>"
+            f"<td><a href='#turn-{_e(row['turn_idx'])}'>{_e(row.get('seat'))}</a></td>"
+            f"<td>{'<span class=\"badge advice-override\">overrode</span>' if row.get('followed') is False else '<span class=\"badge advice-followed\">took the advice</span>'}</td>"
+            f"<td>{_e((row.get('uptake') or {}).get('emitted_kind'))}</td>"
+            f"<td>{_own_delta((row.get('uptake') or {}).get('advice_overridden_toward'))}</td>"
+            f"<td>{_package_words(((row.get('candidates') or [{}])[0]).get('package'))}</td></tr>"
+            for row in entry["rows"])
+        measured = (f"{entry['n_measured']} of them measurable" if entry["n_measured"] != entry["n_overrode"]
+                    else "all measurable")
+        blocks.append(
+            f"<h3>Round {entry['round']}</h3><div class='card'>"
+            f"<div class='pills'><span class='pill'>{entry['n_advised']} seats advised</span>"
+            f"<span class='pill{' bad' if entry['n_overrode'] else ''}'>{entry['n_overrode']} overrode "
+            f"({_e(measured)})</span>"
+            f"<span class='pill'>own surplus given up: <b>{_num(entry['conceded'], 1)}</b></span>"
+            f"<span class='pill'>taken: <b>{_num(entry['claimed'], 1)}</b></span></div>"
+            f"<div class='tablewrap'><table class='advice-round'><thead><tr><th>seat</th><th>verdict</th>"
+            f"<th>move</th><th>own surplus vs its own top pick</th><th>the package its planner ranked first</th>"
+            f"</tr></thead><tbody>{rows}</tbody></table></div></div>")
+    return f"""<section class='card advice' id='advice-rounds'><h2>All five seats, round by round</h2>
+ <div class='sub'>Every seat at this table has its own parser, its own planner and its own ranked advice, so a
+ round is five simultaneous decisions against one table state rather than one seat's decision against four
+ fixed opponents. Each round lists what every seat was told to want and what it did instead, with the own-surplus
+ cost of each override beside it. <b>Given up</b> and <b>taken</b> are kept apart rather than netted: a round in
+ which two seats each concede twenty points is a different round from one in which nobody moves, and a single net
+ figure cannot tell those apart. The surplus column is defined only where a seat proposed a package of its own —
+ an accept names an offer id, not a deal — so a blank there is an absent measurement, not a zero.
+ <b>This table is evidence to read, not an explanation.</b> The obvious account of an all-advised table — that
+ concessions made at once cancel where a lone concession transfers — has been tested against a falsifier set in
+ advance and did not survive it, so nothing here should be read as showing it; and the same table on a
+ one-advised-seat arm has exactly one measurable seat per round by construction, which is why the spread of
+ concessions across seats cannot be compared between the two arms.</div>
+ {''.join(blocks)}</section>"""
+
+
+def _own_delta(value: Any) -> str:
+    """One seat's own-surplus change against its planner's top pick, signed and coloured, or an em dash."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "—"
+    sign = "+" if value >= 0 else ""
+    return f"<b class='{'pos' if value > 0 else 'neg' if value < 0 else 'zero'}'>{sign}{_num(value, 1)}</b>"
 
 
 def advice_card(payload: dict) -> str:
