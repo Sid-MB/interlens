@@ -461,7 +461,11 @@ class BestResponseOracle(Oracle):
 
     def evaluate(self, game, history, agent, legal):
         """Value each legal action; ``best`` is the surplus-maximizing one. ``extra`` carries the per-turn
-        ``surplus_loss`` of every action (``V(best) - V(action)``) and the best-response proposal deal."""
+        ``surplus_loss`` of every action (``V(best) - V(action)``) and the best-response proposal deal.
+
+        Ties in the argmax are resolved by :meth:`_argmax_action`, which prefers any action over accepting an
+        offer that pays this seat strictly negative surplus, and only then falls back to the canonical
+        ``action_key`` order. A strict optimum is never overridden."""
         agent = seat_index(game, agent) if agent is not None else self.agent
         disc = effective_discount(game, self.discount)
         tables = game_tables(game)
@@ -537,6 +541,9 @@ class BestResponseOracle(Oracle):
         solved = {oid: (float(yes_vals[k]), float(no_vals[k]), float(q_yeses[k]), float(q_nos[k]),
                         vote_proposers[k])
                   for k, oid in enumerate(vote_ids)}
+        #: This seat's OWN surplus from each votable offer, kept for the negative-surplus accept tie-break
+        #: below (``_argmax_action``). It is the raw sheet payoff of signing, not a continuation value.
+        own_surplus_of_offer = {oid: float(vote_surplus[k]) for k, oid in enumerate(vote_ids)}
 
         values: dict = {}
         vote_diagnostics: list[dict] = []
@@ -577,7 +584,7 @@ class BestResponseOracle(Oracle):
         # which no registry can decide, and which is why `evaluate` is order-invariant for any caller.)
         values = {a: values[a] for a in sorted(values, key=action_key)}
 
-        best = max(values, key=values.get) if values else None
+        best = self._argmax_action(values, own_surplus_of_offer)
         vbest = values[best] if best is not None else 0.0
         # JSON-safe list (not an Action-keyed dict, which would break OracleVerdict.to_json / episode save)
         surplus_loss = [{"action": a.to_json(), "loss": vbest - v} for a, v in values.items()]
@@ -586,6 +593,42 @@ class BestResponseOracle(Oracle):
                  "rounds_left": r_left, "conditional_votes": vote_diagnostics,
                  "walk_value": 0.0}
         return make_verdict(values, best=best, flags=[], extra=extra)
+
+    @staticmethod
+    def _argmax_action(values: dict, own_surplus_of_offer: dict):
+        """Pick the best action, breaking ties AGAINST accepting a strictly negative-surplus offer.
+
+        The rule, in order:
+
+        1. Take the actions attaining the maximum value. If exactly one action is strictly best, it is
+           returned unchanged — this guard never overrides a strict optimum, so any game where some action
+           has strictly positive value (every feasibility-screened bank, by construction) decides exactly as
+           it did before.
+        2. Among the tied actions, drop every ``Accept`` whose own surplus is strictly negative, unless that
+           would empty the set.
+        3. Break the remaining tie with the canonical ``action_key`` order (``values`` arrives pre-sorted, so
+           this is simply the first survivor).
+
+        WHY: on a game with an empty individually-rational set, the conditional vote solve returns
+        ``p_pass_if_accept = 0.0``, the accept branch collapses to the zero continuation, and reject, propose
+        and walk are 0.0 as well — every legal action ties at exactly 0.0. The canonical tie-break sorts
+        ``accept`` first alphabetically, so an omniscient seat signed a deal paying it strictly negative
+        surplus *because it was certain the deal could not pass* — a self-refuting belief that every seat held
+        at once, so the deal passed unanimously (errata E1; audit
+        ``experiments/rational_agents/audit_oracle_empty_ir_accept.py``, 150/150 seat-states all-tied,
+        130 accepting negative own surplus). The sibling ``bayes-rational`` policy already carries this
+        own-surplus guard; the oracle lacked it. A ceiling policy that signs a deal it is indifferent to and
+        strictly loses on is not a ceiling, so indifference is resolved toward not signing.
+        """
+        if not values:
+            return None
+        vbest = max(values.values())
+        tied = [a for a in values if values[a] == vbest]
+        if len(tied) == 1:
+            return tied[0]
+        kept = [a for a in tied
+                if not (isinstance(a, Accept) and own_surplus_of_offer.get(a.offer_id, 0.0) < 0.0)]
+        return (kept or tied)[0]
 
     def _model_opp_proposals(self, tables: GameTables, V_next, agent: int | None = None, *,
                              min_accept: int | None = None, veto_seats=None) -> dict:

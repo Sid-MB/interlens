@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 
 from interlens import Conversation, RoundRobinPolicy
-from interlens.arena.actions import Accept, Pass, Propose, Reject, Walk, parse_action
+from interlens.arena.actions import Accept, Pass, Propose, Reject, Walk, action_key, parse_action
 from interlens.arena.negotiation.space import DealSpace, Issue
 from interlens.arena.negotiation.sheets import GameSpec, ScoreSheet
 from interlens.arena.negotiation.oracle_context import GameTables
@@ -555,3 +555,62 @@ def test_oracle_verdicts_are_json_serializable():
     recs = annotate([BestResponseOracle(0), AcceptanceOracle(0), EquilibriumOracle(), ThresholdOracle(),
                      BeliefOracle(0)], game, [], agent, legal, chosen_action=legal[0], round=1, seat=agent)
     json.dumps([r.to_json() for r in recs])                 # the full episode-record path
+
+
+# --------------------------------------------------------------------------------------------------------- #
+# 3b. Empty-IR tie-break guard (errata E1). [review: focused-papers readiness] 2026-09-03
+# --------------------------------------------------------------------------------------------------------- #
+def _infeasible_game():
+    """A 3-party game whose individually-rational set is EMPTY: every deal is below every threshold.
+
+    This is the shape that exposed the E1 defect. Three parties is the minimum that reproduces it — with two,
+    the deciding seat plus the proposer already meet unanimity, so the accept branch prices the real (negative)
+    surplus instead of collapsing. With a third seat certain to vote no, the conditional vote solve returns
+    ``p_pass_if_accept = 0``, the accept branch collapses to the zero continuation, and reject / propose / walk
+    are 0.0 too — so every legal action ties at exactly 0.0 and the tie-break alone decides the move."""
+    space = DealSpace((Issue("I", ("X", "Y", "Z")),))
+    s0 = ScoreSheet("p0", ((10.0, 1.0, 1.0),), threshold=20.0)   # best deal pays 10 against a threshold of 20
+    s1 = ScoreSheet("p1", ((1.0, 10.0, 1.0),), threshold=20.0)
+    s2 = ScoreSheet("p2", ((1.0, 1.0, 10.0),), threshold=20.0)
+    return GameSpec(space, (s0, s1, s2), rounds=2, info="full", proposer=0, chat=False)
+
+
+def _standing(offer_id="O1", deal=(0,), round=1):
+    return {"round": round, "offers": [{"offer_id": offer_id, "deal": list(deal)}]}
+
+
+def test_bestresponse_never_accepts_negative_surplus_on_an_all_tied_state():
+    """Errata E1: on an empty-IR game every action ties at 0.0 and ``accept`` used to win alphabetically, so an
+    omniscient seat signed a deal paying it strictly negative surplus *because* it was certain the deal could
+    not pass. The guard must leave the tie to a non-accept action."""
+    game = _infeasible_game()
+    tables = GameTables.from_game(game)
+    assert not (np.asarray(tables.surplus) >= 0).all(axis=1).any(), "fixture must have an EMPTY IR set"
+    for seat in range(3):
+        orc = BestResponseOracle(seat)
+        legal = [Walk(), Accept("O1"), Reject("O1"), Propose((0,))]
+        verdict = orc.evaluate(game, _standing(), seat, legal)
+        values = list(verdict.action_values.values())
+        assert all(abs(v) <= 1e-9 for v in values), f"fixture no longer all-tied: {values}"
+        assert verdict.best != Accept("O1")
+        assert not isinstance(verdict.best, Accept)
+        own = float(np.asarray(tables.surplus)[tables.index[(0,)], seat])
+        assert own < 0                                         # the offer the guard refused really does lose
+
+
+def test_bestresponse_guard_leaves_a_strict_optimum_and_a_feasible_game_untouched():
+    """The guard must fire ONLY on ties. On a feasible game it must reproduce the pre-guard rule exactly:
+    canonical ``action_key`` order over the argmax, with no own-surplus special case."""
+    game = _tiny_game()                                        # feasible: thresholds 0, positive surplus exists
+    for seat in range(2):
+        orc = BestResponseOracle(seat, discount=0.9)
+        legal = [Walk(), Accept("O1"), Reject("O1"), Propose((0,)), Propose((1,))]
+        verdict = orc.evaluate(game, _standing(), seat, legal)
+        values = verdict.action_values
+        # the pre-guard rule, reimplemented: max() over the canonically sorted dict
+        legacy = max({a: values[a] for a in sorted(values, key=action_key)}, key=values.get)
+        assert verdict.best == legacy
+    # and a strict negative-surplus optimum is still returned unchanged: the guard only reorders ties
+    assert BestResponseOracle._argmax_action({Accept("O1"): 1.0, Walk(): 0.0}, {"O1": -5.0}) == Accept("O1")
+    # a tie with a NON-negative accept is still decided alphabetically (accept first), as before
+    assert BestResponseOracle._argmax_action({Accept("O1"): 0.0, Walk(): 0.0}, {"O1": 3.0}) == Accept("O1")

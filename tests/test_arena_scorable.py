@@ -553,3 +553,33 @@ def test_turn_max_tokens_reaches_the_generation_kwarg():
 	seen.clear()
 	run(ScorableNegotiation(), inst, "moves_chat", RecordingSeat(decide))
 	assert set(seen) == {2048, 2560}
+
+
+def test_per_seat_mute_closes_exactly_one_seats_channel_under_an_open_arm():
+	# [review: talk-channel-paper2 revision] 2026-09-03 — the one-muted-seat control (ii_mats note 0078).
+	# ``cfg["muted_seats"]`` closes the public channel of the listed seats ONLY: their message is dropped before
+	# publication and their prompts carry the moves-only contract, while the arm stays moves_chat for the rest.
+	scen, inst = ScorableNegotiation(), make_instance(make_game())
+	target = {"Site": "North", "Fund": "High"}
+	muted, other = 1, 0
+
+	def decide(seat, view):
+		tag = f"HELLO-FROM-{seat}"
+		oid = _first_offer_id(view)
+		if oid is None or "none yet" in view[-1]["content"]:
+			return {"message": tag, "action": "propose", "deal": target}
+		return {"message": tag, "action": "accept", "offer_id": oid}
+
+	st = drive_state(scen, inst, "moves_chat", decide, cfg={"muted_seats": [muted]})
+	text = "\n".join(e["content"] for e in st["events"])
+	for si, name in enumerate(st["seat_names"]):
+		assert (f"HELLO-FROM-{name}" in text) == (si != muted)   # only the muted seat's talk is gone
+	assert st["muted_seats"] == [muted]
+	assert scen._chat_enabled(st) is True and scen._chat_enabled(st, muted) is False
+	assert scen._chat_enabled(st, other) is True
+	assert "NO public message channel" in scen._system_prompt(st, muted)
+	assert "NO public message channel" not in scen._system_prompt(st, other)
+	assert scen.score(st)["chat"] is True and scen.score(st)["muted_seats"] == [muted]
+	# an empty/omitted list is the frozen behaviour
+	st0 = scen.make_state(inst, "moves_chat", seed=0, cfg={})
+	assert st0["muted_seats"] == [] and scen._chat_enabled(st0, 0) is True

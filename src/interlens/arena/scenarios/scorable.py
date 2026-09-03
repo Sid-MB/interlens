@@ -182,6 +182,13 @@ class ScorableNegotiation(Scenario):
 			"state_block": cfg.get("state_block", True),
 			"self_elicit": cfg.get("self_elicit", False),     # optional per-turn provisional self-finalization
 			"personas": personas,
+			# [review: talk-channel-paper2 revision] 2026-09-03 — PER-SEAT mute. Seat indices whose public
+			# message channel is closed while the table's arm stays ``moves_chat``: a muted seat gets the
+			# moves-only action contract in its own prompts, and any ``message`` it emits is dropped before it
+			# reaches the public log, exactly as the whole-table ``moves_only`` arm does for every seat. Empty
+			# (the default) leaves every frozen cell byte-identical. Set from ``cfg["muted_seats"]`` so it is
+			# recorded in the episode's ``cell_cfg`` and replays exactly.
+			"muted_seats": sorted({int(i) for i in (cfg.get("muted_seats") or ())}),
 			# invalid-action accounting (syntax/legality retried once; economic recorded, not retried)
 			"syntax_errors": 0, "legality_errors": 0, "economic_errors": 0,
 			"_deal_error": None,   # last propose decode error (issue + valid labels), echoed in the one retry
@@ -267,7 +274,14 @@ class ScorableNegotiation(Scenario):
 		        for i, nm in enumerate(st["seat_names"])]
 
 	# ------------------------------------------------------------ helpers --
-	def _chat_enabled(self, st) -> bool:
+	def _chat_enabled(self, st, si: int | None = None) -> bool:
+		"""Whether the public message channel is open — for the TABLE (``si`` omitted) or for one SEAT.
+
+		The table-level answer is the arm's. A seat listed in ``st["muted_seats"]`` is closed even under an
+		open arm; every per-seat prompt and every parse of a seat's reply asks with ``si`` so a muted seat is
+		treated exactly as a ``moves_only`` seat is, while the seats around it keep talking."""
+		if si is not None and int(si) in st.get("muted_seats", ()):
+			return False
 		arm = st["arm"]
 		if arm == "moves_only":
 			return False
@@ -379,7 +393,7 @@ class ScorableNegotiation(Scenario):
 		full_sheets = self._all_sheets_block(st) if spec.info == "full" else None
 		return sc.system_prompt(
 			rules=rules, private=private,
-			action_format=sc.action_format_block(chat_enabled=self._chat_enabled(st)),
+			action_format=sc.action_format_block(chat_enabled=self._chat_enabled(st, si)),
 			info_note=sc.info_condition_note(info=spec.info), full_info_sheets=full_sheets,
 			seat_index=si)
 
@@ -476,7 +490,7 @@ class ScorableNegotiation(Scenario):
 			seat = st["seat_names"][si]
 			prompt = self.scaffold.turn_prompt(
 				seat=seat, round_no=st["round"], rounds=rounds, is_opener=(len(st["moved"]) == 0),
-				offers_block=self._live_offers_block(st, si), chat_enabled=self._chat_enabled(st),
+				offers_block=self._live_offers_block(st, si), chat_enabled=self._chat_enabled(st, si),
 				seat_index=si)
 			return [SeatRequest("", seat, self._seat_view(st, si, prompt), "turn", st["round"], meta={"si": si})]
 		# ---- forced final: opener tables one last binding proposal (or walks), then everyone else votes ----
@@ -493,7 +507,7 @@ class ScorableNegotiation(Scenario):
 				prompt = self.scaffold.turn_prompt(
 					seat=seat, round_no=rounds + 1, rounds=rounds, is_opener=False,
 					offers_block=self._live_offers_block(st, si) + f"\nThis is the FINAL up/down vote on {st['final_offer']}.",
-					chat_enabled=self._chat_enabled(st), seat_index=si)
+					chat_enabled=self._chat_enabled(st, si), seat_index=si)
 				return [SeatRequest("", seat, self._seat_view(st, si, prompt, must_vote=True,
 				                                              round_no=rounds + 1), "final_vote",
 				                    rounds + 1, meta={"si": si})]
@@ -526,7 +540,7 @@ class ScorableNegotiation(Scenario):
 			return self.solo_apply(st, req, text)
 		si = req.meta["si"]
 		seat = st["seat_names"][si]
-		chat = self._chat_enabled(st)
+		chat = self._chat_enabled(st, si)
 		reg = st["registry"]
 		obj = last_json(text)
 		obj_d = obj if isinstance(obj, dict) else {}
@@ -942,6 +956,8 @@ class ScorableNegotiation(Scenario):
 			"normalized_primary": round(primary, 4), "raw_primary": round(raw_primary, 4),
 			"finalized_by": st.get("finalized_by"), "empty_ir": empty_ir,
 			"arm": st["arm"], "info": spec.info, "chat": self._chat_enabled(st) if st["arm"] != "solo" else False,
+			# per-seat closures under an open arm (empty for every whole-table arm; see make_state)
+			"muted_seats": list(st.get("muted_seats", [])),
 			"cell": st.get("cell", "base"),
 			"usw": round(usw, 4), "esw": round(esw, 4), "nsw": round(nsw, 4),
 			"gini": round(gini(realized, shift_negative=True), 4),
