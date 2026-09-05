@@ -13,7 +13,7 @@ conv.run(turns=4, first="alice")
 print(conv.transcript)
 ```
 
-See [`docs/examples`](docs/examples) for sample code.
+See [`docs/examples`](docs/examples) for sample code, and the [API reference](docs/reference/index.md) for every public class and function.
 
 *[Documentation for LLMs](https://interlens.sidmb.com/llms-full.txt)!
 
@@ -40,7 +40,7 @@ See <https://pytorch.org/get-started/locally/>.
 - **Scale** — `conv.rollout(...)` / `interlens.run([...])`: multi-GPU, checkpointed, resumable, batched co-stepping, with in-worker `analyzer` callbacks; data-driven rollouts via `dataset_field`, matched compute via `TokenBudget`.
 - **One object, no ceremony** — a `Conversation` (with lazy participants) is at once the serializable recipe, the live dialogue, and the rollout driver; build it functionally (`.turns(6).data(ds).analyzer(grade)`), `.set(...)` copy-on-write, and `save`/`load` (recipe + transcript).
 
-See [`docs/examples/`](docs/examples/) for a simple→advanced walkthrough of the whole API.
+See [`docs/examples/`](docs/examples/) for a simple→advanced walkthrough of the whole API, and [`docs/reference/`](docs/reference/index.md) for the generated per-symbol reference.
 
 ## Develop
 

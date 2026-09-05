@@ -24,10 +24,10 @@ name: docs
 #       branches: [main]
 #       paths: ['src/**/*.py', 'docs/**', 'scripts/**', 'README.md', 'mkdocs.yml', 'pyproject.toml']
 #
-# Two-step build (see mkdocs.yml header): gen_ref_pages.py writes the API stub pages + nav (Zensical
-# doesn't run the old gen-files/literate-nav plugins) and the llms.txt/llms-full.txt files (replaces
-# mkdocs-llmstxt), then `zensical build` renders the site (its native mkdocstrings module pulls
-# docstrings from src/ statically — no package or torch install needed).
+# Two-step build (see mkdocs.yml header): gen_ref_pages.py refreshes the committed API reference under
+# docs/reference/ (griffe reads src/ statically — no package or torch install needed), splices the nav
+# (Zensical doesn't run the old gen-files/literate-nav plugins) and writes llms.txt/llms-full.txt
+# (replaces mkdocs-llmstxt); then `zensical build` renders the site from plain markdown.
 on:
   workflow_dispatch:   # manual-only: docs deploys moved to Vercel
 

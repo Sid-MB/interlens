@@ -17,11 +17,11 @@
 // Deliberately dependency-free: no `@vercel/config` import, so this Python repo needs no package.json —
 // the package only provides optional types/route helpers, which we don't use.
 //
-// Docs are built with Zensical (see the mkdocs.yml header): gen_ref_pages.py writes the API stub pages,
-// nav, and llms.txt files, then `zensical build` renders the static site into `site/`. uv drives the
-// toolchain — it reads requires-python from pyproject.toml, provisions its own CPython, and installs only
-// the `docs` dependency group (never the interlens package or torch: mkdocstrings/griffe reads src/
-// statically). Every branch push gets a Vercel preview URL; pushes to main deploy production.
+// Docs are built with Zensical (see the mkdocs.yml header): gen_ref_pages.py refreshes the committed API
+// reference under docs/reference/, splices the nav, and writes the llms.txt files, then `zensical build`
+// renders the static site into `site/`. uv drives the toolchain — it reads requires-python from
+// pyproject.toml, provisions its own CPython, and installs only the `docs` dependency group (never the
+// interlens package or torch: griffe reads src/ statically). Every branch push gets a Vercel preview URL; pushes to main deploy production.
 
 export const config = {
   // Plain static site rendered by Zensical — no framework preset.

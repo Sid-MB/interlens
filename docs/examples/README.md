@@ -7,6 +7,8 @@ Worked examples for the multi-model conversation + interpretability harness, ord
 from interlens import Conversation, AutoModelParticipant, ModelParticipant  # etc.
 ```
 
+For the per-symbol API reference (one page per class and function, with signatures and source links), see [`docs/reference/`](../reference/index.md).
+
 Install the package first (`pip install interlens`, or `pip install -e .` from the library root for development), then run any snippet as a normal script — e.g. `python your_script.py`. GPU examples need CUDA; a small model (`Qwen/Qwen2.5-0.5B-Instruct`) runs on CPU/MPS for smoke tests.
 
 ## What this library does

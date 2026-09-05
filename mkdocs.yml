@@ -18,16 +18,22 @@
 # Design: the site is built from THREE sources with zero content duplication —
 #   1. `docs/index.md`      → snippet-includes the top-level README (single source of truth for the intro).
 #   2. `docs/examples/*.md` → the existing hand-written simple→advanced walkthrough, reused verbatim.
-#   3. `docs/reference/**`  → API stub pages (gitignored) written by `scripts/gen_ref_pages.py`, one `:::`
-#                             directive per module, rendered by Zensical's native mkdocstrings module. The
-#                             script also splices the nav tree between the markers below — run it before
-#                             every build/serve. No manual upkeep as the public API grows.
+#   3. `docs/reference/**`  → the API reference: real, COMMITTED markdown written by
+#                             `scripts/gen_ref_pages.py` from static analysis (griffe) of `src/` — one page
+#                             per module, class, and module-level function, plus `symbols.json`. It used to
+#                             be gitignored mkdocstrings `:::` stubs expanded at build time; the published
+#                             docs moved to https://sidmb.com/docs/interlens, whose builder syncs this
+#                             folder from git and renders plain markdown through Quarto/Pandoc, so neither
+#                             gitignored files nor mkdocstrings directives could survive the trip. The
+#                             script still splices the nav tree between the markers below (module index
+#                             pages only — the ~700 symbol pages would drown the sidebar). Re-run it and
+#                             commit the diff whenever the public API changes.
 # The script also invokes `scripts/gen_llms_txt.py`, which emits `llms.txt` (index) and `llms-full.txt`
 # (concatenated bodies) into `docs/` — Zensical copies them verbatim to the site root — replacing the
 # mkdocs-llmstxt plugin, which Zensical doesn't run.
 #
-# Build: python scripts/gen_ref_pages.py && zensical build --clean
-# Serve: python scripts/gen_ref_pages.py && zensical serve
+# Build: uv run --with griffe --no-project python scripts/gen_ref_pages.py && zensical build --clean
+# Serve: uv run --with griffe --no-project python scripts/gen_ref_pages.py && zensical serve
 site_name: interlens
 site_description: A framework for scaffolding and interpreting multi-agent conversations (activation capture, steering, patching).
 # site_url is the single source of truth for the published URL — gen_llms_txt.py reads it from here, and
@@ -58,22 +64,12 @@ theme:
       scheme: slate
       toggle: { icon: material/weather-sunny, name: Switch to light mode }
 
+# No mkdocstrings handler any more: the reference is pre-rendered markdown, so there is nothing left to
+# expand at build time. Its former options now live in `scripts/refgen/` — Google docstring style, table
+# sections, `merge_init_into_class` (a class page's signature is its `__init__`), and the `!^_` private
+# filter are all reimplemented there.
 plugins:
   - search
-  - mkdocstrings:
-      handlers:
-        python:
-          paths: [src]
-          options:
-            docstring_style: google        # Args:/Returns:/Raises: sections; plain paragraphs pass through as Markdown.
-            docstring_section_style: table
-            merge_init_into_class: true
-            show_root_heading: true
-            show_signature_annotations: true
-            separate_signature: true
-            show_symbol_type_heading: true
-            show_symbol_type_toc: true
-            filters: ["!^_"]                # hide private members (leading underscore), keep dunder-free public API.
 
 markdown_extensions:
   - admonition
@@ -101,142 +97,214 @@ nav:
       - Control Tower: examples/12_control_tower.md
   - API reference:
       # BEGIN generated reference nav — run scripts/gen_ref_pages.py to refresh; do not edit by hand
+      - reference/index.md
       - interlens:
           - reference/interlens/index.md
           - arena:
               - reference/interlens/arena/index.md
-              - actions: reference/interlens/arena/actions.md
-              - engine: reference/interlens/arena/engine.md
-              - export: reference/interlens/arena/export.md
-              - gates: reference/interlens/arena/gates.md
+              - actions: reference/interlens/arena/actions/index.md
+              - auction:
+                  - reference/interlens/arena/auction/index.md
+                  - actions: reference/interlens/arena/auction/actions/index.md
+                  - allocation: reference/interlens/arena/auction/allocation/index.md
+                  - benchmarks: reference/interlens/arena/auction/benchmarks/index.md
+                  - bidders: reference/interlens/arena/auction/bidders/index.md
+                  - metrics: reference/interlens/arena/auction/metrics/index.md
+                  - policy_text: reference/interlens/arena/auction/policy_text/index.md
+                  - priors: reference/interlens/arena/auction/priors/index.md
+                  - references: reference/interlens/arena/auction/references/index.md
+                  - spec: reference/interlens/arena/auction/spec/index.md
+              - engine: reference/interlens/arena/engine/index.md
+              - export: reference/interlens/arena/export/index.md
+              - gates: reference/interlens/arena/gates/index.md
               - inspect:
                   - reference/interlens/arena/inspect/index.md
-                  - adapter: reference/interlens/arena/inspect/adapter.md
-                  - tasks: reference/interlens/arena/inspect/tasks.md
+                  - adapter: reference/interlens/arena/inspect/adapter/index.md
+                  - tasks: reference/interlens/arena/inspect/tasks/index.md
+              - live:
+                  - reference/interlens/arena/live/index.md
+                  - assets:
+                      - reference/interlens/arena/live/assets/index.md
+                      - js_live: reference/interlens/arena/live/assets/js_live/index.md
+                      - js_lobby: reference/interlens/arena/live/assets/js_lobby/index.md
+                  - events: reference/interlens/arena/live/events/index.md
+                  - human: reference/interlens/arena/live/human/index.md
+                  - lobby_page: reference/interlens/arena/live/lobby_page/index.md
+                  - payload: reference/interlens/arena/live/payload/index.md
+                  - play_page: reference/interlens/arena/live/play_page/index.md
+                  - provider: reference/interlens/arena/live/provider/index.md
+                  - router: reference/interlens/arena/live/router/index.md
+                  - server: reference/interlens/arena/live/server/index.md
+                  - session: reference/interlens/arena/live/session/index.md
+                  - style: reference/interlens/arena/live/style/index.md
               - negotiation:
                   - reference/interlens/arena/negotiation/index.md
-                  - acceptance: reference/interlens/arena/negotiation/acceptance.md
+                  - acceptance: reference/interlens/arena/negotiation/acceptance/index.md
                   - analysis:
                       - reference/interlens/arena/negotiation/analysis/index.md
-                      - annotations: reference/interlens/arena/negotiation/analysis/annotations.md
-                      - cot_localize: reference/interlens/arena/negotiation/analysis/cot_localize.md
-                      - curves: reference/interlens/arena/negotiation/analysis/curves.md
-                      - episode_view: reference/interlens/arena/negotiation/analysis/episode_view.md
-                      - game_analysis: reference/interlens/arena/negotiation/analysis/game_analysis.md
-                      - metrics: reference/interlens/arena/negotiation/analysis/metrics.md
-                      - rollout: reference/interlens/arena/negotiation/analysis/rollout.md
-                      - surplus: reference/interlens/arena/negotiation/analysis/surplus.md
-                      - taxonomy: reference/interlens/arena/negotiation/analysis/taxonomy.md
-                  - belief_accuracy: reference/interlens/arena/negotiation/belief_accuracy.md
-                  - beliefs: reference/interlens/arena/negotiation/beliefs.md
-                  - bestresponse: reference/interlens/arena/negotiation/bestresponse.md
-                  - equilibrium: reference/interlens/arena/negotiation/equilibrium.md
-                  - games: reference/interlens/arena/negotiation/games.md
-                  - generate: reference/interlens/arena/negotiation/generate.md
-                  - oracle_context: reference/interlens/arena/negotiation/oracle_context.md
-                  - policy_participant: reference/interlens/arena/negotiation/policy_participant.md
-                  - references: reference/interlens/arena/negotiation/references.md
-                  - sheets: reference/interlens/arena/negotiation/sheets.md
-                  - solutions: reference/interlens/arena/negotiation/solutions.md
-                  - space: reference/interlens/arena/negotiation/space.md
-                  - strategies: reference/interlens/arena/negotiation/strategies.md
-              - oracles: reference/interlens/arena/oracles.md
-              - ratchet: reference/interlens/arena/ratchet.md
-              - replay: reference/interlens/arena/replay.md
-              - rollouts: reference/interlens/arena/rollouts.md
-              - scenario: reference/interlens/arena/scenario.md
+                      - annotations: reference/interlens/arena/negotiation/analysis/annotations/index.md
+                      - cot_localize: reference/interlens/arena/negotiation/analysis/cot_localize/index.md
+                      - curves: reference/interlens/arena/negotiation/analysis/curves/index.md
+                      - episode_view: reference/interlens/arena/negotiation/analysis/episode_view/index.md
+                      - game_analysis: reference/interlens/arena/negotiation/analysis/game_analysis/index.md
+                      - metrics: reference/interlens/arena/negotiation/analysis/metrics/index.md
+                      - rollout: reference/interlens/arena/negotiation/analysis/rollout/index.md
+                      - surplus: reference/interlens/arena/negotiation/analysis/surplus/index.md
+                      - taxonomy: reference/interlens/arena/negotiation/analysis/taxonomy/index.md
+                  - belief_accuracy: reference/interlens/arena/negotiation/belief_accuracy/index.md
+                  - beliefs: reference/interlens/arena/negotiation/beliefs/index.md
+                  - bestresponse: reference/interlens/arena/negotiation/bestresponse/index.md
+                  - calibrated: reference/interlens/arena/negotiation/calibrated/index.md
+                  - equilibrium: reference/interlens/arena/negotiation/equilibrium/index.md
+                  - fairness: reference/interlens/arena/negotiation/fairness/index.md
+                  - games: reference/interlens/arena/negotiation/games/index.md
+                  - generate: reference/interlens/arena/negotiation/generate/index.md
+                  - llm_calibrated: reference/interlens/arena/negotiation/llm_calibrated/index.md
+                  - oracle_context: reference/interlens/arena/negotiation/oracle_context/index.md
+                  - policy_participant: reference/interlens/arena/negotiation/policy_participant/index.md
+                  - references: reference/interlens/arena/negotiation/references/index.md
+                  - rewards: reference/interlens/arena/negotiation/rewards/index.md
+                  - sheets: reference/interlens/arena/negotiation/sheets/index.md
+                  - solutions: reference/interlens/arena/negotiation/solutions/index.md
+                  - space: reference/interlens/arena/negotiation/space/index.md
+                  - strategies: reference/interlens/arena/negotiation/strategies/index.md
+                  - talking: reference/interlens/arena/negotiation/talking/index.md
+              - oracles: reference/interlens/arena/oracles/index.md
+              - ratchet: reference/interlens/arena/ratchet/index.md
+              - refusal: reference/interlens/arena/refusal/index.md
+              - replay: reference/interlens/arena/replay/index.md
+              - rollouts: reference/interlens/arena/rollouts/index.md
+              - scenario: reference/interlens/arena/scenario/index.md
               - scenarios:
                   - reference/interlens/arena/scenarios/index.md
-                  - coding: reference/interlens/arena/scenarios/coding.md
+                  - auction: reference/interlens/arena/scenarios/auction/index.md
+                  - auction_examples: reference/interlens/arena/scenarios/auction_examples/index.md
+                  - auction_policy: reference/interlens/arena/scenarios/auction_policy/index.md
+                  - auction_prompts: reference/interlens/arena/scenarios/auction_prompts/index.md
+                  - coding: reference/interlens/arena/scenarios/coding/index.md
                   - dlc:
                       - reference/interlens/arena/scenarios/dlc/index.md
-                      - bcp: reference/interlens/arena/scenarios/dlc/bcp.md
-                      - build: reference/interlens/arena/scenarios/dlc/build.md
-                      - codeqa: reference/interlens/arena/scenarios/dlc/codeqa.md
-                      - oolong_pairs: reference/interlens/arena/scenarios/dlc/oolong_pairs.md
-                      - sniah: reference/interlens/arena/scenarios/dlc/sniah.md
-                  - longcontext: reference/interlens/arena/scenarios/longcontext.md
-                  - negotiation: reference/interlens/arena/scenarios/negotiation.md
-                  - priors: reference/interlens/arena/scenarios/priors.md
-                  - relay: reference/interlens/arena/scenarios/relay.md
-                  - scorable: reference/interlens/arena/scenarios/scorable.md
-                  - scorable_prompts: reference/interlens/arena/scenarios/scorable_prompts.md
-                  - security: reference/interlens/arena/scenarios/security.md
-              - schema: reference/interlens/arena/schema.md
-              - table: reference/interlens/arena/table.md
-              - views: reference/interlens/arena/views.md
+                      - bcp: reference/interlens/arena/scenarios/dlc/bcp/index.md
+                      - build: reference/interlens/arena/scenarios/dlc/build/index.md
+                      - codeqa: reference/interlens/arena/scenarios/dlc/codeqa/index.md
+                      - oolong_pairs: reference/interlens/arena/scenarios/dlc/oolong_pairs/index.md
+                      - sniah: reference/interlens/arena/scenarios/dlc/sniah/index.md
+                  - longcontext: reference/interlens/arena/scenarios/longcontext/index.md
+                  - negotiation: reference/interlens/arena/scenarios/negotiation/index.md
+                  - priors: reference/interlens/arena/scenarios/priors/index.md
+                  - relay: reference/interlens/arena/scenarios/relay/index.md
+                  - scorable: reference/interlens/arena/scenarios/scorable/index.md
+                  - scorable_prompts: reference/interlens/arena/scenarios/scorable_prompts/index.md
+                  - security: reference/interlens/arena/scenarios/security/index.md
+              - schema: reference/interlens/arena/schema/index.md
+              - table: reference/interlens/arena/table/index.md
+              - views: reference/interlens/arena/views/index.md
+              - viz:
+                  - reference/interlens/arena/viz/index.md
+                  - advice: reference/interlens/arena/viz/advice/index.md
+                  - assets:
+                      - reference/interlens/arena/viz/assets/index.md
+                      - css: reference/interlens/arena/viz/assets/css/index.md
+                      - js_auction: reference/interlens/arena/viz/assets/js_auction/index.md
+                      - js_chart: reference/interlens/arena/viz/assets/js_chart/index.md
+                      - js_compare: reference/interlens/arena/viz/assets/js_compare/index.md
+                      - js_core: reference/interlens/arena/viz/assets/js_core/index.md
+                      - js_episode: reference/interlens/arena/viz/assets/js_episode/index.md
+                      - js_hover: reference/interlens/arena/viz/assets/js_hover/index.md
+                      - js_index: reference/interlens/arena/viz/assets/js_index/index.md
+                      - js_shell: reference/interlens/arena/viz/assets/js_shell/index.md
+                      - js_sidebar: reference/interlens/arena/viz/assets/js_sidebar/index.md
+                      - js_transcript: reference/interlens/arena/viz/assets/js_transcript/index.md
+                  - auction_geometry: reference/interlens/arena/viz/auction_geometry/index.md
+                  - auction_page: reference/interlens/arena/viz/auction_page/index.md
+                  - ballots: reference/interlens/arena/viz/ballots/index.md
+                  - census: reference/interlens/arena/viz/census/index.md
+                  - chrome: reference/interlens/arena/viz/chrome/index.md
+                  - compare: reference/interlens/arena/viz/compare/index.md
+                  - concepts: reference/interlens/arena/viz/concepts/index.md
+                  - episode: reference/interlens/arena/viz/episode/index.md
+                  - export: reference/interlens/arena/viz/export/index.md
+                  - geometry: reference/interlens/arena/viz/geometry/index.md
+                  - hazards: reference/interlens/arena/viz/hazards/index.md
+                  - page: reference/interlens/arena/viz/page/index.md
+                  - references: reference/interlens/arena/viz/references/index.md
+                  - serve: reference/interlens/arena/viz/serve/index.md
           - communication:
               - reference/interlens/communication/index.md
-              - messaging: reference/interlens/communication/messaging.md
-              - policy: reference/interlens/communication/policy.md
+              - messaging: reference/interlens/communication/messaging/index.md
+              - policy: reference/interlens/communication/policy/index.md
           - context:
               - reference/interlens/context/index.md
-              - context_policy: reference/interlens/context/context_policy.md
-              - drop_oldest_policy: reference/interlens/context/drop_oldest_policy.md
-              - error_policy: reference/interlens/context/error_policy.md
-              - sliding_window_policy: reference/interlens/context/sliding_window_policy.md
-              - summarize_policy: reference/interlens/context/summarize_policy.md
-          - context_item: reference/interlens/context_item.md
-          - conversation: reference/interlens/conversation.md
-          - execution_mode: reference/interlens/execution_mode.md
-          - factories: reference/interlens/factories.md
-          - functional: reference/interlens/functional.md
+              - context_policy: reference/interlens/context/context_policy/index.md
+              - drop_oldest_policy: reference/interlens/context/drop_oldest_policy/index.md
+              - error_policy: reference/interlens/context/error_policy/index.md
+              - sliding_window_policy: reference/interlens/context/sliding_window_policy/index.md
+              - summarize_policy: reference/interlens/context/summarize_policy/index.md
+          - context_item: reference/interlens/context_item/index.md
+          - conversation: reference/interlens/conversation/index.md
+          - execution_mode: reference/interlens/execution_mode/index.md
+          - factories: reference/interlens/factories/index.md
+          - functional: reference/interlens/functional/index.md
           - hooks:
               - reference/interlens/hooks/index.md
-              - message_hook: reference/interlens/hooks/message_hook.md
+              - message_hook: reference/interlens/hooks/message_hook/index.md
           - integrations:
               - reference/interlens/integrations/index.md
-              - control_tower: reference/interlens/integrations/control_tower.md
+              - control_tower: reference/interlens/integrations/control_tower/index.md
           - interp:
               - reference/interlens/interp/index.md
-              - activation_cache: reference/interlens/interp/activation_cache.md
-              - bridge: reference/interlens/interp/bridge.md
-              - capture: reference/interlens/interp/capture.md
-              - grad: reference/interlens/interp/grad.md
-              - layers: reference/interlens/interp/layers.md
-              - logprobs: reference/interlens/interp/logprobs.md
-              - patching: reference/interlens/interp/patching.md
-              - routing: reference/interlens/interp/routing.md
-              - steering: reference/interlens/interp/steering.md
+              - activation_cache: reference/interlens/interp/activation_cache/index.md
+              - bridge: reference/interlens/interp/bridge/index.md
+              - capture: reference/interlens/interp/capture/index.md
+              - grad: reference/interlens/interp/grad/index.md
+              - layers: reference/interlens/interp/layers/index.md
+              - logprobs: reference/interlens/interp/logprobs/index.md
+              - patching: reference/interlens/interp/patching/index.md
+              - pooling: reference/interlens/interp/pooling/index.md
+              - routing: reference/interlens/interp/routing/index.md
+              - softtokens: reference/interlens/interp/softtokens/index.md
+              - steering: reference/interlens/interp/steering/index.md
           - loading:
               - reference/interlens/loading/index.md
-              - load: reference/interlens/loading/load.md
-              - model_cache: reference/interlens/loading/model_cache.md
-          - message: reference/interlens/message.md
-          - parsing: reference/interlens/parsing.md
+              - devices: reference/interlens/loading/devices/index.md
+              - load: reference/interlens/loading/load/index.md
+              - model_cache: reference/interlens/loading/model_cache/index.md
+          - message: reference/interlens/message/index.md
+          - parsing: reference/interlens/parsing/index.md
           - participant:
               - reference/interlens/participant/index.md
-              - participant: reference/interlens/participant/participant.md
+              - governor: reference/interlens/participant/governor/index.md
+              - participant: reference/interlens/participant/participant/index.md
               - participants:
                   - reference/interlens/participant/participants/index.md
-                  - api_client: reference/interlens/participant/participants/api_client.md
-                  - api_participant: reference/interlens/participant/participants/api_participant.md
-                  - gemma: reference/interlens/participant/participants/gemma.md
-                  - llama: reference/interlens/participant/participants/llama.md
-                  - model_participant: reference/interlens/participant/participants/model_participant.md
-                  - qwen: reference/interlens/participant/participants/qwen.md
-                  - scripted_participant: reference/interlens/participant/participants/scripted_participant.md
-              - role: reference/interlens/participant/role.md
-              - serialize: reference/interlens/participant/serialize.md
-          - reasoning_visibility: reference/interlens/reasoning_visibility.md
+                  - api_client: reference/interlens/participant/participants/api_client/index.md
+                  - api_participant: reference/interlens/participant/participants/api_participant/index.md
+                  - gemma: reference/interlens/participant/participants/gemma/index.md
+                  - llama: reference/interlens/participant/participants/llama/index.md
+                  - model_participant: reference/interlens/participant/participants/model_participant/index.md
+                  - qwen: reference/interlens/participant/participants/qwen/index.md
+                  - scripted_participant: reference/interlens/participant/participants/scripted_participant/index.md
+              - role: reference/interlens/participant/role/index.md
+              - serialize: reference/interlens/participant/serialize/index.md
+          - reasoning_visibility: reference/interlens/reasoning_visibility/index.md
           - runner:
               - reference/interlens/runner/index.md
-              - analyzer_registry: reference/interlens/runner/analyzer_registry.md
-              - batched: reference/interlens/runner/batched.md
-              - devices: reference/interlens/runner/devices.md
-              - pool: reference/interlens/runner/pool.md
-              - worker_init: reference/interlens/runner/worker_init.md
+              - analyzer_registry: reference/interlens/runner/analyzer_registry/index.md
+              - batched: reference/interlens/runner/batched/index.md
+              - devices: reference/interlens/runner/devices/index.md
+              - pool: reference/interlens/runner/pool/index.md
+              - worker_init: reference/interlens/runner/worker_init/index.md
           - stop:
               - reference/interlens/stop/index.md
-              - conditions: reference/interlens/stop/conditions.md
-              - stop_condition: reference/interlens/stop/stop_condition.md
-          - templating: reference/interlens/templating.md
+              - conditions: reference/interlens/stop/conditions/index.md
+              - stop_condition: reference/interlens/stop/stop_condition/index.md
+          - templating: reference/interlens/templating/index.md
           - tools:
               - reference/interlens/tools/index.md
-              - registry: reference/interlens/tools/registry.md
-              - tool: reference/interlens/tools/tool.md
-              - tool_call: reference/interlens/tools/tool_call.md
-          - transcript: reference/interlens/transcript.md
-          - usage: reference/interlens/usage.md
-          - view: reference/interlens/view.md
+              - registry: reference/interlens/tools/registry/index.md
+              - tool: reference/interlens/tools/tool/index.md
+              - tool_call: reference/interlens/tools/tool_call/index.md
+          - transcript: reference/interlens/transcript/index.md
+          - usage: reference/interlens/usage/index.md
+          - view: reference/interlens/view/index.md
       # END generated reference nav

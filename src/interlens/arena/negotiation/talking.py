@@ -44,7 +44,7 @@ function of the policy's live state (reservation curve, standing offer, own shee
 functions an offline gate re-runs on the recorded view (see the rational_agents experiment's
 ``gate_talking_messages.py``). There is no bluffing arm here.
 
-Message grammar: prose for the LLM audience plus one fenced ```json`` block per statement carrying
+Message grammar: prose for the LLM audience plus one fenced ``json`` block per statement carrying
 ``{"talking_rational": {payload}}``. The scenario republishes a seat's ``message`` as plain text, so the block
 is legible (and machine-parseable) in every other seat's view. :func:`statements_in` is the total parser —
 anything malformed is dropped and counted, never raised.
