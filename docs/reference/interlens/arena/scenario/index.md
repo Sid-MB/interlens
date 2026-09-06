@@ -1,4 +1,6 @@
-# `interlens.arena.scenario`
+# `scenario`
+
+Module `interlens.arena.scenario`
 
 The `Scenario` interface: a pure game-logic state machine, participant-agnostic.
 

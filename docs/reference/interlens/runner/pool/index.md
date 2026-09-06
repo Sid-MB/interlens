@@ -1,4 +1,6 @@
-# `interlens.runner.pool`
+# `pool`
+
+Module `interlens.runner.pool`
 
 The execution engine behind `Conversation.rollout` and `interlens.run`.
 

@@ -1,4 +1,6 @@
-# `interlens.arena.live`
+# `live`
+
+Package `interlens.arena.live`
 
 Live play: watch an arena episode as it happens, reconfigure its seats, and play one yourself.
 

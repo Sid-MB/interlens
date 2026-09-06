@@ -1,4 +1,6 @@
-# `interlens.arena.live.play_page`
+# `play_page`
+
+Module `interlens.arena.live.play_page`
 
 The live episode page: the visualizer's episode view, plus the controls to play in it.
 

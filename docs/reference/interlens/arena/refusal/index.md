@@ -1,4 +1,6 @@
-# `interlens.arena.refusal`
+# `refusal`
+
+Module `interlens.arena.refusal`
 
 Recovering a turn the API refused, without changing what the turn says.
 

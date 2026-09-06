@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.bestresponse`
+# `bestresponse`
+
+Module `interlens.arena.negotiation.bestresponse`
 
 Exact expectimax best-response oracle over (remaining rounds x deal space x type posterior).
 

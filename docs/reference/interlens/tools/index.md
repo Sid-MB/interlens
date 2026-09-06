@@ -1,4 +1,6 @@
-# `interlens.tools`
+# `tools`
+
+Package `interlens.tools`
 
 ## Modules
 

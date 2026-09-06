@@ -3,188 +3,188 @@
 Every public class and function in `interlens`, one page each, generated from the source. Start from a module below, or jump straight to a symbol — pages carry their full signature, parameters, and a link to the exact lines that define them.
 
 - [`interlens`](interlens/index.md) — The public `interlens` API, exported **lazily**.
-    - [`interlens.arena`](interlens/arena/index.md) — Scoreable multi-agent evaluations on interlens: scenarios, episode drivers, and exact scoring.
-        - [`interlens.arena.actions`](interlens/arena/actions/index.md) — Typed formal-action layer for structured negotiation turns.
-        - [`interlens.arena.auction`](interlens/arena/auction/index.md) — Repeated multi-bidder auctions: the frozen spec, the persona-conditioned prior, exact allocation and payment rules, equilibrium benchmarks, computable bidders and oracles, and the collusion metrics.
-            - [`interlens.arena.auction.actions`](interlens/arena/auction/actions/index.md) — The auction move vocabulary, the bid ledger, and DM routing (design.md §12 item 2).
-            - [`interlens.arena.auction.allocation`](interlens/arena/auction/allocation/index.md) — Bundle values, the exact efficient allocation, and the payment rules.
-            - [`interlens.arena.auction.benchmarks`](interlens/arena/auction/benchmarks/index.md) — The exact per-stage equilibrium benchmarks every suppression metric divides against (design.md §4.3, §5).
-            - [`interlens.arena.auction.bidders`](interlens/arena/auction/bidders/index.md) — The computable bidder zoo: policies (`state -> action`), their DM decision rules, and their oracles.
-            - [`interlens.arena.auction.metrics`](interlens/arena/auction/metrics/index.md) — Stage-level and repeated-play metrics (design.md §5), as pure functions over records.
-            - [`interlens.arena.auction.policy_text`](interlens/arena/auction/policy_text/index.md) — What the computable seats SAY -- the templated broadcast and DM behavior of design.md §3.4.
-            - [`interlens.arena.auction.priors`](interlens/arena/auction/priors/index.md) — The persona-conditioned prior: the generative model, the persona table, fact rendering data, and the posterior a rational seat actually computes.
-            - [`interlens.arena.auction.references`](interlens/arena/auction/references/index.md) — Citation-key registry for the auction mechanism, benchmark, and collusion-metric modules.
-            - [`interlens.arena.auction.spec`](interlens/arena/auction/spec/index.md) — The frozen auction specification: item slots, bidders, per-stage draws, and the mechanism config.
-        - [`interlens.arena.engine`](interlens/arena/engine/index.md) — Episode drivers: play `Scenario` instances through `Participant`s.
-        - [`interlens.arena.export`](interlens/arena/export/index.md) — Human-readable transcripts from stored episodes: an `EpisodeStore` tree -> one markdown + one self-contained HTML page per episode, plus a per-run index.
-        - [`interlens.arena.gates`](interlens/arena/gates/index.md) — Template-fidelity gates: preflight checks before spending GPU-hours on local-model rollouts.
-        - [`interlens.arena.inspect`](interlens/arena/inspect/index.md) — Optional Inspect (inspect-ai) integration: run arena scenarios under `inspect eval`.
-            - [`interlens.arena.inspect.adapter`](interlens/arena/inspect/adapter/index.md) — The Inspect adapter core: a Participant backed by Inspect's model, the arena solver, and the scorer.
-            - [`interlens.arena.inspect.tasks`](interlens/arena/inspect/tasks/index.md) — The bundled scenarios as Inspect tasks.
-        - [`interlens.arena.live`](interlens/arena/live/index.md) — Live play: watch an arena episode as it happens, reconfigure its seats, and play one yourself.
-            - [`interlens.arena.live.assets`](interlens/arena/live/assets/index.md) — The live pages' browser layer, as Python strings — same convention as `viz.assets`.
-                - [`interlens.arena.live.assets.js_live`](interlens/arena/live/assets/js_live/index.md) — The live page's browser layer: subscribe, merge, redraw, and take the player's move.
-                - [`interlens.arena.live.assets.js_lobby`](interlens/arena/live/assets/js_lobby/index.md) — The lobby's browser layer: edit the seat lineup, then start the game.
-            - [`interlens.arena.live.events`](interlens/arena/live/events/index.md) — The live-play wire protocol: every server-sent event a session can emit, in one place.
-            - [`interlens.arena.live.human`](interlens/arena/live/human/index.md) — `HumanParticipant`: a seat played by a person in a browser.
-            - [`interlens.arena.live.lobby_page`](interlens/arena/live/lobby_page/index.md) — The lobby: choose a game and decide who plays each seat.
-            - [`interlens.arena.live.payload`](interlens/arena/live/payload/index.md) — Per-turn slices of the visualizer payload, for streaming one turn at a time.
-            - [`interlens.arena.live.play_page`](interlens/arena/live/play_page/index.md) — The live episode page: the visualizer's episode view, plus the controls to play in it.
-            - [`interlens.arena.live.provider`](interlens/arena/live/provider/index.md) — The seam between the live server and whatever experiment supplies its games.
-            - [`interlens.arena.live.router`](interlens/arena/live/router/index.md) — `LiveSeatRouter`: a seat table whose occupants can change while the episode is running.
-            - [`interlens.arena.live.server`](interlens/arena/live/server/index.md) — The HTTP surface: a stdlib `ThreadingHTTPServer` serving the lobby, the live page, and the event stream.
-            - [`interlens.arena.live.session`](interlens/arena/live/session/index.md) — `LiveSession`: one live game — the engine thread, the event log, and everything the browser can do to it.
-            - [`interlens.arena.live.style`](interlens/arena/live/style/index.md) — The rules the lobby and the play page both need: form controls, seat cards, and the two docks.
-        - [`interlens.arena.negotiation`](interlens/arena/negotiation/index.md) — Multi-issue, multi-party scorable negotiation: deal spaces, private score sheets, exact solution concepts, computable rational-agent oracles, and an executable strategy zoo.
-            - [`interlens.arena.negotiation.acceptance`](interlens/arena/negotiation/acceptance/index.md) — Optimal-stopping acceptance oracle: when is accepting the standing offer better than holding out?
-            - [`interlens.arena.negotiation.analysis`](interlens/arena/negotiation/analysis/index.md) — Measurement over stored negotiation episodes: how far from rational was this play, and where?
-                - [`interlens.arena.negotiation.analysis.annotations`](interlens/arena/negotiation/analysis/annotations/index.md) — Per-turn annotation records: the divergence data model `annotate.py` writes and `taxonomy.py` / `report.py` read (disk I/O lives in `runio.AnnotationStore`).
-                - [`interlens.arena.negotiation.analysis.cot_localize`](interlens/arena/negotiation/analysis/cot_localize/index.md) — OmegaPRM-style within-CoT divergence localization: binary-search the first reasoning step that flips the induced action to a divergent one, in O(log n) oracle calls (arXiv:2406.06592 — exploit prefix monotonicity: correct until the first error, wrong after).
-                - [`interlens.arena.negotiation.analysis.curves`](interlens/arena/negotiation/analysis/curves/index.md) — Trajectory-shape metrics over a *series* (not a single turn).
-                - [`interlens.arena.negotiation.analysis.episode_view`](interlens/arena/negotiation/analysis/episode_view/index.md) — `EpisodeView`: a stored arena `Episode` JSON parsed into a normalized negotiation action series that the metrics read instead of raw `parsed_action` — an ordered `TurnView` list (typed action, deal canonicalized to an index tuple, offer id, any acceptable-offer/belief note, private thinking), the offer registry, the per-round standing offer, and the final deal / reached flag.
-                - [`interlens.arena.negotiation.analysis.game_analysis`](interlens/arena/negotiation/analysis/game_analysis/index.md) — `GameAnalysis`: the solved-game bundle the metrics read — the adapter seam between interlens' `GameSpec`/`solutions.py` and the pure metric math.
-                - [`interlens.arena.negotiation.analysis.metrics`](interlens/arena/negotiation/analysis/metrics/index.md) — The divergence metric suite: outcome-, turn-, and faithfulness-level measures over one episode.
-                - [`interlens.arena.negotiation.analysis.rollout`](interlens/arena/negotiation/analysis/rollout/index.md) — Counterfactual-rollout regret: label a divergence by Δ expected surplus, not by action mismatch.
-                - [`interlens.arena.negotiation.analysis.surplus`](interlens/arena/negotiation/analysis/surplus/index.md) — Pure surplus-vector math: Pareto geometry, dominance, and distances.
-                - [`interlens.arena.negotiation.analysis.taxonomy`](interlens/arena/negotiation/analysis/taxonomy/index.md) — The 12-row LLM-negotiation failure taxonomy as executable checks.
-            - [`interlens.arena.negotiation.belief_accuracy`](interlens/arena/negotiation/belief_accuracy/index.md) — How well does a :class:`~interlens.arena.negotiation.beliefs.BeliefState` actually know its opponent?
-            - [`interlens.arena.negotiation.beliefs`](interlens/arena/negotiation/beliefs/index.md) — Bayesian (and frequency-model fallback) belief oracle over an enumerated opponent-type grid.
-            - [`interlens.arena.negotiation.bestresponse`](interlens/arena/negotiation/bestresponse/index.md) — Exact expectimax best-response oracle over (remaining rounds x deal space x type posterior).
-            - [`interlens.arena.negotiation.calibrated`](interlens/arena/negotiation/calibrated/index.md) — Behaviourally-calibrated rational negotiation: :class:`CalibratedRationalPolicy`.
-            - [`interlens.arena.negotiation.equilibrium`](interlens/arena/negotiation/equilibrium/index.md) — Banks-Duggan stationary-equilibrium oracle for the multilateral unanimity bargaining game.
-            - [`interlens.arena.negotiation.fairness`](interlens/arena/negotiation/fairness/index.md) — The **table objective**: one number per deal saying how good that deal is *for the whole table*.
-            - [`interlens.arena.negotiation.games`](interlens/arena/negotiation/games/index.md) — Swappable game presets: name a classic bargaining situation, get a ready-to-play game in one call.
-            - [`interlens.arena.negotiation.generate`](interlens/arena/negotiation/generate/index.md) — Scorable-negotiation scenario generator with the score-sheet repairs the reproducibility studies demand.
-            - [`interlens.arena.negotiation.llm_calibrated`](interlens/arena/negotiation/llm_calibrated/index.md) — Private-information rational negotiation against an **empirically fitted LLM opponent model**: :class:`LLMCalibratedRationalPolicy`.
-            - [`interlens.arena.negotiation.oracle_context`](interlens/arena/negotiation/oracle_context/index.md) — The per-decision-point context the negotiation oracles share, written once.
-            - [`interlens.arena.negotiation.policy_participant`](interlens/arena/negotiation/policy_participant/index.md) — `PolicyParticipant`: a state-dependent pure-Python seat that computes its move from a bound policy.
-            - [`interlens.arena.negotiation.references`](interlens/arena/negotiation/references/index.md) — Citation-key registry for the negotiation solution-concept and generator modules.
-            - [`interlens.arena.negotiation.rewards`](interlens/arena/negotiation/rewards/index.md) — Outcome rewards for RL on scorable negotiation: the smoothed log-Nash objective.
-            - [`interlens.arena.negotiation.sheets`](interlens/arena/negotiation/sheets/index.md) — Private score sheets, the additive utility model, the game specification, and the NumPy utility matrix.
-            - [`interlens.arena.negotiation.solutions`](interlens/arena/negotiation/solutions/index.md) — Exact axiomatic solution concepts over the fully-enumerated deal space.
-            - [`interlens.arena.negotiation.space`](interlens/arena/negotiation/space/index.md) — The deal space: issues, their discrete options, and the fully-enumerable Cartesian product of options.
-            - [`interlens.arena.negotiation.strategies`](interlens/arena/negotiation/strategies/index.md) — The executable rational / scripted negotiator zoo as **policies** (`state -> action`), the computable opponent pool the LLMs are measured against.
-            - [`interlens.arena.negotiation.talking`](interlens/arena/negotiation/talking/index.md) — The **talking rational agent**: the composed Bayesian negotiator with a truthful templated voice.
-        - [`interlens.arena.oracles`](interlens/arena/oracles/index.md) — The oracle layer: per-turn "what would a rational agent have done here?" annotations.
-        - [`interlens.arena.ratchet`](interlens/arena/ratchet/index.md) — Adaptive difficulty ratchet: find the level where a model stops clearing the bar, then measure there.
-        - [`interlens.arena.refusal`](interlens/arena/refusal/index.md) — Recovering a turn the API refused, without changing what the turn says.
-        - [`interlens.arena.replay`](interlens/arena/replay/index.md) — Deterministic replay of stored episodes through a scenario's state machine.
-        - [`interlens.arena.rollouts`](interlens/arena/rollouts/index.md) — Directory-backed **rollout sets**: run more episodes into the same place, safely, and resume.
-        - [`interlens.arena.scenario`](interlens/arena/scenario/index.md) — The `Scenario` interface: a pure game-logic state machine, participant-agnostic.
-        - [`interlens.arena.scenarios`](interlens/arena/scenarios/index.md) — Bundled scenarios, four families:
-            - [`interlens.arena.scenarios.auction`](interlens/arena/scenarios/auction/index.md) — Repeated multi-bidder auctions as one :class:`~interlens.arena.scenario.Scenario`.
-            - [`interlens.arena.scenarios.auction_examples`](interlens/arena/scenarios/auction_examples/index.md) — The three worked turn views of the auction scaffold, generated from real frozen draws.
-            - [`interlens.arena.scenarios.auction_policy`](interlens/arena/scenarios/auction_policy/index.md) — Computable seats inside the ordinary engine loop.
-            - [`interlens.arena.scenarios.auction_prompts`](interlens/arena/scenarios/auction_prompts/index.md) — The frozen prompt scaffold for :class:`~interlens.arena.scenarios.auction.AuctionScenario`.
-            - [`interlens.arena.scenarios.coding`](interlens/arena/scenarios/coding/index.md) — Coding collaboration with private constraints: 3 seats jointly write ONE Python module.
-            - [`interlens.arena.scenarios.dlc`](interlens/arena/scenarios/dlc/index.md) — Task adapters for the distributed long-context scenario, ported from the RLM paper's benchmarks.
-                - [`interlens.arena.scenarios.dlc.bcp`](interlens/arena/scenarios/dlc/bcp/index.md) — BrowseComp-Plus: multi-hop QA over a fixed document corpus (paper §3.1).
-                - [`interlens.arena.scenarios.dlc.build`](interlens/arena/scenarios/dlc/build/index.md) — Instance builders for the distributed long-context tasks — fetch, shard, and save instance banks.
-                - [`interlens.arena.scenarios.dlc.codeqa`](interlens/arena/scenarios/dlc/codeqa/index.md) — LongBench-v2 CodeQA: repo-understanding multiple choice (paper §3.1).
-                - [`interlens.arena.scenarios.dlc.oolong_pairs`](interlens/arena/scenarios/dlc/oolong_pairs/index.md) — OOLONG-Pairs: the RLM paper's pairwise-aggregation task (Appendix 12.1).
-                - [`interlens.arena.scenarios.dlc.sniah`](interlens/arena/scenarios/dlc/sniah/index.md) — S-NIAH: RULER-style single needle-in-a-haystack (paper §3.1).
-            - [`interlens.arena.scenarios.longcontext`](interlens/arena/scenarios/longcontext/index.md) — Distributed long-context: one long-context task split across 4 communicating seats.
-            - [`interlens.arena.scenarios.negotiation`](interlens/arena/scenarios/negotiation/index.md) — Negotiation: a multi-issue, multi-party deal with secret score sheets (structured-JSON actions).
-            - [`interlens.arena.scenarios.priors`](interlens/arena/scenarios/priors/index.md) — Role-prior sign table for the negotiation scenario (role × issue) and sheet-vs-prior analysis helpers.
-            - [`interlens.arena.scenarios.relay`](interlens/arena/scenarios/relay/index.md) — Info relay: an epistemic team task with a confidently-wrong agent.
-            - [`interlens.arena.scenarios.scorable`](interlens/arena/scenarios/scorable/index.md) — ScorableNegotiation: the repaired multi-party, multi-issue scorable game — the *protocol* around a :class:`~interlens.arena.negotiation.sheets.GameSpec` (carried in `Instance.payload`), built on the shared typed-action (:mod:`interlens.arena.actions`) and oracle (:mod:`interlens.arena.oracles`) layers. "Repaired" names the specific benchmark flaws it fixes, each called out at the code that fixes it: votes-not-arithmetic closure, structural channel separation, a restated deadline, and measured-not-blocked economic illegality.
-            - [`interlens.arena.scenarios.scorable_prompts`](interlens/arena/scenarios/scorable_prompts/index.md) — The canonical prompt scaffold for the scorable-negotiation scenario.
-            - [`interlens.arena.scenarios.security`](interlens/arena/scenarios/security/index.md) — Security dilemma: a repeated 2-party build/deescalate/attack game with noisy intelligence.
-        - [`interlens.arena.schema`](interlens/arena/schema/index.md) — The arena's record schema: one JSON shape for every episode.
-        - [`interlens.arena.table`](interlens/arena/table/index.md) — Heterogeneous **tables**: present a whole many-seat lineup to the arena engine as one participant.
-        - [`interlens.arena.views`](interlens/arena/views/index.md) — Per-seat view construction + structured-action parsing for arena scenarios.
-        - [`interlens.arena.viz`](interlens/arena/viz/index.md) — Interactive episode visualization: any arena run directory in, self-contained interactive HTML out.
-            - [`interlens.arena.viz.advice`](interlens/arena/viz/advice/index.md) — The advised seat, audited: what its planner knew, what it recommended, and whether the seat did it.
-            - [`interlens.arena.viz.assets`](interlens/arena/viz/assets/index.md) — The inline stylesheet and browser layer — no external assets of any kind.
-                - [`interlens.arena.viz.assets.css`](interlens/arena/viz/assets/css/index.md) — The one stylesheet every page wears — a small design system, inlined.
-                - [`interlens.arena.viz.assets.js_auction`](interlens/arena/viz/assets/js_auction/index.md) — The auction episode page's wiring: the DM stage scrubber, the hover card on the bid ladder, and the cross-links between every mark and the turn it belongs to.
-                - [`interlens.arena.viz.assets.js_chart`](interlens/arena/viz/assets/js_chart/index.md) — Browser layer, part 2: the two charts.
-                - [`interlens.arena.viz.assets.js_compare`](interlens/arena/viz/assets/js_compare/index.md) — The comparison page's wiring: one shared frontier carrying both trajectories, and two synchronized columns.
-                - [`interlens.arena.viz.assets.js_core`](interlens/arena/viz/assets/js_core/index.md) — Browser layer, part 1: the payload, the formatting helpers, and the deal-detail panel.
-                - [`interlens.arena.viz.assets.js_episode`](interlens/arena/viz/assets/js_episode/index.md) — The episode page's own wiring: build the marks, render the panels, and keep chart and transcript in sync.
-                - [`interlens.arena.viz.assets.js_hover`](interlens/arena/viz/assets/js_hover/index.md) — Browser layer, part 2a: the rich hover card that EVERY point on the frontier chart carries.
-                - [`interlens.arena.viz.assets.js_index`](interlens/arena/viz/assets/js_index/index.md) — The run index's browser layer: sort and filter, over the rows already in the document.
-                - [`interlens.arena.viz.assets.js_shell`](interlens/arena/viz/assets/js_shell/index.md) — Browser layer, part 4: the page shell — theme toggle, episode navigation, keyboard shortcuts, help overlay.
-                - [`interlens.arena.viz.assets.js_sidebar`](interlens/arena/viz/assets/js_sidebar/index.md) — Browser layer, part 5: the tabbed sidebar and the scroll sync that drives it.
-                - [`interlens.arena.viz.assets.js_transcript`](interlens/arena/viz/assets/js_transcript/index.md) — Browser layer, part 3: the transcript — turn cards, the scrubber, and lazy prompt bodies.
-            - [`interlens.arena.viz.auction_geometry`](interlens/arena/viz/auction_geometry/index.md) — The plottable geometry of one repeated-auction episode — the `AuctionSpec`-shaped sibling of :class:`~interlens.arena.viz.geometry.GameGeometry`.
-            - [`interlens.arena.viz.auction_page`](interlens/arena/viz/auction_page/index.md) — The auction episode page's own panels — the four charts design.md §10 commits to, plus the per-turn counterfactual table.
-            - [`interlens.arena.viz.ballots`](interlens/arena/viz/ballots/index.md) — The final vote, as a tally a reader can check at a glance — including the ballots that were never recorded.
-            - [`interlens.arena.viz.census`](interlens/arena/viz/census/index.md) — How much of an episode is actually play: the per-turn census, and the strip that puts it in the page header.
-            - [`interlens.arena.viz.chrome`](interlens/arena/viz/chrome/index.md) — The shell every page wears, and the wire form of the payload it carries.
-            - [`interlens.arena.viz.compare`](interlens/arena/viz/compare/index.md) — Seat-swap comparison: the same game instance played twice, with one seat's occupant swapped.
-            - [`interlens.arena.viz.concepts`](interlens/arena/viz/concepts/index.md) — What each solution concept IS, in one place, for every part of the visualizer that explains one to a reader.
-            - [`interlens.arena.viz.episode`](interlens/arena/viz/episode/index.md) — One stored episode, turned into the single JSON payload the interactive page renders.
-            - [`interlens.arena.viz.export`](interlens/arena/viz/export/index.md) — The file-writing layer: run directory in, HTML pages plus an index on disk out.
-            - [`interlens.arena.viz.geometry`](interlens/arena/viz/geometry/index.md) — The plottable geometry of one negotiation instance: every deal placed in a 2-D scale-invariant embedding, with the frontier, the axiomatic solution points, and each party's individually-best deal marked.
-            - [`interlens.arena.viz.hazards`](interlens/arena/viz/hazards/index.md) — Two facts about a run that decide whether its numbers may be compared with another run's.
-            - [`interlens.arena.viz.page`](interlens/arena/viz/page/index.md) — HTML assembly: a payload in, one self-contained interactive page out.
-            - [`interlens.arena.viz.references`](interlens/arena/viz/references/index.md) — The decision references a scored turn can carry, placed on two axes — and what each one's number MEANS.
-            - [`interlens.arena.viz.serve`](interlens/arena/viz/serve/index.md) — Hand the rendered pages to a browser over HTTP, for when the filesystem the pages live on is not the one the browser runs on.
-    - [`interlens.communication`](interlens/communication/index.md) — Pluggable communication topologies: who speaks next, and who sees what.
-        - [`interlens.communication.messaging`](interlens/communication/messaging/index.md) — Tool-mediated asynchronous messaging between autonomous agents.
-        - [`interlens.communication.policy`](interlens/communication/policy/index.md) — Communication topology as a pluggable policy.
-    - [`interlens.context`](interlens/context/index.md)
-        - [`interlens.context.context_policy`](interlens/context/context_policy/index.md)
-        - [`interlens.context.drop_oldest_policy`](interlens/context/drop_oldest_policy/index.md)
-        - [`interlens.context.error_policy`](interlens/context/error_policy/index.md)
-        - [`interlens.context.sliding_window_policy`](interlens/context/sliding_window_policy/index.md)
-        - [`interlens.context.summarize_policy`](interlens/context/summarize_policy/index.md)
-    - [`interlens.context_item`](interlens/context_item/index.md)
-    - [`interlens.conversation`](interlens/conversation/index.md)
-    - [`interlens.execution_mode`](interlens/execution_mode/index.md)
-    - [`interlens.factories`](interlens/factories/index.md)
-    - [`interlens.functional`](interlens/functional/index.md) — Copy-on-write functional-update support shared by `Participant` and `Conversation`.
-    - [`interlens.hooks`](interlens/hooks/index.md)
-        - [`interlens.hooks.message_hook`](interlens/hooks/message_hook/index.md)
-    - [`interlens.integrations`](interlens/integrations/index.md) — Optional adapters that connect Interlens participants to external runtimes.
-        - [`interlens.integrations.control_tower`](interlens/integrations/control_tower/index.md) — Run a local Interlens participant behind Control Tower's untrusted-policy boundary.
-    - [`interlens.interp`](interlens/interp/index.md) — First-class interpretability layer.
-        - [`interlens.interp.activation_cache`](interlens/interp/activation_cache/index.md)
-        - [`interlens.interp.bridge`](interlens/interp/bridge/index.md) — Differentiable bridges for feeding one model's output into another's input.
-        - [`interlens.interp.capture`](interlens/interp/capture/index.md)
-        - [`interlens.interp.grad`](interlens/interp/grad/index.md) — Gradient-enabled forward passes for backprop *through* a model.
-        - [`interlens.interp.layers`](interlens/interp/layers/index.md)
-        - [`interlens.interp.logprobs`](interlens/interp/logprobs/index.md)
-        - [`interlens.interp.patching`](interlens/interp/patching/index.md)
-        - [`interlens.interp.pooling`](interlens/interp/pooling/index.md) — Pool a token-position axis down to one vector per span — the primitive under every span-level readout.
-        - [`interlens.interp.routing`](interlens/interp/routing/index.md) — Mixture-of-Experts routing capture and statistics.
-        - [`interlens.interp.softtokens`](interlens/interp/softtokens/index.md) — Virtual (soft) tokens inside ordinary text prompts, plus the message-span read path that pairs with them.
-        - [`interlens.interp.steering`](interlens/interp/steering/index.md)
-    - [`interlens.loading`](interlens/loading/index.md)
-        - [`interlens.loading.devices`](interlens/loading/devices/index.md) — Where to put a model's *inputs*, which is not the same question as "what device is the model on".
-        - [`interlens.loading.load`](interlens/loading/load/index.md)
-        - [`interlens.loading.model_cache`](interlens/loading/model_cache/index.md)
-    - [`interlens.message`](interlens/message/index.md)
-    - [`interlens.parsing`](interlens/parsing/index.md) — One home for structured-action parsing and reasoning stripping.
-    - [`interlens.participant`](interlens/participant/index.md)
-        - [`interlens.participant.governor`](interlens/participant/governor/index.md) — Adaptive rate-limit governor: admission control paced by the provider's own rate-limit headers.
-        - [`interlens.participant.participant`](interlens/participant/participant/index.md)
-        - [`interlens.participant.participants`](interlens/participant/participants/index.md)
-            - [`interlens.participant.participants.api_client`](interlens/participant/participants/api_client/index.md)
-            - [`interlens.participant.participants.api_participant`](interlens/participant/participants/api_participant/index.md)
-            - [`interlens.participant.participants.gemma`](interlens/participant/participants/gemma/index.md)
-            - [`interlens.participant.participants.llama`](interlens/participant/participants/llama/index.md)
-            - [`interlens.participant.participants.model_participant`](interlens/participant/participants/model_participant/index.md)
-            - [`interlens.participant.participants.qwen`](interlens/participant/participants/qwen/index.md)
-            - [`interlens.participant.participants.scripted_participant`](interlens/participant/participants/scripted_participant/index.md)
-        - [`interlens.participant.role`](interlens/participant/role/index.md)
-        - [`interlens.participant.serialize`](interlens/participant/serialize/index.md) — Persist a participant to / from its own constructor kwargs (for `Conversation.save` / `load`).
-    - [`interlens.reasoning_visibility`](interlens/reasoning_visibility/index.md)
-    - [`interlens.runner`](interlens/runner/index.md)
-        - [`interlens.runner.analyzer_registry`](interlens/runner/analyzer_registry/index.md)
-        - [`interlens.runner.batched`](interlens/runner/batched/index.md)
-        - [`interlens.runner.devices`](interlens/runner/devices/index.md)
-        - [`interlens.runner.pool`](interlens/runner/pool/index.md) — The execution engine behind `Conversation.rollout` and `interlens.run`.
-        - [`interlens.runner.worker_init`](interlens/runner/worker_init/index.md)
-    - [`interlens.stop`](interlens/stop/index.md)
-        - [`interlens.stop.conditions`](interlens/stop/conditions/index.md)
-        - [`interlens.stop.stop_condition`](interlens/stop/stop_condition/index.md)
-    - [`interlens.templating`](interlens/templating/index.md) — Per-row templating for data-driven rollouts.
-    - [`interlens.tools`](interlens/tools/index.md)
-        - [`interlens.tools.registry`](interlens/tools/registry/index.md)
-        - [`interlens.tools.tool`](interlens/tools/tool/index.md)
-        - [`interlens.tools.tool_call`](interlens/tools/tool_call/index.md)
-    - [`interlens.transcript`](interlens/transcript/index.md)
-    - [`interlens.usage`](interlens/usage/index.md) — Usage accounting: token/cost metering for hosted-API participants.
-    - [`interlens.view`](interlens/view/index.md)
+    - [`arena`](interlens/arena/index.md) — Scoreable multi-agent evaluations on interlens: scenarios, episode drivers, and exact scoring.
+        - [`actions`](interlens/arena/actions/index.md) — Typed formal-action layer for structured negotiation turns.
+        - [`auction`](interlens/arena/auction/index.md) — Repeated multi-bidder auctions: the frozen spec, the persona-conditioned prior, exact allocation and payment rules, equilibrium benchmarks, computable bidders and oracles, and the collusion metrics.
+            - [`actions`](interlens/arena/auction/actions/index.md) — The auction move vocabulary, the bid ledger, and DM routing (design.md §12 item 2).
+            - [`allocation`](interlens/arena/auction/allocation/index.md) — Bundle values, the exact efficient allocation, and the payment rules.
+            - [`benchmarks`](interlens/arena/auction/benchmarks/index.md) — The exact per-stage equilibrium benchmarks every suppression metric divides against (design.md §4.3, §5).
+            - [`bidders`](interlens/arena/auction/bidders/index.md) — The computable bidder zoo: policies (`state -> action`), their DM decision rules, and their oracles.
+            - [`metrics`](interlens/arena/auction/metrics/index.md) — Stage-level and repeated-play metrics (design.md §5), as pure functions over records.
+            - [`policy_text`](interlens/arena/auction/policy_text/index.md) — What the computable seats SAY -- the templated broadcast and DM behavior of design.md §3.4.
+            - [`priors`](interlens/arena/auction/priors/index.md) — The persona-conditioned prior: the generative model, the persona table, fact rendering data, and the posterior a rational seat actually computes.
+            - [`references`](interlens/arena/auction/references/index.md) — Citation-key registry for the auction mechanism, benchmark, and collusion-metric modules.
+            - [`spec`](interlens/arena/auction/spec/index.md) — The frozen auction specification: item slots, bidders, per-stage draws, and the mechanism config.
+        - [`engine`](interlens/arena/engine/index.md) — Episode drivers: play `Scenario` instances through `Participant`s.
+        - [`export`](interlens/arena/export/index.md) — Human-readable transcripts from stored episodes: an `EpisodeStore` tree -> one markdown + one self-contained HTML page per episode, plus a per-run index.
+        - [`gates`](interlens/arena/gates/index.md) — Template-fidelity gates: preflight checks before spending GPU-hours on local-model rollouts.
+        - [`inspect`](interlens/arena/inspect/index.md) — Optional Inspect (inspect-ai) integration: run arena scenarios under `inspect eval`.
+            - [`adapter`](interlens/arena/inspect/adapter/index.md) — The Inspect adapter core: a Participant backed by Inspect's model, the arena solver, and the scorer.
+            - [`tasks`](interlens/arena/inspect/tasks/index.md) — The bundled scenarios as Inspect tasks.
+        - [`live`](interlens/arena/live/index.md) — Live play: watch an arena episode as it happens, reconfigure its seats, and play one yourself.
+            - [`assets`](interlens/arena/live/assets/index.md) — The live pages' browser layer, as Python strings — same convention as `viz.assets`.
+                - [`js_live`](interlens/arena/live/assets/js_live/index.md) — The live page's browser layer: subscribe, merge, redraw, and take the player's move.
+                - [`js_lobby`](interlens/arena/live/assets/js_lobby/index.md) — The lobby's browser layer: edit the seat lineup, then start the game.
+            - [`events`](interlens/arena/live/events/index.md) — The live-play wire protocol: every server-sent event a session can emit, in one place.
+            - [`human`](interlens/arena/live/human/index.md) — `HumanParticipant`: a seat played by a person in a browser.
+            - [`lobby_page`](interlens/arena/live/lobby_page/index.md) — The lobby: choose a game and decide who plays each seat.
+            - [`payload`](interlens/arena/live/payload/index.md) — Per-turn slices of the visualizer payload, for streaming one turn at a time.
+            - [`play_page`](interlens/arena/live/play_page/index.md) — The live episode page: the visualizer's episode view, plus the controls to play in it.
+            - [`provider`](interlens/arena/live/provider/index.md) — The seam between the live server and whatever experiment supplies its games.
+            - [`router`](interlens/arena/live/router/index.md) — `LiveSeatRouter`: a seat table whose occupants can change while the episode is running.
+            - [`server`](interlens/arena/live/server/index.md) — The HTTP surface: a stdlib `ThreadingHTTPServer` serving the lobby, the live page, and the event stream.
+            - [`session`](interlens/arena/live/session/index.md) — `LiveSession`: one live game — the engine thread, the event log, and everything the browser can do to it.
+            - [`style`](interlens/arena/live/style/index.md) — The rules the lobby and the play page both need: form controls, seat cards, and the two docks.
+        - [`negotiation`](interlens/arena/negotiation/index.md) — Multi-issue, multi-party scorable negotiation: deal spaces, private score sheets, exact solution concepts, computable rational-agent oracles, and an executable strategy zoo.
+            - [`acceptance`](interlens/arena/negotiation/acceptance/index.md) — Optimal-stopping acceptance oracle: when is accepting the standing offer better than holding out?
+            - [`analysis`](interlens/arena/negotiation/analysis/index.md) — Measurement over stored negotiation episodes: how far from rational was this play, and where?
+                - [`annotations`](interlens/arena/negotiation/analysis/annotations/index.md) — Per-turn annotation records: the divergence data model `annotate.py` writes and `taxonomy.py` / `report.py` read (disk I/O lives in `runio.AnnotationStore`).
+                - [`cot_localize`](interlens/arena/negotiation/analysis/cot_localize/index.md) — OmegaPRM-style within-CoT divergence localization: binary-search the first reasoning step that flips the induced action to a divergent one, in O(log n) oracle calls (arXiv:2406.06592 — exploit prefix monotonicity: correct until the first error, wrong after).
+                - [`curves`](interlens/arena/negotiation/analysis/curves/index.md) — Trajectory-shape metrics over a *series* (not a single turn).
+                - [`episode_view`](interlens/arena/negotiation/analysis/episode_view/index.md) — `EpisodeView`: a stored arena `Episode` JSON parsed into a normalized negotiation action series that the metrics read instead of raw `parsed_action` — an ordered `TurnView` list (typed action, deal canonicalized to an index tuple, offer id, any acceptable-offer/belief note, private thinking), the offer registry, the per-round standing offer, and the final deal / reached flag.
+                - [`game_analysis`](interlens/arena/negotiation/analysis/game_analysis/index.md) — `GameAnalysis`: the solved-game bundle the metrics read — the adapter seam between interlens' `GameSpec`/`solutions.py` and the pure metric math.
+                - [`metrics`](interlens/arena/negotiation/analysis/metrics/index.md) — The divergence metric suite: outcome-, turn-, and faithfulness-level measures over one episode.
+                - [`rollout`](interlens/arena/negotiation/analysis/rollout/index.md) — Counterfactual-rollout regret: label a divergence by Δ expected surplus, not by action mismatch.
+                - [`surplus`](interlens/arena/negotiation/analysis/surplus/index.md) — Pure surplus-vector math: Pareto geometry, dominance, and distances.
+                - [`taxonomy`](interlens/arena/negotiation/analysis/taxonomy/index.md) — The 12-row LLM-negotiation failure taxonomy as executable checks.
+            - [`belief_accuracy`](interlens/arena/negotiation/belief_accuracy/index.md) — How well does a :class:`~interlens.arena.negotiation.beliefs.BeliefState` actually know its opponent?
+            - [`beliefs`](interlens/arena/negotiation/beliefs/index.md) — Bayesian (and frequency-model fallback) belief oracle over an enumerated opponent-type grid.
+            - [`bestresponse`](interlens/arena/negotiation/bestresponse/index.md) — Exact expectimax best-response oracle over (remaining rounds x deal space x type posterior).
+            - [`calibrated`](interlens/arena/negotiation/calibrated/index.md) — Behaviourally-calibrated rational negotiation: :class:`CalibratedRationalPolicy`.
+            - [`equilibrium`](interlens/arena/negotiation/equilibrium/index.md) — Banks-Duggan stationary-equilibrium oracle for the multilateral unanimity bargaining game.
+            - [`fairness`](interlens/arena/negotiation/fairness/index.md) — The **table objective**: one number per deal saying how good that deal is *for the whole table*.
+            - [`games`](interlens/arena/negotiation/games/index.md) — Swappable game presets: name a classic bargaining situation, get a ready-to-play game in one call.
+            - [`generate`](interlens/arena/negotiation/generate/index.md) — Scorable-negotiation scenario generator with the score-sheet repairs the reproducibility studies demand.
+            - [`llm_calibrated`](interlens/arena/negotiation/llm_calibrated/index.md) — Private-information rational negotiation against an **empirically fitted LLM opponent model**: :class:`LLMCalibratedRationalPolicy`.
+            - [`oracle_context`](interlens/arena/negotiation/oracle_context/index.md) — The per-decision-point context the negotiation oracles share, written once.
+            - [`policy_participant`](interlens/arena/negotiation/policy_participant/index.md) — `PolicyParticipant`: a state-dependent pure-Python seat that computes its move from a bound policy.
+            - [`references`](interlens/arena/negotiation/references/index.md) — Citation-key registry for the negotiation solution-concept and generator modules.
+            - [`rewards`](interlens/arena/negotiation/rewards/index.md) — Outcome rewards for RL on scorable negotiation: the smoothed log-Nash objective.
+            - [`sheets`](interlens/arena/negotiation/sheets/index.md) — Private score sheets, the additive utility model, the game specification, and the NumPy utility matrix.
+            - [`solutions`](interlens/arena/negotiation/solutions/index.md) — Exact axiomatic solution concepts over the fully-enumerated deal space.
+            - [`space`](interlens/arena/negotiation/space/index.md) — The deal space: issues, their discrete options, and the fully-enumerable Cartesian product of options.
+            - [`strategies`](interlens/arena/negotiation/strategies/index.md) — The executable rational / scripted negotiator zoo as **policies** (`state -> action`), the computable opponent pool the LLMs are measured against.
+            - [`talking`](interlens/arena/negotiation/talking/index.md) — The **talking rational agent**: the composed Bayesian negotiator with a truthful templated voice.
+        - [`oracles`](interlens/arena/oracles/index.md) — The oracle layer: per-turn "what would a rational agent have done here?" annotations.
+        - [`ratchet`](interlens/arena/ratchet/index.md) — Adaptive difficulty ratchet: find the level where a model stops clearing the bar, then measure there.
+        - [`refusal`](interlens/arena/refusal/index.md) — Recovering a turn the API refused, without changing what the turn says.
+        - [`replay`](interlens/arena/replay/index.md) — Deterministic replay of stored episodes through a scenario's state machine.
+        - [`rollouts`](interlens/arena/rollouts/index.md) — Directory-backed **rollout sets**: run more episodes into the same place, safely, and resume.
+        - [`scenario`](interlens/arena/scenario/index.md) — The `Scenario` interface: a pure game-logic state machine, participant-agnostic.
+        - [`scenarios`](interlens/arena/scenarios/index.md) — Bundled scenarios, four families:
+            - [`auction`](interlens/arena/scenarios/auction/index.md) — Repeated multi-bidder auctions as one :class:`~interlens.arena.scenario.Scenario`.
+            - [`auction_examples`](interlens/arena/scenarios/auction_examples/index.md) — The three worked turn views of the auction scaffold, generated from real frozen draws.
+            - [`auction_policy`](interlens/arena/scenarios/auction_policy/index.md) — Computable seats inside the ordinary engine loop.
+            - [`auction_prompts`](interlens/arena/scenarios/auction_prompts/index.md) — The frozen prompt scaffold for :class:`~interlens.arena.scenarios.auction.AuctionScenario`.
+            - [`coding`](interlens/arena/scenarios/coding/index.md) — Coding collaboration with private constraints: 3 seats jointly write ONE Python module.
+            - [`dlc`](interlens/arena/scenarios/dlc/index.md) — Task adapters for the distributed long-context scenario, ported from the RLM paper's benchmarks.
+                - [`bcp`](interlens/arena/scenarios/dlc/bcp/index.md) — BrowseComp-Plus: multi-hop QA over a fixed document corpus (paper §3.1).
+                - [`build`](interlens/arena/scenarios/dlc/build/index.md) — Instance builders for the distributed long-context tasks — fetch, shard, and save instance banks.
+                - [`codeqa`](interlens/arena/scenarios/dlc/codeqa/index.md) — LongBench-v2 CodeQA: repo-understanding multiple choice (paper §3.1).
+                - [`oolong_pairs`](interlens/arena/scenarios/dlc/oolong_pairs/index.md) — OOLONG-Pairs: the RLM paper's pairwise-aggregation task (Appendix 12.1).
+                - [`sniah`](interlens/arena/scenarios/dlc/sniah/index.md) — S-NIAH: RULER-style single needle-in-a-haystack (paper §3.1).
+            - [`longcontext`](interlens/arena/scenarios/longcontext/index.md) — Distributed long-context: one long-context task split across 4 communicating seats.
+            - [`negotiation`](interlens/arena/scenarios/negotiation/index.md) — Negotiation: a multi-issue, multi-party deal with secret score sheets (structured-JSON actions).
+            - [`priors`](interlens/arena/scenarios/priors/index.md) — Role-prior sign table for the negotiation scenario (role × issue) and sheet-vs-prior analysis helpers.
+            - [`relay`](interlens/arena/scenarios/relay/index.md) — Info relay: an epistemic team task with a confidently-wrong agent.
+            - [`scorable`](interlens/arena/scenarios/scorable/index.md) — ScorableNegotiation: the repaired multi-party, multi-issue scorable game — the *protocol* around a :class:`~interlens.arena.negotiation.sheets.GameSpec` (carried in `Instance.payload`), built on the shared typed-action (:mod:`interlens.arena.actions`) and oracle (:mod:`interlens.arena.oracles`) layers. "Repaired" names the specific benchmark flaws it fixes, each called out at the code that fixes it: votes-not-arithmetic closure, structural channel separation, a restated deadline, and measured-not-blocked economic illegality.
+            - [`scorable_prompts`](interlens/arena/scenarios/scorable_prompts/index.md) — The canonical prompt scaffold for the scorable-negotiation scenario.
+            - [`security`](interlens/arena/scenarios/security/index.md) — Security dilemma: a repeated 2-party build/deescalate/attack game with noisy intelligence.
+        - [`schema`](interlens/arena/schema/index.md) — The arena's record schema: one JSON shape for every episode.
+        - [`table`](interlens/arena/table/index.md) — Heterogeneous **tables**: present a whole many-seat lineup to the arena engine as one participant.
+        - [`views`](interlens/arena/views/index.md) — Per-seat view construction + structured-action parsing for arena scenarios.
+        - [`viz`](interlens/arena/viz/index.md) — Interactive episode visualization: any arena run directory in, self-contained interactive HTML out.
+            - [`advice`](interlens/arena/viz/advice/index.md) — The advised seat, audited: what its planner knew, what it recommended, and whether the seat did it.
+            - [`assets`](interlens/arena/viz/assets/index.md) — The inline stylesheet and browser layer — no external assets of any kind.
+                - [`css`](interlens/arena/viz/assets/css/index.md) — The one stylesheet every page wears — a small design system, inlined.
+                - [`js_auction`](interlens/arena/viz/assets/js_auction/index.md) — The auction episode page's wiring: the DM stage scrubber, the hover card on the bid ladder, and the cross-links between every mark and the turn it belongs to.
+                - [`js_chart`](interlens/arena/viz/assets/js_chart/index.md) — Browser layer, part 2: the two charts.
+                - [`js_compare`](interlens/arena/viz/assets/js_compare/index.md) — The comparison page's wiring: one shared frontier carrying both trajectories, and two synchronized columns.
+                - [`js_core`](interlens/arena/viz/assets/js_core/index.md) — Browser layer, part 1: the payload, the formatting helpers, and the deal-detail panel.
+                - [`js_episode`](interlens/arena/viz/assets/js_episode/index.md) — The episode page's own wiring: build the marks, render the panels, and keep chart and transcript in sync.
+                - [`js_hover`](interlens/arena/viz/assets/js_hover/index.md) — Browser layer, part 2a: the rich hover card that EVERY point on the frontier chart carries.
+                - [`js_index`](interlens/arena/viz/assets/js_index/index.md) — The run index's browser layer: sort and filter, over the rows already in the document.
+                - [`js_shell`](interlens/arena/viz/assets/js_shell/index.md) — Browser layer, part 4: the page shell — theme toggle, episode navigation, keyboard shortcuts, help overlay.
+                - [`js_sidebar`](interlens/arena/viz/assets/js_sidebar/index.md) — Browser layer, part 5: the tabbed sidebar and the scroll sync that drives it.
+                - [`js_transcript`](interlens/arena/viz/assets/js_transcript/index.md) — Browser layer, part 3: the transcript — turn cards, the scrubber, and lazy prompt bodies.
+            - [`auction_geometry`](interlens/arena/viz/auction_geometry/index.md) — The plottable geometry of one repeated-auction episode — the `AuctionSpec`-shaped sibling of :class:`~interlens.arena.viz.geometry.GameGeometry`.
+            - [`auction_page`](interlens/arena/viz/auction_page/index.md) — The auction episode page's own panels — the four charts design.md §10 commits to, plus the per-turn counterfactual table.
+            - [`ballots`](interlens/arena/viz/ballots/index.md) — The final vote, as a tally a reader can check at a glance — including the ballots that were never recorded.
+            - [`census`](interlens/arena/viz/census/index.md) — How much of an episode is actually play: the per-turn census, and the strip that puts it in the page header.
+            - [`chrome`](interlens/arena/viz/chrome/index.md) — The shell every page wears, and the wire form of the payload it carries.
+            - [`compare`](interlens/arena/viz/compare/index.md) — Seat-swap comparison: the same game instance played twice, with one seat's occupant swapped.
+            - [`concepts`](interlens/arena/viz/concepts/index.md) — What each solution concept IS, in one place, for every part of the visualizer that explains one to a reader.
+            - [`episode`](interlens/arena/viz/episode/index.md) — One stored episode, turned into the single JSON payload the interactive page renders.
+            - [`export`](interlens/arena/viz/export/index.md) — The file-writing layer: run directory in, HTML pages plus an index on disk out.
+            - [`geometry`](interlens/arena/viz/geometry/index.md) — The plottable geometry of one negotiation instance: every deal placed in a 2-D scale-invariant embedding, with the frontier, the axiomatic solution points, and each party's individually-best deal marked.
+            - [`hazards`](interlens/arena/viz/hazards/index.md) — Two facts about a run that decide whether its numbers may be compared with another run's.
+            - [`page`](interlens/arena/viz/page/index.md) — HTML assembly: a payload in, one self-contained interactive page out.
+            - [`references`](interlens/arena/viz/references/index.md) — The decision references a scored turn can carry, placed on two axes — and what each one's number MEANS.
+            - [`serve`](interlens/arena/viz/serve/index.md) — Hand the rendered pages to a browser over HTTP, for when the filesystem the pages live on is not the one the browser runs on.
+    - [`communication`](interlens/communication/index.md) — Pluggable communication topologies: who speaks next, and who sees what.
+        - [`messaging`](interlens/communication/messaging/index.md) — Tool-mediated asynchronous messaging between autonomous agents.
+        - [`policy`](interlens/communication/policy/index.md) — Communication topology as a pluggable policy.
+    - [`context`](interlens/context/index.md)
+        - [`context_policy`](interlens/context/context_policy/index.md)
+        - [`drop_oldest_policy`](interlens/context/drop_oldest_policy/index.md)
+        - [`error_policy`](interlens/context/error_policy/index.md)
+        - [`sliding_window_policy`](interlens/context/sliding_window_policy/index.md)
+        - [`summarize_policy`](interlens/context/summarize_policy/index.md)
+    - [`context_item`](interlens/context_item/index.md)
+    - [`conversation`](interlens/conversation/index.md)
+    - [`execution_mode`](interlens/execution_mode/index.md)
+    - [`factories`](interlens/factories/index.md)
+    - [`functional`](interlens/functional/index.md) — Copy-on-write functional-update support shared by `Participant` and `Conversation`.
+    - [`hooks`](interlens/hooks/index.md)
+        - [`message_hook`](interlens/hooks/message_hook/index.md)
+    - [`integrations`](interlens/integrations/index.md) — Optional adapters that connect Interlens participants to external runtimes.
+        - [`control_tower`](interlens/integrations/control_tower/index.md) — Run a local Interlens participant behind Control Tower's untrusted-policy boundary.
+    - [`interp`](interlens/interp/index.md) — First-class interpretability layer.
+        - [`activation_cache`](interlens/interp/activation_cache/index.md)
+        - [`bridge`](interlens/interp/bridge/index.md) — Differentiable bridges for feeding one model's output into another's input.
+        - [`capture`](interlens/interp/capture/index.md)
+        - [`grad`](interlens/interp/grad/index.md) — Gradient-enabled forward passes for backprop *through* a model.
+        - [`layers`](interlens/interp/layers/index.md)
+        - [`logprobs`](interlens/interp/logprobs/index.md)
+        - [`patching`](interlens/interp/patching/index.md)
+        - [`pooling`](interlens/interp/pooling/index.md) — Pool a token-position axis down to one vector per span — the primitive under every span-level readout.
+        - [`routing`](interlens/interp/routing/index.md) — Mixture-of-Experts routing capture and statistics.
+        - [`softtokens`](interlens/interp/softtokens/index.md) — Virtual (soft) tokens inside ordinary text prompts, plus the message-span read path that pairs with them.
+        - [`steering`](interlens/interp/steering/index.md)
+    - [`loading`](interlens/loading/index.md)
+        - [`devices`](interlens/loading/devices/index.md) — Where to put a model's *inputs*, which is not the same question as "what device is the model on".
+        - [`load`](interlens/loading/load/index.md)
+        - [`model_cache`](interlens/loading/model_cache/index.md)
+    - [`message`](interlens/message/index.md)
+    - [`parsing`](interlens/parsing/index.md) — One home for structured-action parsing and reasoning stripping.
+    - [`participant`](interlens/participant/index.md)
+        - [`governor`](interlens/participant/governor/index.md) — Adaptive rate-limit governor: admission control paced by the provider's own rate-limit headers.
+        - [`participant`](interlens/participant/participant/index.md)
+        - [`participants`](interlens/participant/participants/index.md)
+            - [`api_client`](interlens/participant/participants/api_client/index.md)
+            - [`api_participant`](interlens/participant/participants/api_participant/index.md)
+            - [`gemma`](interlens/participant/participants/gemma/index.md)
+            - [`llama`](interlens/participant/participants/llama/index.md)
+            - [`model_participant`](interlens/participant/participants/model_participant/index.md)
+            - [`qwen`](interlens/participant/participants/qwen/index.md)
+            - [`scripted_participant`](interlens/participant/participants/scripted_participant/index.md)
+        - [`role`](interlens/participant/role/index.md)
+        - [`serialize`](interlens/participant/serialize/index.md) — Persist a participant to / from its own constructor kwargs (for `Conversation.save` / `load`).
+    - [`reasoning_visibility`](interlens/reasoning_visibility/index.md)
+    - [`runner`](interlens/runner/index.md)
+        - [`analyzer_registry`](interlens/runner/analyzer_registry/index.md)
+        - [`batched`](interlens/runner/batched/index.md)
+        - [`devices`](interlens/runner/devices/index.md)
+        - [`pool`](interlens/runner/pool/index.md) — The execution engine behind `Conversation.rollout` and `interlens.run`.
+        - [`worker_init`](interlens/runner/worker_init/index.md)
+    - [`stop`](interlens/stop/index.md)
+        - [`conditions`](interlens/stop/conditions/index.md)
+        - [`stop_condition`](interlens/stop/stop_condition/index.md)
+    - [`templating`](interlens/templating/index.md) — Per-row templating for data-driven rollouts.
+    - [`tools`](interlens/tools/index.md)
+        - [`registry`](interlens/tools/registry/index.md)
+        - [`tool`](interlens/tools/tool/index.md)
+        - [`tool_call`](interlens/tools/tool_call/index.md)
+    - [`transcript`](interlens/transcript/index.md)
+    - [`usage`](interlens/usage/index.md) — Usage accounting: token/cost metering for hosted-API participants.
+    - [`view`](interlens/view/index.md)

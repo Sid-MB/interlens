@@ -1,4 +1,6 @@
-# `interlens.arena.export`
+# `export`
+
+Module `interlens.arena.export`
 
 Human-readable transcripts from stored episodes: an `EpisodeStore` tree -> one markdown + one self-contained
 HTML page per episode, plus a per-run index.

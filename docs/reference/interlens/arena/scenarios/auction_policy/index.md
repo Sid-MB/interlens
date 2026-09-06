@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.auction_policy`
+# `auction_policy`
+
+Module `interlens.arena.scenarios.auction_policy`
 
 Computable seats inside the ordinary engine loop.
 

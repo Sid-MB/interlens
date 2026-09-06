@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.beliefs`
+# `beliefs`
+
+Module `interlens.arena.negotiation.beliefs`
 
 Bayesian (and frequency-model fallback) belief oracle over an enumerated opponent-type grid.
 

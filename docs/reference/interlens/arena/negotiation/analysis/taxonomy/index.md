@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.analysis.taxonomy`
+# `taxonomy`
+
+Module `interlens.arena.negotiation.analysis.taxonomy`
 
 The 12-row LLM-negotiation failure taxonomy as executable checks.
 

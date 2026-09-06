@@ -1,4 +1,6 @@
-# `interlens.tools.tool_call`
+# `tool_call`
+
+Module `interlens.tools.tool_call`
 
 ## Classes
 

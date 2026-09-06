@@ -1,4 +1,6 @@
-# `interlens.arena.live.server`
+# `server`
+
+Module `interlens.arena.live.server`
 
 The HTTP surface: a stdlib `ThreadingHTTPServer` serving the lobby, the live page, and the event stream.
 

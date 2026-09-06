@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.solutions`
+# `solutions`
+
+Module `interlens.arena.negotiation.solutions`
 
 Exact axiomatic solution concepts over the fully-enumerated deal space.
 

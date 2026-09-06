@@ -1,4 +1,6 @@
-# `interlens.arena.live.human`
+# `human`
+
+Module `interlens.arena.live.human`
 
 `HumanParticipant`: a seat played by a person in a browser.
 

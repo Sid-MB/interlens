@@ -21,7 +21,9 @@ Page shapes follow Apple's developer docs: a symbol gets its *own* page opening 
 one-line summary, and its members live on that page under stable anchors rather than on pages of their
 own. Concretely:
 
-*Module index* — ``# `interlens.runner` `` / module docstring / ``## Modules`` (packages only) /
+*Module index* — ``# `runner` `` (the *leaf* name, so the downstream site's title-derived nav does not read
+``interlens`` > ``interlens.runner``) / a ``Module `interlens.runner``` subtitle carrying the full dotted
+path / module docstring / ``## Modules`` (packages only) /
 ``## Re-exported`` (packages that re-export) / ``## Classes`` / ``## Functions``.
 
 *Class page* — heading, summary, ```` ```python ```` signature (class name + ``__init__`` parameters, as
@@ -114,7 +116,11 @@ def _callable_body(obj: Function, site: Site, from_dir: str, *, drop_self: bool)
 
 def render_module(node: ModuleNode, site: Site, source: SourceLinker) -> str:
 	"""The module/package index page."""
-	blocks = [f"# `{node.dotted}`", ds.text_of(node.obj)]
+	# The H1 is the *leaf* name only: the downstream site builds its navigation tree out of page titles, so a
+	# full dotted title would read `interlens` > `interlens.context` > `interlens.context.context_policy` once
+	# nested. The dotted path is not lost — it moves to the subtitle line directly under the H1.
+	kind = "Package" if node.is_package else "Module"
+	blocks = [f"# `{node.parts[-1]}`", f"{kind} `{node.dotted}`", ds.text_of(node.obj)]
 
 	if node.children:
 		rows = [
@@ -217,7 +223,8 @@ def render_root(site: Site) -> str:
 		href = posixpath.relpath(node.index_file, start="reference")
 		summary = ds.summary(node.obj)
 		# Four spaces per level, not tabs: CommonMark/Pandoc nest a sub-list on the parent's content column.
-		lines.append("    " * depth + f"- [`{node.dotted}`]({href})" + (f" — {summary}" if summary else ""))
+		# Leaf name, not the dotted path: the list already nests, so the prefix is visible in the ancestry.
+		lines.append("    " * depth + f"- [`{node.parts[-1]}`]({href})" + (f" — {summary}" if summary else ""))
 		for child in sorted(node.children, key=lambda c: c.parts[-1]):
 			walk(child, depth + 1)
 

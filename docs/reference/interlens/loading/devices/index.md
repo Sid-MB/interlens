@@ -1,4 +1,6 @@
-# `interlens.loading.devices`
+# `devices`
+
+Module `interlens.loading.devices`
 
 Where to put a model's *inputs*, which is not the same question as "what device is the model on".
 

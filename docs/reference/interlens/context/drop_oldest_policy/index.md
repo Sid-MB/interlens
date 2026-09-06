@@ -1,4 +1,6 @@
-# `interlens.context.drop_oldest_policy`
+# `drop_oldest_policy`
+
+Module `interlens.context.drop_oldest_policy`
 
 ## Classes
 

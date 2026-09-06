@@ -1,4 +1,6 @@
-# `interlens.stop.stop_condition`
+# `stop_condition`
+
+Module `interlens.stop.stop_condition`
 
 ## Classes
 

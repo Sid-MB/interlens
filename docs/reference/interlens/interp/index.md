@@ -1,4 +1,6 @@
-# `interlens.interp`
+# `interp`
+
+Package `interlens.interp`
 
 First-class interpretability layer.
 

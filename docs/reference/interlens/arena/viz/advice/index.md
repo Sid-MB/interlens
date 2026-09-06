@@ -1,4 +1,6 @@
-# `interlens.arena.viz.advice`
+# `advice`
+
+Module `interlens.arena.viz.advice`
 
 The advised seat, audited: what its planner knew, what it recommended, and whether the seat did it.
 

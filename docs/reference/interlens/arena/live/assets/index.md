@@ -1,4 +1,6 @@
-# `interlens.arena.live.assets`
+# `assets`
+
+Package `interlens.arena.live.assets`
 
 The live pages' browser layer, as Python strings — same convention as `viz.assets`.
 

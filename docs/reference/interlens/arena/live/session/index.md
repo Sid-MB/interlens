@@ -1,4 +1,6 @@
-# `interlens.arena.live.session`
+# `session`
+
+Module `interlens.arena.live.session`
 
 `LiveSession`: one live game — the engine thread, the event log, and everything the browser can do to it.
 

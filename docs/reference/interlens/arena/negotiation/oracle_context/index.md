@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.oracle_context`
+# `oracle_context`
+
+Module `interlens.arena.negotiation.oracle_context`
 
 The per-decision-point context the negotiation oracles share, written once.
 

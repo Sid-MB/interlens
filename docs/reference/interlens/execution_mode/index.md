@@ -1,4 +1,6 @@
-# `interlens.execution_mode`
+# `execution_mode`
+
+Module `interlens.execution_mode`
 
 ## Classes
 

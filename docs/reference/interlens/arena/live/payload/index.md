@@ -1,4 +1,6 @@
-# `interlens.arena.live.payload`
+# `payload`
+
+Module `interlens.arena.live.payload`
 
 Per-turn slices of the visualizer payload, for streaming one turn at a time.
 

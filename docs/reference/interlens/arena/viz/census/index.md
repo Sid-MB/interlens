@@ -1,4 +1,6 @@
-# `interlens.arena.viz.census`
+# `census`
+
+Module `interlens.arena.viz.census`
 
 How much of an episode is actually play: the per-turn census, and the strip that puts it in the page header.
 

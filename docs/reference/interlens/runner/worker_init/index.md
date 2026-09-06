@@ -1,4 +1,6 @@
-# `interlens.runner.worker_init`
+# `worker_init`
+
+Module `interlens.runner.worker_init`
 
 ## Functions
 

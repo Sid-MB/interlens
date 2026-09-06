@@ -1,4 +1,6 @@
-# `interlens.arena.actions`
+# `actions`
+
+Module `interlens.arena.actions`
 
 Typed formal-action layer for structured negotiation turns.
 

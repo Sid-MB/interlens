@@ -1,4 +1,6 @@
-# `interlens.interp.grad`
+# `grad`
+
+Module `interlens.interp.grad`
 
 Gradient-enabled forward passes for backprop *through* a model.
 

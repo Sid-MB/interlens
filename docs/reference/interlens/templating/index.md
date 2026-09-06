@@ -1,4 +1,6 @@
-# `interlens.templating`
+# `templating`
+
+Module `interlens.templating`
 
 Per-row templating for data-driven rollouts.
 

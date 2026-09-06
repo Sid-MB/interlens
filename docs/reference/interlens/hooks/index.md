@@ -1,4 +1,6 @@
-# `interlens.hooks`
+# `hooks`
+
+Package `interlens.hooks`
 
 ## Modules
 

@@ -1,4 +1,6 @@
-# `interlens.runner.batched`
+# `batched`
+
+Module `interlens.runner.batched`
 
 ## Functions
 

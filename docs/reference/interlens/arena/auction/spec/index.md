@@ -1,4 +1,6 @@
-# `interlens.arena.auction.spec`
+# `spec`
+
+Module `interlens.arena.auction.spec`
 
 The frozen auction specification: item slots, bidders, per-stage draws, and the mechanism config.
 

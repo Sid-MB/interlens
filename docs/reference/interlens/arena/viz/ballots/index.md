@@ -1,4 +1,6 @@
-# `interlens.arena.viz.ballots`
+# `ballots`
+
+Module `interlens.arena.viz.ballots`
 
 The final vote, as a tally a reader can check at a glance — including the ballots that were never recorded.
 

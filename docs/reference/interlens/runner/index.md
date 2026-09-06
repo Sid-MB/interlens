@@ -1,4 +1,6 @@
-# `interlens.runner`
+# `runner`
+
+Package `interlens.runner`
 
 ## Modules
 

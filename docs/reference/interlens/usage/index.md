@@ -1,4 +1,6 @@
-# `interlens.usage`
+# `usage`
+
+Module `interlens.usage`
 
 Usage accounting: token/cost metering for hosted-API participants.
 

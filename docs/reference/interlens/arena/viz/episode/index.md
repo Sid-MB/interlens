@@ -1,4 +1,6 @@
-# `interlens.arena.viz.episode`
+# `episode`
+
+Module `interlens.arena.viz.episode`
 
 One stored episode, turned into the single JSON payload the interactive page renders.
 

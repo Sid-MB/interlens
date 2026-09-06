@@ -1,4 +1,6 @@
-# `interlens.interp.layers`
+# `layers`
+
+Module `interlens.interp.layers`
 
 ## Functions
 

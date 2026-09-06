@@ -1,4 +1,6 @@
-# `interlens.arena.rollouts`
+# `rollouts`
+
+Module `interlens.arena.rollouts`
 
 Directory-backed **rollout sets**: run more episodes into the same place, safely, and resume.
 

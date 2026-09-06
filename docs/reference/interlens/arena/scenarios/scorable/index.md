@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.scorable`
+# `scorable`
+
+Module `interlens.arena.scenarios.scorable`
 
 ScorableNegotiation: the repaired multi-party, multi-issue scorable game — the *protocol* around a
 :class:`~interlens.arena.negotiation.sheets.GameSpec` (carried in `Instance.payload`), built on the shared

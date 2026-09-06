@@ -1,4 +1,6 @@
-# `interlens.participant.governor`
+# `governor`
+
+Module `interlens.participant.governor`
 
 Adaptive rate-limit governor: admission control paced by the provider's own rate-limit headers.
 

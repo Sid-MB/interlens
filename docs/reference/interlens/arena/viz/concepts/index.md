@@ -1,4 +1,6 @@
-# `interlens.arena.viz.concepts`
+# `concepts`
+
+Module `interlens.arena.viz.concepts`
 
 What each solution concept IS, in one place, for every part of the visualizer that explains one to a reader.
 

@@ -1,4 +1,6 @@
-# `interlens.runner.devices`
+# `devices`
+
+Module `interlens.runner.devices`
 
 ## Functions
 

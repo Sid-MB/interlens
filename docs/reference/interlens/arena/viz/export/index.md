@@ -1,4 +1,6 @@
-# `interlens.arena.viz.export`
+# `export`
+
+Module `interlens.arena.viz.export`
 
 The file-writing layer: run directory in, HTML pages plus an index on disk out.
 

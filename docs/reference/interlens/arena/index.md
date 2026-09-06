@@ -1,4 +1,6 @@
-# `interlens.arena`
+# `arena`
+
+Package `interlens.arena`
 
 Scoreable multi-agent evaluations on interlens: scenarios, episode drivers, and exact scoring.
 

@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.sheets`
+# `sheets`
+
+Module `interlens.arena.negotiation.sheets`
 
 Private score sheets, the additive utility model, the game specification, and the NumPy utility matrix.
 

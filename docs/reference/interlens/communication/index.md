@@ -1,4 +1,6 @@
-# `interlens.communication`
+# `communication`
+
+Package `interlens.communication`
 
 Pluggable communication topologies: who speaks next, and who sees what. See `policy.py`.
 

@@ -1,4 +1,6 @@
-# `interlens.context.context_policy`
+# `context_policy`
+
+Module `interlens.context.context_policy`
 
 ## Attributes {#attributes}
 

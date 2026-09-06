@@ -1,4 +1,6 @@
-# `interlens.functional`
+# `functional`
+
+Module `interlens.functional`
 
 Copy-on-write functional-update support shared by `Participant` and `Conversation`.
 

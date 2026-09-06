@@ -1,4 +1,6 @@
-# `interlens.arena.live.router`
+# `router`
+
+Module `interlens.arena.live.router`
 
 `LiveSeatRouter`: a seat table whose occupants can change while the episode is running.
 

@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.relay`
+# `relay`
+
+Module `interlens.arena.scenarios.relay`
 
 Info relay: an epistemic team task with a confidently-wrong agent.
 

@@ -1,4 +1,6 @@
-# `interlens.interp.routing`
+# `routing`
+
+Module `interlens.interp.routing`
 
 Mixture-of-Experts routing capture and statistics.
 

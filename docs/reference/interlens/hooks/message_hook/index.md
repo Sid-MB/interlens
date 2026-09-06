@@ -1,4 +1,6 @@
-# `interlens.hooks.message_hook`
+# `message_hook`
+
+Module `interlens.hooks.message_hook`
 
 ## Classes
 

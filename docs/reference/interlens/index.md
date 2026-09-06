@@ -1,5 +1,7 @@
 # `interlens`
 
+Package `interlens`
+
 The public `interlens` API, exported **lazily**.
 
 Every name below still resolves with a plain `from interlens import X`; the only thing that changed is *when*

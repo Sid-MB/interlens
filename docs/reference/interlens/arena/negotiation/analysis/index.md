@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.analysis`
+# `analysis`
+
+Package `interlens.arena.negotiation.analysis`
 
 Measurement over stored negotiation episodes: how far from rational was this play, and where?
 

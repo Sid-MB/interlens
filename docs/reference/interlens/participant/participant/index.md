@@ -1,4 +1,6 @@
-# `interlens.participant.participant`
+# `participant`
+
+Module `interlens.participant.participant`
 
 ## Classes
 

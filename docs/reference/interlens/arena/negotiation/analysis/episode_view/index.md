@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.analysis.episode_view`
+# `episode_view`
+
+Module `interlens.arena.negotiation.analysis.episode_view`
 
 `EpisodeView`: a stored arena `Episode` JSON parsed into a normalized negotiation action series that the
 metrics read instead of raw `parsed_action` — an ordered `TurnView` list (typed action, deal canonicalized

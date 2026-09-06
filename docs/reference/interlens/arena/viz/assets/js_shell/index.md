@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets.js_shell`
+# `js_shell`
+
+Module `interlens.arena.viz.assets.js_shell`
 
 Browser layer, part 4: the page shell — theme toggle, episode navigation, keyboard shortcuts, help overlay.
 

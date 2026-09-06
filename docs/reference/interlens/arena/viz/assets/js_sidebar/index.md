@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets.js_sidebar`
+# `js_sidebar`
+
+Module `interlens.arena.viz.assets.js_sidebar`
 
 Browser layer, part 5: the tabbed sidebar and the scroll sync that drives it.
 

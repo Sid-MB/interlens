@@ -1,4 +1,6 @@
-# `interlens.loading.model_cache`
+# `model_cache`
+
+Module `interlens.loading.model_cache`
 
 ## Functions
 

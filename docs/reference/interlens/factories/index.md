@@ -1,4 +1,6 @@
-# `interlens.factories`
+# `factories`
+
+Module `interlens.factories`
 
 ## Attributes {#attributes}
 

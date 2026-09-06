@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.fairness`
+# `fairness`
+
+Module `interlens.arena.negotiation.fairness`
 
 The **table objective**: one number per deal saying how good that deal is *for the whole table*.
 

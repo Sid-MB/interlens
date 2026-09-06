@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.auction`
+# `auction`
+
+Module `interlens.arena.scenarios.auction`
 
 Repeated multi-bidder auctions as one :class:`~interlens.arena.scenario.Scenario`.
 

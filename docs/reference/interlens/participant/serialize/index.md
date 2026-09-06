@@ -1,4 +1,6 @@
-# `interlens.participant.serialize`
+# `serialize`
+
+Module `interlens.participant.serialize`
 
 Persist a participant to / from its own constructor kwargs (for `Conversation.save` / `load`).
 

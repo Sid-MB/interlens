@@ -1,4 +1,6 @@
-# `interlens.arena.viz.auction_geometry`
+# `auction_geometry`
+
+Module `interlens.arena.viz.auction_geometry`
 
 The plottable geometry of one repeated-auction episode — the `AuctionSpec`-shaped sibling of
 :class:`~interlens.arena.viz.geometry.GameGeometry`.

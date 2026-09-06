@@ -1,4 +1,6 @@
-# `interlens.arena.viz.geometry`
+# `geometry`
+
+Module `interlens.arena.viz.geometry`
 
 The plottable geometry of one negotiation instance: every deal placed in a 2-D scale-invariant embedding,
 with the frontier, the axiomatic solution points, and each party's individually-best deal marked.

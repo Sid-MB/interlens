@@ -1,4 +1,6 @@
-# `interlens.arena.auction.benchmarks`
+# `benchmarks`
+
+Module `interlens.arena.auction.benchmarks`
 
 The exact per-stage equilibrium benchmarks every suppression metric divides against (design.md §4.3, §5).
 

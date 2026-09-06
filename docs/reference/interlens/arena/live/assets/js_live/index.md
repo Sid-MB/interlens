@@ -1,4 +1,6 @@
-# `interlens.arena.live.assets.js_live`
+# `js_live`
+
+Module `interlens.arena.live.assets.js_live`
 
 The live page's browser layer: subscribe, merge, redraw, and take the player's move.
 

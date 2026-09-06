@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets.js_auction`
+# `js_auction`
+
+Module `interlens.arena.viz.assets.js_auction`
 
 The auction episode page's wiring: the DM stage scrubber, the hover card on the bid ladder, and the
 cross-links between every mark and the turn it belongs to.

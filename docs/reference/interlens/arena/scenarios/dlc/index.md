@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.dlc`
+# `dlc`
+
+Package `interlens.arena.scenarios.dlc`
 
 Task adapters for the distributed long-context scenario, ported from the RLM paper's benchmarks.
 

@@ -1,4 +1,6 @@
-# `interlens.arena.viz`
+# `viz`
+
+Package `interlens.arena.viz`
 
 Interactive episode visualization: any arena run directory in, self-contained interactive HTML out.
 

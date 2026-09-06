@@ -1,4 +1,6 @@
-# `interlens.interp.logprobs`
+# `logprobs`
+
+Module `interlens.interp.logprobs`
 
 ## Functions
 

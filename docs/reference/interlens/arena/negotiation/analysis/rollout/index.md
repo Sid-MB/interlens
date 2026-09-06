@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.analysis.rollout`
+# `rollout`
+
+Module `interlens.arena.negotiation.analysis.rollout`
 
 Counterfactual-rollout regret: label a divergence by Δ expected surplus, not by action mismatch. At turn t,
 roll k continuations from the model's action and from the oracle's action against the *same frozen counterpart

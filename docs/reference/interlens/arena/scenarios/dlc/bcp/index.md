@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.dlc.bcp`
+# `bcp`
+
+Module `interlens.arena.scenarios.dlc.bcp`
 
 BrowseComp-Plus: multi-hop QA over a fixed document corpus (paper §3.1).
 

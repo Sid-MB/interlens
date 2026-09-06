@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.analysis.surplus`
+# `surplus`
+
+Module `interlens.arena.negotiation.analysis.surplus`
 
 Pure surplus-vector math: Pareto geometry, dominance, and distances.
 

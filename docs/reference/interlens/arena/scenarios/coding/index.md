@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.coding`
+# `coding`
+
+Module `interlens.arena.scenarios.coding`
 
 Coding collaboration with private constraints: 3 seats jointly write ONE Python module.
 

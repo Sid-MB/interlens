@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.belief_accuracy`
+# `belief_accuracy`
+
+Module `interlens.arena.negotiation.belief_accuracy`
 
 How well does a :class:`~interlens.arena.negotiation.beliefs.BeliefState` actually know its opponent?
 

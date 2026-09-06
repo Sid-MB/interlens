@@ -1,4 +1,6 @@
-# `interlens.arena.live.provider`
+# `provider`
+
+Module `interlens.arena.live.provider`
 
 The seam between the live server and whatever experiment supplies its games.
 

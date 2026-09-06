@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.calibrated`
+# `calibrated`
+
+Module `interlens.arena.negotiation.calibrated`
 
 Behaviourally-calibrated rational negotiation: :class:`CalibratedRationalPolicy`.
 

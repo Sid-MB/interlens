@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets.js_transcript`
+# `js_transcript`
+
+Module `interlens.arena.viz.assets.js_transcript`
 
 Browser layer, part 3: the transcript — turn cards, the scrubber, and lazy prompt bodies.
 

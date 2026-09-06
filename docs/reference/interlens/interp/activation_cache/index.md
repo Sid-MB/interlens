@@ -1,4 +1,6 @@
-# `interlens.interp.activation_cache`
+# `activation_cache`
+
+Module `interlens.interp.activation_cache`
 
 ## Attributes {#attributes}
 

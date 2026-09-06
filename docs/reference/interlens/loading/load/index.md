@@ -1,4 +1,6 @@
-# `interlens.loading.load`
+# `load`
+
+Module `interlens.loading.load`
 
 ## Functions
 

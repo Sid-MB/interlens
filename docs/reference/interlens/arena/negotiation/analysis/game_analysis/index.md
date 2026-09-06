@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.analysis.game_analysis`
+# `game_analysis`
+
+Module `interlens.arena.negotiation.analysis.game_analysis`
 
 `GameAnalysis`: the solved-game bundle the metrics read — the adapter seam between interlens'
 `GameSpec`/`solutions.py` and the pure metric math. Holds everything the metrics need about the *game* (not

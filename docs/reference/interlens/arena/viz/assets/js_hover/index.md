@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets.js_hover`
+# `js_hover`
+
+Module `interlens.arena.viz.assets.js_hover`
 
 Browser layer, part 2a: the rich hover card that EVERY point on the frontier chart carries.
 

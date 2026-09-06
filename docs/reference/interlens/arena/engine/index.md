@@ -1,4 +1,6 @@
-# `interlens.arena.engine`
+# `engine`
+
+Module `interlens.arena.engine`
 
 Episode drivers: play `Scenario` instances through `Participant`s.
 

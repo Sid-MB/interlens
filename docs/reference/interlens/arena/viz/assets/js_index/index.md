@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets.js_index`
+# `js_index`
+
+Module `interlens.arena.viz.assets.js_index`
 
 The run index's browser layer: sort and filter, over the rows already in the document.
 

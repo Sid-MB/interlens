@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.equilibrium`
+# `equilibrium`
+
+Module `interlens.arena.negotiation.equilibrium`
 
 Banks-Duggan stationary-equilibrium oracle for the multilateral unanimity bargaining game.
 

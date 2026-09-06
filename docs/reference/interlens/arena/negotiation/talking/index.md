@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.talking`
+# `talking`
+
+Module `interlens.arena.negotiation.talking`
 
 The **talking rational agent**: the composed Bayesian negotiator with a truthful templated voice.
 

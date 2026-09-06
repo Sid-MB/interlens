@@ -1,4 +1,6 @@
-# `interlens.arena.auction.policy_text`
+# `policy_text`
+
+Module `interlens.arena.auction.policy_text`
 
 What the computable seats SAY -- the templated broadcast and DM behavior of design.md §3.4.
 

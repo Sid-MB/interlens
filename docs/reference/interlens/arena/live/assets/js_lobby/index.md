@@ -1,4 +1,6 @@
-# `interlens.arena.live.assets.js_lobby`
+# `js_lobby`
+
+Module `interlens.arena.live.assets.js_lobby`
 
 The lobby's browser layer: edit the seat lineup, then start the game.
 

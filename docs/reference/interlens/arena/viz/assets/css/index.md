@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets.css`
+# `css`
+
+Module `interlens.arena.viz.assets.css`
 
 The one stylesheet every page wears — a small design system, inlined.
 

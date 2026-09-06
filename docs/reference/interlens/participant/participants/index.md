@@ -1,4 +1,6 @@
-# `interlens.participant.participants`
+# `participants`
+
+Package `interlens.participant.participants`
 
 ## Modules
 

@@ -1,4 +1,6 @@
-# `interlens.interp.pooling`
+# `pooling`
+
+Module `interlens.interp.pooling`
 
 Pool a token-position axis down to one vector per span — the primitive under every span-level readout.
 

@@ -1,4 +1,6 @@
-# `interlens.transcript`
+# `transcript`
+
+Module `interlens.transcript`
 
 ## Attributes {#attributes}
 

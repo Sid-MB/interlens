@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets`
+# `assets`
+
+Package `interlens.arena.viz.assets`
 
 The inline stylesheet and browser layer — no external assets of any kind.
 

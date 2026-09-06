@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets.js_episode`
+# `js_episode`
+
+Module `interlens.arena.viz.assets.js_episode`
 
 The episode page's own wiring: build the marks, render the panels, and keep chart and transcript in sync.
 

@@ -1,4 +1,6 @@
-# `interlens.communication.messaging`
+# `messaging`
+
+Module `interlens.communication.messaging`
 
 Tool-mediated asynchronous messaging between autonomous agents.
 

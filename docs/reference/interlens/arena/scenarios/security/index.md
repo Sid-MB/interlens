@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.security`
+# `security`
+
+Module `interlens.arena.scenarios.security`
 
 Security dilemma: a repeated 2-party build/deescalate/attack game with noisy intelligence.
 

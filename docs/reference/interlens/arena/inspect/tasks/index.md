@@ -1,4 +1,6 @@
-# `interlens.arena.inspect.tasks`
+# `tasks`
+
+Module `interlens.arena.inspect.tasks`
 
 The bundled scenarios as Inspect tasks.
 

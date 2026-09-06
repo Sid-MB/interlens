@@ -1,4 +1,6 @@
-# `interlens.arena.auction.priors`
+# `priors`
+
+Module `interlens.arena.auction.priors`
 
 The persona-conditioned prior: the generative model, the persona table, fact rendering data, and the
 posterior a rational seat actually computes.

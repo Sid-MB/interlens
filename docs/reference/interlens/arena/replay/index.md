@@ -1,4 +1,6 @@
-# `interlens.arena.replay`
+# `replay`
+
+Module `interlens.arena.replay`
 
 Deterministic replay of stored episodes through a scenario's state machine.
 

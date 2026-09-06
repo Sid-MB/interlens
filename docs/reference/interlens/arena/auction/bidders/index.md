@@ -1,4 +1,6 @@
-# `interlens.arena.auction.bidders`
+# `bidders`
+
+Module `interlens.arena.auction.bidders`
 
 The computable bidder zoo: policies (`state -> action`), their DM decision rules, and their oracles.
 

@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets.js_core`
+# `js_core`
+
+Module `interlens.arena.viz.assets.js_core`
 
 Browser layer, part 1: the payload, the formatting helpers, and the deal-detail panel.
 

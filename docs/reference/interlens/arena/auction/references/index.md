@@ -1,4 +1,6 @@
-# `interlens.arena.auction.references`
+# `references`
+
+Module `interlens.arena.auction.references`
 
 Citation-key registry for the auction mechanism, benchmark, and collusion-metric modules.
 

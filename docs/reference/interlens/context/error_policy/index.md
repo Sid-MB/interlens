@@ -1,4 +1,6 @@
-# `interlens.context.error_policy`
+# `error_policy`
+
+Module `interlens.context.error_policy`
 
 ## Classes
 

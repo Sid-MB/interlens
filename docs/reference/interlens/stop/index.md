@@ -1,4 +1,6 @@
-# `interlens.stop`
+# `stop`
+
+Package `interlens.stop`
 
 ## Modules
 

@@ -1,4 +1,6 @@
-# `interlens.arena.inspect.adapter`
+# `adapter`
+
+Module `interlens.arena.inspect.adapter`
 
 The Inspect adapter core: a Participant backed by Inspect's model, the arena solver, and the scorer.
 

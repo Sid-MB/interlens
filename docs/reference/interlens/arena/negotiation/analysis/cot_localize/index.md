@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.analysis.cot_localize`
+# `cot_localize`
+
+Module `interlens.arena.negotiation.analysis.cot_localize`
 
 OmegaPRM-style within-CoT divergence localization: binary-search the first reasoning step that flips the
 induced action to a divergent one, in O(log n) oracle calls (arXiv:2406.06592 — exploit prefix monotonicity:

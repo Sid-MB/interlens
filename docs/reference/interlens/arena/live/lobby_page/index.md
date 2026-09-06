@@ -1,4 +1,6 @@
-# `interlens.arena.live.lobby_page`
+# `lobby_page`
+
+Module `interlens.arena.live.lobby_page`
 
 The lobby: choose a game and decide who plays each seat.
 

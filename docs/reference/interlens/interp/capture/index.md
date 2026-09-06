@@ -1,4 +1,6 @@
-# `interlens.interp.capture`
+# `capture`
+
+Module `interlens.interp.capture`
 
 ## Classes
 

@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.auction_prompts`
+# `auction_prompts`
+
+Module `interlens.arena.scenarios.auction_prompts`
 
 The frozen prompt scaffold for :class:`~interlens.arena.scenarios.auction.AuctionScenario`.
 

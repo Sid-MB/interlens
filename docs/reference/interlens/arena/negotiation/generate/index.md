@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.generate`
+# `generate`
+
+Module `interlens.arena.negotiation.generate`
 
 Scorable-negotiation scenario generator with the score-sheet repairs the reproducibility studies demand.
 

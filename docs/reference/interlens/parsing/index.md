@@ -1,4 +1,6 @@
-# `interlens.parsing`
+# `parsing`
+
+Module `interlens.parsing`
 
 One home for structured-action parsing and reasoning stripping.
 

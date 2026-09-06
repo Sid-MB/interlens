@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.space`
+# `space`
+
+Module `interlens.arena.negotiation.space`
 
 The deal space: issues, their discrete options, and the fully-enumerable Cartesian product of options.
 

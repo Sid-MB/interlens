@@ -1,4 +1,6 @@
-# `interlens.participant.participants.llama`
+# `llama`
+
+Module `interlens.participant.participants.llama`
 
 ## Attributes {#attributes}
 

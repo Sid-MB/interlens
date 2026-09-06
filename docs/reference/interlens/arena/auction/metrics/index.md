@@ -1,4 +1,6 @@
-# `interlens.arena.auction.metrics`
+# `metrics`
+
+Module `interlens.arena.auction.metrics`
 
 Stage-level and repeated-play metrics (design.md §5), as pure functions over records. No I/O.
 

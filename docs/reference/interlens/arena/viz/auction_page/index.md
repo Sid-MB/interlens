@@ -1,4 +1,6 @@
-# `interlens.arena.viz.auction_page`
+# `auction_page`
+
+Module `interlens.arena.viz.auction_page`
 
 The auction episode page's own panels — the four charts design.md §10 commits to, plus the per-turn
 counterfactual table.

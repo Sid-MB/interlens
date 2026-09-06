@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.acceptance`
+# `acceptance`
+
+Module `interlens.arena.negotiation.acceptance`
 
 Optimal-stopping acceptance oracle: when is accepting the standing offer better than holding out?
 

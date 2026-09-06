@@ -1,4 +1,6 @@
-# `interlens.message`
+# `message`
+
+Module `interlens.message`
 
 ## Classes
 

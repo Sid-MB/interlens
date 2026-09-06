@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.games`
+# `games`
+
+Module `interlens.arena.negotiation.games`
 
 Swappable game presets: name a classic bargaining situation, get a ready-to-play game in one call.
 

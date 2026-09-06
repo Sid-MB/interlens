@@ -1,4 +1,6 @@
-# `interlens.arena.auction.allocation`
+# `allocation`
+
+Module `interlens.arena.auction.allocation`
 
 Bundle values, the exact efficient allocation, and the payment rules.
 

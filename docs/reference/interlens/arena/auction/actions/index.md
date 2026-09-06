@@ -1,4 +1,6 @@
-# `interlens.arena.auction.actions`
+# `actions`
+
+Module `interlens.arena.auction.actions`
 
 The auction move vocabulary, the bid ledger, and DM routing (design.md §12 item 2).
 

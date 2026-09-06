@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.priors`
+# `priors`
+
+Module `interlens.arena.scenarios.priors`
 
 Role-prior sign table for the negotiation scenario (role × issue) and sheet-vs-prior analysis helpers.
 

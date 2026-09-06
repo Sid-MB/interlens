@@ -1,4 +1,6 @@
-# `interlens.integrations`
+# `integrations`
+
+Package `interlens.integrations`
 
 Optional adapters that connect Interlens participants to external runtimes.
 

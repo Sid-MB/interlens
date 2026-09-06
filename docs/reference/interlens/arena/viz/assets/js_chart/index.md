@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets.js_chart`
+# `js_chart`
+
+Module `interlens.arena.viz.assets.js_chart`
 
 Browser layer, part 2: the two charts.
 

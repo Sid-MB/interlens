@@ -1,4 +1,6 @@
-# `interlens.communication.policy`
+# `policy`
+
+Module `interlens.communication.policy`
 
 Communication topology as a pluggable policy.
 

@@ -1,4 +1,6 @@
-# `interlens.interp.steering`
+# `steering`
+
+Module `interlens.interp.steering`
 
 ## Attributes {#attributes}
 

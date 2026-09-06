@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.analysis.curves`
+# `curves`
+
+Module `interlens.arena.negotiation.analysis.curves`
 
 Trajectory-shape metrics over a *series* (not a single turn). Pure numpy (no scipy).
 

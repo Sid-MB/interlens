@@ -1,4 +1,6 @@
-# `interlens.arena.live.events`
+# `events`
+
+Module `interlens.arena.live.events`
 
 The live-play wire protocol: every server-sent event a session can emit, in one place.
 

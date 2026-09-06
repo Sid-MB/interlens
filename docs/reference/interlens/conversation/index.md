@@ -1,4 +1,6 @@
-# `interlens.conversation`
+# `conversation`
+
+Module `interlens.conversation`
 
 ## Attributes {#attributes}
 

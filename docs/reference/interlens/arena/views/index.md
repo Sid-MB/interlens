@@ -1,4 +1,6 @@
-# `interlens.arena.views`
+# `views`
+
+Module `interlens.arena.views`
 
 Per-seat view construction + structured-action parsing for arena scenarios.
 

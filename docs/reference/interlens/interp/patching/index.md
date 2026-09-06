@@ -1,4 +1,6 @@
-# `interlens.interp.patching`
+# `patching`
+
+Module `interlens.interp.patching`
 
 ## Classes
 

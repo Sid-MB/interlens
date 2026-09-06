@@ -1,4 +1,6 @@
-# `interlens.context`
+# `context`
+
+Package `interlens.context`
 
 ## Modules
 

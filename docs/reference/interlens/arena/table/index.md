@@ -1,4 +1,6 @@
-# `interlens.arena.table`
+# `table`
+
+Module `interlens.arena.table`
 
 Heterogeneous **tables**: present a whole many-seat lineup to the arena engine as one participant.
 

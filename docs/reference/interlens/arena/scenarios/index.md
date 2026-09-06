@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios`
+# `scenarios`
+
+Package `interlens.arena.scenarios`
 
 Bundled scenarios, four families:
 

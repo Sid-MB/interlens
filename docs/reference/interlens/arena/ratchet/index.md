@@ -1,4 +1,6 @@
-# `interlens.arena.ratchet`
+# `ratchet`
+
+Module `interlens.arena.ratchet`
 
 Adaptive difficulty ratchet: find the level where a model stops clearing the bar, then measure there.
 

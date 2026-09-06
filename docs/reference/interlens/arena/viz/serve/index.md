@@ -1,4 +1,6 @@
-# `interlens.arena.viz.serve`
+# `serve`
+
+Module `interlens.arena.viz.serve`
 
 Hand the rendered pages to a browser over HTTP, for when the filesystem the pages live on is not the one the
 browser runs on.

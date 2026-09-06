@@ -1,4 +1,6 @@
-# `interlens.arena.inspect`
+# `inspect`
+
+Package `interlens.arena.inspect`
 
 Optional Inspect (inspect-ai) integration: run arena scenarios under `inspect eval`.
 

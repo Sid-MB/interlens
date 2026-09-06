@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.analysis.annotations`
+# `annotations`
+
+Module `interlens.arena.negotiation.analysis.annotations`
 
 Per-turn annotation records: the divergence data model `annotate.py` writes and `taxonomy.py` /
 `report.py` read (disk I/O lives in `runio.AnnotationStore`).

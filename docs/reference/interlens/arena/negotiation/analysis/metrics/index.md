@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.analysis.metrics`
+# `metrics`
+
+Module `interlens.arena.negotiation.analysis.metrics`
 
 The divergence metric suite: outcome-, turn-, and faithfulness-level measures over one episode.
 

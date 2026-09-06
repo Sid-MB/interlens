@@ -1,4 +1,6 @@
-# `interlens.context_item`
+# `context_item`
+
+Module `interlens.context_item`
 
 ## Classes
 

@@ -1,4 +1,6 @@
-# `interlens.arena.viz.chrome`
+# `chrome`
+
+Module `interlens.arena.viz.chrome`
 
 The shell every page wears, and the wire form of the payload it carries.
 

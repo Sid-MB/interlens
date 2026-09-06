@@ -1,4 +1,6 @@
-# `interlens.arena.viz.hazards`
+# `hazards`
+
+Module `interlens.arena.viz.hazards`
 
 Two facts about a run that decide whether its numbers may be compared with another run's.
 

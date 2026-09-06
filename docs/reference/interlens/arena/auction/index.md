@@ -1,4 +1,6 @@
-# `interlens.arena.auction`
+# `auction`
+
+Package `interlens.arena.auction`
 
 Repeated multi-bidder auctions: the frozen spec, the persona-conditioned prior, exact allocation and
 payment rules, equilibrium benchmarks, computable bidders and oracles, and the collusion metrics.

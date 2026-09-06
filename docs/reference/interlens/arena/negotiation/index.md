@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation`
+# `negotiation`
+
+Package `interlens.arena.negotiation`
 
 Multi-issue, multi-party scorable negotiation: deal spaces, private score sheets, exact solution
 concepts, computable rational-agent oracles, and an executable strategy zoo.

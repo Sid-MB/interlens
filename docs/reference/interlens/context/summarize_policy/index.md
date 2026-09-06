@@ -1,4 +1,6 @@
-# `interlens.context.summarize_policy`
+# `summarize_policy`
+
+Module `interlens.context.summarize_policy`
 
 ## Classes
 

@@ -1,4 +1,6 @@
-# `interlens.arena.live.style`
+# `style`
+
+Module `interlens.arena.live.style`
 
 The rules the lobby and the play page both need: form controls, seat cards, and the two docks.
 

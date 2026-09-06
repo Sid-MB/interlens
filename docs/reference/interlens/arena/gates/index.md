@@ -1,4 +1,6 @@
-# `interlens.arena.gates`
+# `gates`
+
+Module `interlens.arena.gates`
 
 Template-fidelity gates: preflight checks before spending GPU-hours on local-model rollouts.
 

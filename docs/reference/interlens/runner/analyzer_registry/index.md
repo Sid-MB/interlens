@@ -1,4 +1,6 @@
-# `interlens.runner.analyzer_registry`
+# `analyzer_registry`
+
+Module `interlens.runner.analyzer_registry`
 
 ## Functions
 

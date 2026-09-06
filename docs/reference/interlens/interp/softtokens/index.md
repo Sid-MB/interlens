@@ -1,4 +1,6 @@
-# `interlens.interp.softtokens`
+# `softtokens`
+
+Module `interlens.interp.softtokens`
 
 Virtual (soft) tokens inside ordinary text prompts, plus the message-span read path that pairs with them.
 

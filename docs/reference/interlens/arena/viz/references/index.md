@@ -1,4 +1,6 @@
-# `interlens.arena.viz.references`
+# `references`
+
+Module `interlens.arena.viz.references`
 
 The decision references a scored turn can carry, placed on two axes — and what each one's number MEANS.
 

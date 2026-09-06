@@ -1,4 +1,6 @@
-# `interlens.view`
+# `view`
+
+Module `interlens.view`
 
 ## Attributes {#attributes}
 

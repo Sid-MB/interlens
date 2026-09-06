@@ -1,4 +1,6 @@
-# `interlens.participant.participants.gemma`
+# `gemma`
+
+Module `interlens.participant.participants.gemma`
 
 ## Attributes {#attributes}
 

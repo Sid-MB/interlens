@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.dlc.sniah`
+# `sniah`
+
+Module `interlens.arena.scenarios.dlc.sniah`
 
 S-NIAH: RULER-style single needle-in-a-haystack (paper §3.1).
 

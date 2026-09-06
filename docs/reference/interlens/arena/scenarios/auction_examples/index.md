@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.auction_examples`
+# `auction_examples`
+
+Module `interlens.arena.scenarios.auction_examples`
 
 The three worked turn views of the auction scaffold, generated from real frozen draws.
 

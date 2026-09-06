@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.dlc.build`
+# `build`
+
+Module `interlens.arena.scenarios.dlc.build`
 
 Instance builders for the distributed long-context tasks — fetch, shard, and save instance banks.
 

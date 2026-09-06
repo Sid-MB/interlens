@@ -1,4 +1,6 @@
-# `interlens.arena.viz.assets.js_compare`
+# `js_compare`
+
+Module `interlens.arena.viz.assets.js_compare`
 
 The comparison page's wiring: one shared frontier carrying both trajectories, and two synchronized columns.
 

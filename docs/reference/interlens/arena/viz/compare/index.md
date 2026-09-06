@@ -1,4 +1,6 @@
-# `interlens.arena.viz.compare`
+# `compare`
+
+Module `interlens.arena.viz.compare`
 
 Seat-swap comparison: the same game instance played twice, with one seat's occupant swapped.
 

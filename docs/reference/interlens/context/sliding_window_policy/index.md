@@ -1,4 +1,6 @@
-# `interlens.context.sliding_window_policy`
+# `sliding_window_policy`
+
+Module `interlens.context.sliding_window_policy`
 
 ## Classes
 

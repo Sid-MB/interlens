@@ -1,4 +1,6 @@
-# `interlens.interp.bridge`
+# `bridge`
+
+Module `interlens.interp.bridge`
 
 Differentiable bridges for feeding one model's output into another's input.
 

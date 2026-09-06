@@ -1,4 +1,6 @@
-# `interlens.arena.oracles`
+# `oracles`
+
+Module `interlens.arena.oracles`
 
 The oracle layer: per-turn "what would a rational agent have done here?" annotations.
 

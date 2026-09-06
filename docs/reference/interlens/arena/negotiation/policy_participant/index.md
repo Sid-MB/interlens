@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.policy_participant`
+# `policy_participant`
+
+Module `interlens.arena.negotiation.policy_participant`
 
 `PolicyParticipant`: a state-dependent pure-Python seat that computes its move from a bound policy.
 

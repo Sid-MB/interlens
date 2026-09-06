@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.references`
+# `references`
+
+Module `interlens.arena.negotiation.references`
 
 Citation-key registry for the negotiation solution-concept and generator modules.
 

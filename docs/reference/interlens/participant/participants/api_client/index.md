@@ -1,4 +1,6 @@
-# `interlens.participant.participants.api_client`
+# `api_client`
+
+Module `interlens.participant.participants.api_client`
 
 ## Attributes {#attributes}
 

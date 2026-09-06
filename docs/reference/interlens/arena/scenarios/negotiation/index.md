@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.negotiation`
+# `negotiation`
+
+Module `interlens.arena.scenarios.negotiation`
 
 Negotiation: a multi-issue, multi-party deal with secret score sheets (structured-JSON actions).
 

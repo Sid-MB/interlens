@@ -1,4 +1,6 @@
-# `interlens.loading`
+# `loading`
+
+Package `interlens.loading`
 
 ## Modules
 

@@ -1,4 +1,6 @@
-# `interlens.arena.viz.page`
+# `page`
+
+Module `interlens.arena.viz.page`
 
 HTML assembly: a payload in, one self-contained interactive page out.
 

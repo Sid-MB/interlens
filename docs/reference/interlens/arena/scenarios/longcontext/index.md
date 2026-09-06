@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.longcontext`
+# `longcontext`
+
+Module `interlens.arena.scenarios.longcontext`
 
 Distributed long-context: one long-context task split across 4 communicating seats.
 

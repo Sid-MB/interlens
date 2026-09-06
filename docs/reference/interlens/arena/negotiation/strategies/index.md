@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.strategies`
+# `strategies`
+
+Module `interlens.arena.negotiation.strategies`
 
 The executable rational / scripted negotiator zoo as **policies** (`state -> action`), the computable
 opponent pool the LLMs are measured against.

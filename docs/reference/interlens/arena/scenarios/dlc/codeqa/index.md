@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.dlc.codeqa`
+# `codeqa`
+
+Module `interlens.arena.scenarios.dlc.codeqa`
 
 LongBench-v2 CodeQA: repo-understanding multiple choice (paper §3.1).
 

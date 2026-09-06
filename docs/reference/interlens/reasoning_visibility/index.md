@@ -1,4 +1,6 @@
-# `interlens.reasoning_visibility`
+# `reasoning_visibility`
+
+Module `interlens.reasoning_visibility`
 
 ## Classes
 

@@ -1,4 +1,6 @@
-# `interlens.participant.role`
+# `role`
+
+Module `interlens.participant.role`
 
 ## Attributes {#attributes}
 

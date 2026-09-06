@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.scorable_prompts`
+# `scorable_prompts`
+
+Module `interlens.arena.scenarios.scorable_prompts`
 
 The canonical prompt scaffold for the scorable-negotiation scenario.
 

@@ -1,4 +1,6 @@
-# `interlens.tools.registry`
+# `registry`
+
+Module `interlens.tools.registry`
 
 ## Attributes {#attributes}
 

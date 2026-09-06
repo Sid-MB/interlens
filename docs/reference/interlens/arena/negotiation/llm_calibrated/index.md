@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.llm_calibrated`
+# `llm_calibrated`
+
+Module `interlens.arena.negotiation.llm_calibrated`
 
 Private-information rational negotiation against an **empirically fitted LLM opponent model**:
 :class:`LLMCalibratedRationalPolicy`.

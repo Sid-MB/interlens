@@ -1,4 +1,6 @@
-# `interlens.integrations.control_tower`
+# `control_tower`
+
+Module `interlens.integrations.control_tower`
 
 Run a local Interlens participant behind Control Tower's untrusted-policy boundary.
 

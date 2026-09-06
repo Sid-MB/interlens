@@ -1,4 +1,6 @@
-# `interlens.arena.negotiation.rewards`
+# `rewards`
+
+Module `interlens.arena.negotiation.rewards`
 
 Outcome rewards for RL on scorable negotiation: the smoothed log-Nash objective.
 

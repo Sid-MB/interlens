@@ -1,4 +1,6 @@
-# `interlens.arena.schema`
+# `schema`
+
+Module `interlens.arena.schema`
 
 The arena's record schema: one JSON shape for every episode.
 

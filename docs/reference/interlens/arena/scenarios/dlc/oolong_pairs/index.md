@@ -1,4 +1,6 @@
-# `interlens.arena.scenarios.dlc.oolong_pairs`
+# `oolong_pairs`
+
+Module `interlens.arena.scenarios.dlc.oolong_pairs`
 
 OOLONG-Pairs: the RLM paper's pairwise-aggregation task (Appendix 12.1).
 
