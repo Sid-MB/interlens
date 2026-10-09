@@ -37,9 +37,9 @@ export const config = {
   buildCommand:
     'export PATH="$HOME/.local/bin:$PATH" SETUPTOOLS_SCM_PRETEND_VERSION_FOR_INTERLENS=0.0.0 && uv run --frozen --only-group docs python scripts/gen_ref_pages.py && uv run --frozen --only-group docs zensical build --clean --strict',
 
-  // The site lives at interlens.sidmb.com (site_url in mkdocs.yml — the single source of truth for the
-  // published URL): mkdocs.yml sets `site_dir: site`, so serving `site/` at the domain root puts every
-  // page exactly where site_url says it is.
+  // Historical: this served the Zensical build at interlens.sidmb.com, which is no longer live — the published
+  // docs moved to https://sidmb.com/docs/interlens (site_url in mkdocs.yml), built by the sidmb repo from
+  // docs/. mkdocs.yml sets `site_dir: site`, so this deploy would serve `site/` at a domain root.
   outputDirectory: 'site',
 
   // Skip deployments for pushes that can't affect the rendered docs (mirrors the paths filter the old

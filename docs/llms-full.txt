@@ -1,0 +1,1619 @@
+<!-- Landing page: include the top-level README verbatim so the intro has a single source of truth.
+     (Relative links in the README that point into docs/examples/ resolve correctly once served, since the
+     examples live under this docs tree.) -->
+# Interlens: Framework for Multi-Agent Interaction and Interpretability
+
+This library provides a harness, optimized utilities, and interpretability hooks for multi-agent conversation rollouts. 
+
+```python
+from interlens import Conversation
+
+conv = Conversation.from_models(
+    ("Qwen/Qwen2.5-0.5B-Instruct", "Qwen/Qwen2.5-0.5B-Instruct"), names=("alice", "bob"),
+    shared_context="Let's debate: is cereal a soup?",
+)
+conv.run(turns=4, first="alice")
+print(conv.transcript)
+```
+
+See [`docs/examples`](docs/examples) for sample code, and the [API reference](docs/reference/index.md) for every public class and function.
+
+*[Documentation for LLMs](https://sidmb.com/docs/interlens/llms-full.txt) (index: [llms.txt](https://sidmb.com/docs/interlens/llms.txt))!
+
+## Install
+
+```bash
+pip install interlens
+# with hosted-API participants (APIParticipant):
+pip install "interlens[api]"
+```
+
+### PyTorch / CUDA note
+`torch` — install the wheel matching **your** platform (CUDA / CPU / MPS) *before or alongside* `interlens`. E.g. for CUDA 13.0:
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu130
+```
+See <https://pytorch.org/get-started/locally/>.
+
+## What's inside
+
+- **`Conversation`** — turn-taking over a shared, perspective-neutral `Transcript`; per-speaker view pipeline (system/private framing → context-fit → family-correct chat template).
+- **`AutoModelParticipant`** — HF-style factory (`from_pretrained` / `from_model` / `from_`) that returns the family-correct participant (Qwen/Gemma/…); **`APIParticipant`** for hosted models.
+- **Interpretability** — `conv.capture(...)`, `SteeringSpec`, `Patch`, `token_logprobs`, backed by a queryable `ActivationCache`.
+- **Scale** — `conv.rollout(...)` / `interlens.run([...])`: multi-GPU, checkpointed, resumable, batched co-stepping, with in-worker `analyzer` callbacks; data-driven rollouts via `dataset_field`, matched compute via `TokenBudget`.
+- **One object, no ceremony** — a `Conversation` (with lazy participants) is at once the serializable recipe, the live dialogue, and the rollout driver; build it functionally (`.turns(6).data(ds).analyzer(grade)`), `.set(...)` copy-on-write, and `save`/`load` (recipe + transcript).
+
+See [`docs/examples/`](docs/examples/) for a simple→advanced walkthrough of the whole API, and [`docs/reference/`](docs/reference/index.md) for the generated per-symbol reference.
+
+## Develop
+
+```bash
+git clone https://github.com/Sid-MB/interlens && cd interlens
+uv sync                     # installs the package + dev group (pytest, pre-commit)
+uv run pre-commit install   # one-time
+uv run pytest               
+# fast tests; opt-in to thorough tests requiring downloading models + a GPU with: pytest -m slow
+```
+
+## License
+
+GNU AGPLv3 — see [LICENSE](LICENSE).
+
+---
+
+<!-- [interp-refactor] session f80ef917 -->
+# 01 · Quickstart
+
+The fastest path: `Conversation.from_models` scaffolds a two-party conversation from a tuple of models — each an HF id or an already-loaded model (`ModelLike`). If two ids are identical, the weights are loaded **once** and shared between the two speakers.
+
+```python
+from interlens import Conversation
+
+# Two speakers backed by the same 0.5B model (one weight load, shared).
+conv = Conversation.from_models(
+    ("Qwen/Qwen2.5-0.5B-Instruct", "Qwen/Qwen2.5-0.5B-Instruct"),
+    names=("alice", "bob"),
+    device="cuda",          # "cpu" / "mps" also work for a smoke test
+    temperature=0.8,        # **gen_kwargs are forwarded to both participants
+    max_new_tokens=128,
+    shared_context="Let's debate: is cereal a soup?",   # opening framing (see below)
+)
+conv.run(turns=4, first="alice")
+
+print(conv.transcript)  # [i] author: content  (also conv.transcript.pretty())
+print(conv.transcript.pretty(metadata=True))    # include per-turn metadata (reasoning, tool trail, token counts)
+
+# See exactly what one model is conditioned on — role-swapped to its POV, WITH chat-template special tokens:
+print(conv.render_templated(pov="alice", tokenize=False))   # `pov=` takes a name/index/Participant
+```
+
+## What just happened
+
+- **`shared_context=...`** seeds the opening without touching the transcript: it's a neutral, **moderator**-voiced turn everyone sees (scenario/topic framing). Pair it with **`shared_system_prompt=...`** for system-role instructions.
+- **`prompt=...`** (on `from_models` and `run`) is the alternative when the opener should read as something a *speaker* said: a `str` is attributed to the **last** participant (so the `first` speaker replies to it), a `Message` sets the author explicitly. Use `shared_context` for neutral framing, `prompt` for a participant-voiced line.
+- **`conv.run(turns=4, first="alice")`** alternates speakers for 4 turns starting with alice. `first` accepts a **name** (`"alice"`), an **index** (`0`), or a **`Participant`** object. `run` requires at least one of `turns=` or `until=` (a [stop condition](02_conversations.md#stopping)).
+- **`conv.transcript`** is the shared state — a list of `Message`s (`.author`, `.content`, `.metadata`). You can still append to it directly for finer control.
+- **`conv.participant("alice")`** looks a participant up by name.
+
+## Two *different* models
+
+```python
+conv = Conversation.from_models(("Qwen/Qwen2.5-3B-Instruct", "google/gemma-2-2b-it"), names=("qwen", "gemma"), device="cuda")
+```
+
+Each id resolves to its family-correct participant class automatically (Qwen vs Gemma chat templates, tool formats, system-role handling) from its `config.model_type` — see [03](03_participants_and_models.md).
+
+## One-off generation without committing
+
+To sample a reply **without** mutating the transcript:
+
+```python
+message = conv.sample("alice", "Quick: name a color.")
+print(message.content)
+```
+
+Next: [building conversations by hand](02_conversations.md) for per-speaker system prompts, moderators, and stop conditions.
+
+---
+
+<!-- [interp-refactor] session f80ef917 -->
+# 02 · Conversations in depth
+
+`Conversation.from_models` is a convenience wrapper. Build a `Conversation` by hand when you want **per-speaker framing** (different system prompts / private context), a custom moderator, policies, or hooks.
+
+## Build participants and a conversation manually
+
+`AutoModelParticipant.from_pretrained(...)` is the HF-style loader (the participant analog of `AutoModelForCausalLM.from_pretrained`): it loads the model by id and returns the family-correct participant instance. Loading the same id twice shares one model object (weights are process-cached), so both speakers below share weights.
+
+```python
+from interlens import Conversation, AutoModelParticipant
+
+alice = AutoModelParticipant.from_pretrained(
+    "Qwen/Qwen2.5-3B-Instruct", name="alice", device="cuda",
+    system_prompt="You are a concise, skeptical debater. Keep replies under 3 sentences.",
+    temperature=0.7, max_new_tokens=200,
+)
+bob = AutoModelParticipant.from_pretrained(
+    "Qwen/Qwen2.5-3B-Instruct", name="bob", device="cuda",     # same id → shares alice's weights (cached)
+    system_prompt="You are an enthusiastic optimist who loves analogies.",
+    temperature=0.9, max_new_tokens=200,
+)
+
+conv = Conversation(
+    participants=(alice, bob),
+    shared_context="Topic: should cities ban cars downtown? Debate it.",  # seeded as a moderator turn
+    shared_system_prompt="Stay respectful and on-topic.",                  # prepended to every speaker's system block
+    reasoning_visibility="strip",   # see below
+)
+conv.run(turns=6)
+```
+
+### Framing ownership (who sees what)
+
+- **Shared** framing lives on the `Conversation`: `shared_context` (injected once as a `moderator` turn everyone sees) and `shared_system_prompt` (merged into every speaker's system block).
+- **Private** framing lives on each participant: `system_prompt` and `private_context` (a tuple of `ContextItem`) — invisible to the other speaker and to the transcript.
+
+```python
+from interlens import ContextItem, AutoModelParticipant
+spy = AutoModelParticipant.from_pretrained(
+    "Qwen/Qwen2.5-3B-Instruct", name="spy",
+    system_prompt="Secretly steer the topic toward trains.",
+    private_context=(ContextItem("Remember: never admit you have an agenda.", role_hint="user", author="handler"),),
+)
+```
+
+## Turn-taking
+
+- **`conv.step(speaker)`** — one turn by a specific speaker, committed to the transcript; returns the `Message` (or `None` if a [hook](06_hooks.md) denied it).
+- **`conv.run(turns=N, until=..., first=...)`** — alternate speakers round-robin. `first` sets who starts.
+
+```python
+conv.step(alice)                        # drive turns explicitly
+conv.step(bob)
+conv.run(turns=4, first=alice)          # or in bulk
+```
+
+## Stopping
+
+`until=` takes a single `StopCondition` or a list (any of which stops). Whichever of `turns`/`until` hits first ends the run.
+
+```python
+from interlens import (
+    TurnStopCondition, TokenStopCondition, ElapsedTimeStopCondition, StopStringCondition,
+)
+
+conv.run(until=[
+    TurnStopCondition(max_turns=20),           # cap turns
+    TokenStopCondition(max_tokens=4000),       # cap cumulative generated tokens
+    ElapsedTimeStopCondition(seconds=120),     # wall-clock budget
+    StopStringCondition(["I concede", "AGREED"]),  # stop when a turn contains any string
+])
+```
+
+## Branching — fork a conversation for free
+
+`branch()` forks into a new `Conversation` that **reuses the same participant objects** (shared weights, zero extra GPU) with a *copied* transcript. Explore divergent continuations without touching the original — each branch has its own transcript, so they diverge independently:
+
+```python
+base = conv.branch()
+for _ in range(3):
+    b = base.branch()
+    b.run(turns=2, first="alice")     # first accepts a name, index, or Participant
+    print("continuation:", b.transcript[-1].content[:80])
+# `conv` and `base` are untouched; only each `b` advanced.
+```
+
+> Because branches **share the participant objects**, mutating a participant (e.g. `b.participant("alice").temperature = 0.3`) changes it for *every* branch and the original. To vary generation settings per branch, set them right before you run, or pin `seed` and vary only the prompt/intervention — see [09](09_advanced_interp_pipelines.md).
+
+### Fork from a specific turn — `branch_from`
+
+`branch_from(ref)` forks as if the conversation had stopped **right after** `ref`, ready for a different continuation. `ref` is a *message reference*: an `int` index (Python semantics — negatives count from the end) or the `Message` object itself (matched by identity). The original is untouched.
+
+```python
+alt = conv.branch_from(-3)          # continue as if the last two turns never happened
+alt.run(turns=4, first="alice")
+
+pivot = conv.transcript[2]          # a Message object
+alt2 = conv.branch_from(pivot)      # fork right after that specific turn
+```
+
+## Editing history in place — rewind, edit, reset
+
+Sometimes you want to alter the *current* conversation rather than fork. These mutate in place (and return `self`/the `Message` for chaining); `branch_from` first if you'd rather keep the original.
+
+```python
+conv.rewind(to=-2)                  # drop everything after that turn; `to` becomes the new last turn
+conv.rewind(to=some_message)        # ...or rewind to a specific Message
+
+conv.edit(3, "a corrected reply")   # replace turn 3's content
+conv.edit(-1, author="moderator")   # change who a turn is attributed to
+conv.edit(msg, note="flagged")      # merge metadata onto a turn (untouched keys survive)
+```
+
+`edit` targets are the same message references as `branch_from` (int index, negative, or `Message`). Because a `Message` is a mutable dataclass held **by reference**, editing its fields directly — `conv.transcript[i].content = "…"`, or mutating the object `step()`/`sample()` returned — does the exact same thing; `edit` is just the ergonomic wrapper.
+
+To wipe the dialogue and start the *same scenario* over, use `reset()` — it empties the transcript and re-seeds the `shared_context` framing:
+
+```python
+conv.reset()                        # back to the fresh, pre-run state (framing restored)
+conv.run(turns=6)
+```
+
+> `conv.reset()` keeps your `shared_context` / opening instructions; the lower-level `conv.transcript.clear()` does **not** — it wipes the seed turn too, leaving a genuinely empty transcript. Reach for `clear()` only when you want nothing at all left.
+
+### Editing history and the KV cache
+
+Editing or rewinding is always safe with cross-turn KV reuse. The cache is reused only when the cached tokens are an **exact prefix** of the next prompt (`ModelParticipant._maybe_reuse_cache`); an `edit` changes tokens mid-history, so the prefix check fails and the model does a clean full prefill — the cache can never serve stale keys. A `rewind`/`branch_from` leaves a genuine prefix, so reuse still engages and only the new suffix is prefilled.
+
+## Ephemeral sampling — read state without mutating it
+
+`sample()` generates a reply to an optional temporary message **without committing anything** — ideal for probing "what would X say now?" repeatedly.
+
+```python
+for q in ["Summarize your position.", "What's your strongest objection?"]:
+    print(conv.sample("alice", q, as_author="interviewer").content)
+# conv.transcript is unchanged after all of this
+```
+
+`sample` and `step` accept the same interpretability options (`steering=`, `capture=`, `patch=`, `return_logprobs=`) — see [07](07_interp.md).
+
+## Reasoning visibility (CoT models)
+
+For models that emit `<think>…</think>`, `reasoning_visibility` controls whether a prior turn's parsed reasoning is re-injected into other speakers' views:
+
+- `"strip"` (default) — reasoning never leaks into anyone's view.
+- `"self_retain"` — a speaker sees only its *own* past reasoning.
+- `"shared"` — everyone sees everyone's reasoning.
+
+```python
+from interlens import ReasoningVisibility
+conv = Conversation(participants=(alice, bob), reasoning_visibility=ReasoningVisibility.SELF_RETAIN)
+```
+
+The raw completion and parsed reasoning are always stored per message in `msg.metadata["raw_completion"]` / `msg.metadata["parsed_think"]`.
+
+Next: [participant & model options](03_participants_and_models.md).
+
+---
+
+<!-- [interp-refactor] session f80ef917 -->
+# 03 · Participants & models
+
+## How models resolve
+
+There are **no short names** — you pass an **HF id or local path** (`str | Path`, or an already-loaded model), and interlens picks the family-correct participant class from the model's own **`config.model_type`** (exactly like HuggingFace `AutoModel`), then derives its chat-template flags by probing the tokenizer. Any model of a supported family Just Works:
+
+```python
+from interlens import AutoModelParticipant
+
+p = AutoModelParticipant.from_pretrained("google/gemma-2-2b-it", name="p")      # -> GemmaModelParticipant
+q = AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="q")  # -> QwenModelParticipant
+r = AutoModelParticipant.from_pretrained("mistralai/Mistral-7B-Instruct-v0.3", name="r")  # -> base ModelParticipant
+```
+
+The `config.model_type` → class mapping is a **class self-registry**: each participant subclass declares the model types it handles in a `MODEL_TYPES` class attribute, and `ModelParticipant.__init_subclass__` records them — there is no central table to keep in sync. Unregistered families (Mistral, OLMo, Phi, DeepSeek, …) fall back to the base `ModelParticipant` automatically, and a brand-new family/size resolves the moment it's on the Hub.
+
+**Weights load lazily.** `from_pretrained` does **not** touch weights — it reads only the model's `config.json` to resolve the family, and defers the actual load to the first time the model is used (or `p.model`/`p.tokenizer` is accessed). So an unbuilt participant is a cheap recipe: it costs KBs, pickles across a spawn boundary without shipping weights (each GPU worker loads on its own device), and `.set(...)` copies share one loaded model object by reference. The load is process-cached on `(hf_id, device, dtype, attn, quant, revision)`, so every same-recipe participant on a device shares ONE object — which is exactly what lets the runner batch them into a single `model.generate`. The default device is `cuda`; the runner binds each participant's device per worker before the load fires.
+
+**Static types when you want them.** `AutoModelParticipant.from_pretrained` is *dynamically* dispatched, so its declared return type is the base `ModelParticipant` — except for known id literals, which a type stub ([`factories.pyi`](https://github.com/Sid-MB/interlens/blob/main/src/interlens/factories.pyi)) narrows to the concrete subclass. For a guaranteed static type regardless of the id, **name the class directly** — it returns `Self`:
+
+```python
+from interlens import QwenModelParticipant
+q = QwenModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="q")  # statically QwenModelParticipant
+```
+
+**Family behavior is data-driven, not hand-declared.** Whether a template accepts a standalone system role or requires strictly alternating turns is **auto-derived from the tokenizer** (`interlens.loading.derive_chat_flags`), so e.g. Gemma 2 (folds system into the first user turn) and Gemma 3 (accepts a system role) are handled correctly with zero per-model config. A subclass exists only when a family needs distinct behavior — Gemma's `tool_code` and Llama's `<|python_tag|>` tool-call formats — or, for Qwen, purely so its models get a distinct statically-typed class (its `<tool_call>` JSON is already the base format). A slow test ([`tests/test_family_flags.py`](https://github.com/Sid-MB/interlens/blob/main/tests/test_family_flags.py)) checks the derivation against real tokenizers.
+
+### Load weights directly
+
+```python
+import torch
+from interlens.loading import load_model
+model, tok = load_model("Qwen/Qwen3-8B", device="cuda", dtype=torch.bfloat16, attn="flash_attention_2")
+```
+
+`load_model` shares a process-local cache: identical `(hf_id, device, dtype, attn, quant, revision, max_memory)` returns the same model object; each HF id caches its own tokenizer. Flash-attention is the default with automatic fallback to sdpa/eager; `quant="4bit"`/`"8bit"` is opt-in (perturbs activations → interp fidelity).
+
+### Models too big for one GPU
+
+Pass a **sharding strategy** as `device` and it is routed to `device_map=` (the `.to(device)` is skipped, since moving a sharded model would undo the placement). `max_memory` reserves per-device headroom — worth setting whenever you shard, because the automatic map sizes for *weights* while your peak is usually KV cache and activations.
+
+```python
+model, tok = load_model(
+    "Qwen/Qwen3-32B",
+    device="balanced",                                        # or "auto" / "balanced_low_0" / "sequential" / a {module: device} dict
+    max_memory={0: "70GiB", 1: "70GiB", "cpu": "0GiB"},        # "cpu": "0GiB" forbids offload → an actionable OOM instead of a silent 100x slowdown
+)
+```
+
+Once a model is sharded, `model.device` is **not** where inputs go — the input embedding's device is. Use `input_device`; it returns the single device unchanged for an ordinary load, so the same code covers both:
+
+```python
+from interlens.loading import input_device, is_sharded
+
+ids = tok("hello", return_tensors="pt").input_ids.to(input_device(model))
+is_sharded(model)      # True only when device_map spread it over more than one device
+```
+
+`ModelParticipant` does this for you (`p.input_device`), as do `capture_router_logits` and `span_pooled_residuals`.
+
+## `ModelParticipant` knobs
+
+```python
+from interlens import AutoModelParticipant
+p = AutoModelParticipant.from_pretrained(
+    "Qwen/Qwen3-4B", name="p", device="cuda",
+    load_kwargs={"attn": "sdpa"},   # optional: forwarded to load_model (dtype/attn/quant/revision)
+    temperature=0.8, top_p=0.95, max_new_tokens=512,
+    seed=1234,               # per-participant RNG seed → reproducible greedy/sampled turns (local models only)
+    thinking="auto",         # "auto" defers to the template; True/False forces enable_thinking where supported
+    system_prompt="…",
+    kv_reuse="auto",         # cross-turn KV prefix reuse; see below
+)
+```
+
+Already hold weights (e.g. sharing them, or an externally-loaded checkpoint)? Wrap them with `from_model`:
+
+```python
+from interlens.loading import load_model
+model, tok = load_model("Qwen/Qwen3-4B")
+p = AutoModelParticipant.from_model(model, tok, name="p", temperature=0.8)   # family from model.config.model_type
+```
+
+### `kv_reuse` (cross-turn KV cache)
+
+`"auto"` (default) reuses the KV cache across a speaker's own consecutive turns when the new prompt exactly extends the cached tokens — skipping a full re-prefill. It is doubly guarded (exact-prefix check + safe fallback) and **auto-disables under steering/patch and batched generation**.
+
+```python
+p.kv_reuse = "auto"   # default: enabled when safe
+p.kv_reuse = False    # force off — pin this for determinism-critical / reproducibility experiments,
+                      #   since reuse can perturb outputs at the FP level vs a full prefill.
+```
+
+Enable `logging` at INFO to see the per-participant decision, DEBUG to see reuse engage per turn:
+
+```python
+import logging; logging.basicConfig(level=logging.INFO)
+# INFO  ...model_participant: p: cross-turn KV reuse ENABLED (kv_reuse='auto')
+```
+
+## API-backed participants
+
+`APIParticipant` is a full conversational participant with **no local model** — use it as an opponent, moderator, or judge. Interp requests (`capture`/`steering`/`patch`/`return_logprobs`) **raise** rather than silently no-op (a steering sweep that quietly did nothing would fabricate a "no effect" result).
+
+```python
+from interlens import Conversation, APIParticipant, AutoModelParticipant
+
+local = AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="student")
+judge = APIParticipant(name="tutor", model_id="claude-sonnet-5", provider="anthropic",
+                       system_prompt="You are a patient tutor. Ask one probing question per turn.",
+                       max_tokens=400, temperature=1.0)
+
+conv = Conversation(participants=(local, judge), shared_context="Teach the student about entropy.")
+conv.run(turns=6)
+```
+
+Requires `ANTHROPIC_API_KEY` (or `ANTHROPIC_API_KEY_FILE`) and outbound network. For tests, inject a fake `client=callable(system, messages, model, max_tokens, temperature) -> str`.
+
+**OpenAI** (`provider="openai"`) calls OpenAI directly via the `openai` SDK — needs `OPENAI_API_KEY` and the `[api]` extra:
+
+```python
+judge = APIParticipant(name="judge", provider="openai", model_id="gpt-5", max_tokens=400)
+```
+
+**OpenRouter** (`provider="openrouter"`) reaches any model behind [openrouter.ai](https://openrouter.ai) through one OpenAI-compatible endpoint — needs `OPENROUTER_API_KEY` and the `[api]` extra (`pip install "interlens[api]"`, which pulls `openai`):
+
+```python
+from interlens import OpenRouterRouting
+
+judge = APIParticipant(name="judge", provider="openrouter",
+                       model_id="meta-llama/llama-3.1-70b-instruct",   # or openai/gpt-5, anthropic/claude-sonnet-5, …
+                       openrouter_routing=OpenRouterRouting(
+                           upstream_provider="together",
+                           quantizations=("bf16",),
+                           data_collection="deny",
+                       ),
+                       max_tokens=400)
+```
+
+OpenRouter routing is fail-closed for research: a request must pin one upstream provider (fallbacks are disabled
+and parameter support is required), or explicitly opt into uncontrolled exploratory routing with
+`OpenRouterRouting.unpinned()`. Each returned turn records the requested routing object, actual upstream provider,
+resolved model, and generation ID in `Message.metadata`; a missing or mismatched provider aborts the turn.
+
+All providers share one retry/backoff + max-in-flight client, built lazily per provider.
+
+### Batch mode for large rollouts
+
+`provider="anthropic"` and `provider="openai"` expose asynchronous **batch APIs** (Anthropic Message Batches / OpenAI Batch) — ~50% cost and much higher throughput, in exchange for batch-window latency. Set `batch=True` on the participant and run the rollout in throughput mode; the co-stepper collects each round's same-position turns across all rollouts into **one** provider batch:
+
+```python
+pro = APIParticipant(name="pro", provider="openai", model_id="gpt-5", batch=True, system_prompt="Argue YES.")
+con = APIParticipant(name="con", provider="anthropic", model_id="claude-sonnet-5", batch=True, system_prompt="Argue NO.")
+report = (Conversation(participants=[pro, con], shared_context="…")
+          .turns(4).rollout(n=200))   # batched=True is the default; each round → one batch per speaker
+```
+
+Batch mode is **unavailable on OpenRouter** — requesting `batch=True` there raises rather than silently degrading to serial calls, so a requested batch discount is never quietly dropped. Under the hood every participant/client also exposes `generate_batch(views)` / `client.submit_batch(requests)` directly if you want to batch outside a rollout.
+
+## Per-turn `max_new_tokens`
+
+`temperature`/`top_p`/`seed` are set once per participant, but generation *length* often varies per turn (a one-word verdict vs a paragraph). `step`/`sample` take an optional `max_new_tokens` override for exactly that:
+
+```python
+conv.sample("a", "Answer in one word.", max_new_tokens=8)     # short
+conv.step(conv.participant("a"), max_new_tokens=400)              # long
+```
+
+Next: [context management & serialization](04_context_and_serialization.md).
+
+---
+
+<!-- [interp-refactor] session f80ef917 -->
+# 04 · Context management & serialization
+
+## Context-window policies
+
+Long conversations overflow the model's context. A `ContextPolicy` decides what to keep. Crucially it runs on the **typed segments** (system / moderator / private_context / turns) *before* the family flatten, so framing is preserved reliably.
+
+```python
+from interlens import (
+    Conversation, ErrorPolicy, DropOldestPolicy, SlidingWindowPolicy, SummarizePolicy,
+)
+
+# ErrorPolicy (default): raise if the view exceeds context_limit — never silently truncate.
+conv = Conversation(participants=(alice, bob), context_policy=ErrorPolicy(), context_limit=8192)
+
+# SlidingWindowPolicy: keep framing + the most recent `keep_last` turns; drop older ones.
+conv = Conversation(participants=(alice, bob), context_policy=SlidingWindowPolicy(keep_last=8))
+
+# DropOldestPolicy: drop oldest turns until it fits (needs context_limit).
+conv = Conversation(participants=(alice, bob), context_policy=DropOldestPolicy(), context_limit=8192)
+
+# SummarizePolicy: replace older middle turns with a summary; keep framing + last `keep_last` verbatim.
+conv = Conversation(
+    participants=(alice, bob),
+    context_policy=SummarizePolicy(keep_last=4, summarizer=lambda turns: "Earlier: " + " | ".join(turns)),
+)
+```
+
+`context_limit=None` (default) means the tokenizer's own `model_max_length` is used.
+
+## Serialization: recipe + transcript
+
+There is no separate template type: a `Conversation` **is** its own recipe. Because its participants are lazy (they hold an HF id + settings, not weights), an unrun conversation is a cheap, serializable spec — build it, ship it to workers, or run it many times, all as one object.
+
+```python
+from interlens import Conversation, AutoModelParticipant, SlidingWindowPolicy
+
+conv = Conversation(
+    participants=[
+        AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="alice", temperature=0.7, system_prompt="Be terse."),
+        AutoModelParticipant.from_pretrained("google/gemma-2-2b-it", name="bob", temperature=0.9),
+    ],
+    shared_context="Debate: is a hotdog a sandwich?",
+    shared_system_prompt="Stay civil.",
+    context_policy=SlidingWindowPolicy(keep_last=8),
+    reasoning_visibility="strip",
+).turns(6)                                   # rollout/data fields via dot-modifier sugar
+
+conv.run(turns=6)                            # loads the models lazily on first use
+conv.save("runs/hotdog")                     # writes conversation.json (recipe) + transcript.json
+later = Conversation.load("runs/hotdog")     # rebuilds lazy participants + attaches the transcript
+```
+
+`save` records each participant's own constructor kwargs (HF id + `dtype`/`attn`/`quant`/`revision`/`max_new_tokens`/`temperature`/`top_p`/`seed`/`thinking`/tool names/`max_tool_iters`/`kv_reuse`, or an API provider + model id) plus the scenario framing/policies — never weights. `load` raises on an unsupported (older) schema rather than silently mis-reading it.
+
+Copy-on-write updates: `conv.set(field=value)` (or a dot-modifier like `conv.turns(6)`) returns a modified *copy* sharing the loaded models by reference — the original is untouched.
+
+### Save / load a whole conversation (recipe + transcript)
+
+```python
+conv.save("runs/debate_001")                     # writes conversation.json (recipe) + transcript.json
+resumed = Conversation.load("runs/debate_001", devices="cuda")   # rebuilds lazy participants, ATTACHES the transcript
+resumed.run(turns=4)                             # continues from where it left off (does not regenerate)
+```
+
+`load` takes `devices=` as a single device or a list (participants are round-robined across the list — handy for putting two big models on two GPUs), and raises on an unsupported (older) schema rather than silently mis-reading it.
+
+Next: [tools](05_tools.md) · [hooks](06_hooks.md) · [interpretability](07_interp.md) · [rollouts](08_rollouts_and_scale.md).
+
+---
+
+<!-- [interp-refactor] session f80ef917 -->
+# 05 · Tools
+
+A `Tool` is a capability a participant can invoke mid-turn. The harness runs a uniform tool loop; each family parses its own native call format (Hermes/Qwen `<tool_call>` JSON, Gemma ` ```tool_code `, Llama `<|python_tag|>`). Tools hold live callables, so they are **not** serializable — templates store tool *names* and resolve them against a `ToolRegistry` at build time (mirroring how models resolve from ids).
+
+## Define and register a tool
+
+```python
+from interlens import Tool, DEFAULT_REGISTRY
+
+class Calculator(Tool):
+    name = "calculator"
+
+    @property
+    def schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "calculator",
+                "description": "Evaluate a basic arithmetic expression and return the result.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"expression": {"type": "string", "description": "e.g. '2 * (3 + 4)'"}},
+                    "required": ["expression"],
+                },
+            },
+        }
+
+    def __call__(self, expression: str) -> str:
+        return str(eval(expression, {"__builtins__": {}}))   # sandbox eval for the example only
+
+DEFAULT_REGISTRY.register(Calculator())   # now resolvable by the name "calculator"
+```
+
+The `schema` is passed straight to `apply_chat_template(tools=...)`, so use the standard function-calling shape.
+
+## Give a participant tools
+
+### Live participant
+
+```python
+from interlens import AutoModelParticipant
+solver = AutoModelParticipant.from_pretrained(
+    "Qwen/Qwen2.5-7B-Instruct", name="solver",
+    tools=(Calculator(),),     # the tool objects
+    max_tool_iters=4,          # bound the call→result→call loop
+)
+```
+
+### On a participant
+
+```python
+from interlens import Conversation, AutoModelParticipant
+solver = AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-7B-Instruct", name="solver",
+                                              tools=(Calculator(),), max_tool_iters=4)
+conv = Conversation(participants=[solver], shared_context="Compute 17 * 23 using your tool, then explain.")
+conv.run(turns=2)
+```
+
+Tools are resolved by name from `DEFAULT_REGISTRY` only when a saved conversation is reloaded (`Conversation.load`) — `save` stores each participant's tools by name; pass `registry=` there for a scoped registry.
+
+## What the loop does
+
+For each turn the model may emit tool calls; the harness executes each, appends the call + result to a *private* working view, and lets the model react — up to `max_tool_iters` times. Only the **final natural-language message** reaches the shared transcript; the full call/result trail is kept in `msg.metadata["tool_trail"]`. Tool exceptions are returned to the model as `error: …` results (data, not crashes), so a failing tool doesn't kill the run.
+
+```python
+msg = conv.transcript[-1]
+for step in msg.metadata.get("tool_trail", []):
+    print(step)   # {"name": "calculator", "arguments": {...}, "output": "391", "error": False}
+```
+
+Use a scoped registry instead of the global one by passing `registry=` to `Conversation.load`.
+
+Next: [hooks](06_hooks.md).
+
+---
+
+<!-- [interp-refactor] session f80ef917 -->
+# 06 · Message hooks
+
+A `MessageHook` is middleware that inspects every freshly generated message **before it is committed** to the transcript, and may **approve**, **deny** (drop the turn), or **edit** (replace it). Hooks are runtime policy — they live on the live `Conversation` (`conversation.message_hooks`) and are **not** serialized in the template. This is the seam for a safety filter, format enforcer, or LLM-judge that vets/rewrites turns.
+
+## Interface
+
+```python
+from interlens import MessageHook, MessageHookResult
+
+class NoProfanity(MessageHook):
+    BANNED = {"heck", "darn"}
+    def review(self, message, conversation) -> MessageHookResult:
+        if any(w in message.content.lower() for w in self.BANNED):
+            return MessageHookResult.deny()                 # drop the turn entirely
+        return MessageHookResult.approve()                  # let it through unchanged
+
+class EnforceBrevity(MessageHook):
+    def review(self, message, conversation):
+        if len(message.content) > 500:
+            from interlens import Message
+            trimmed = Message(author=message.author, content=message.content[:500] + " …",
+                              metadata={**message.metadata, "trimmed": True})
+            return MessageHookResult.edit(trimmed)          # substitute a replacement
+        return MessageHookResult.approve()
+```
+
+`MessageHookResult` factory helpers: `.approve()`, `.deny()`, `.edit(replacement_message)`.
+
+## Attach hooks
+
+```python
+conv.message_hooks = [NoProfanity(), EnforceBrevity()]     # applied in order
+result = conv.step(alice)                                  # returns None if a hook DENIED the turn
+```
+
+Hooks run inside both `step` and `run`. A denied turn commits nothing and `step` returns `None`; `run` simply moves on (and a denied message is not checked against stop conditions).
+
+## An LLM-judge hook
+
+Because `review` receives the live `conversation`, a hook can call an API model (or a local one via `conv.sample`) to score the turn:
+
+```python
+from interlens import MessageHook, MessageHookResult, APIParticipant
+
+class JudgeHook(MessageHook):
+    def __init__(self):
+        self.judge = APIParticipant(name="judge", model_id="claude-sonnet-5",
+                                    system_prompt="Reply only 'OK' or 'BLOCK'. BLOCK if the message is off-topic.")
+    def review(self, message, conversation):
+        verdict = self.judge.generate([{"role": "user", "content": message.content}]).content
+        return MessageHookResult.deny() if "BLOCK" in verdict else MessageHookResult.approve()
+
+conv.message_hooks = [JudgeHook()]
+```
+
+Next: [interpretability](07_interp.md).
+
+---
+
+<!-- [interp-refactor] session f80ef917 -->
+# 07 · Interpretability
+
+All four tools hook into the **same** generation path as real turns, `sample`, and tool loops, and are tagged to conversation structure. They apply to **local `ModelParticipant`s only** — an `APIParticipant` raises on any interp request rather than silently no-op'ing. Pass them to `conv.step(...)` or `conv.sample(...)`.
+
+## Activation capture
+
+`conv.capture(...)` is a context manager: every `step`/`sample` inside the block records activations into a fresh `ActivationCache`, auto-tagged by speaker + turn.
+
+```python
+with conv.capture(sites=["residual"], layers=[8, 12, 16], offload="cpu") as cache:
+    conv.step(conv.participant("bob"))
+    conv.step(conv.participant("alice"))
+
+# Query the cache by structure:
+act = cache.at(participant="bob", layer=12, site="residual")   # exactly one tensor, [seq, d_model]
+records = cache.query(participant="bob")                        # all matching ActivationRecords
+```
+
+- **`sites`**: `"residual"` (per-layer residual stream), `"attn"` (attention sublayer output, post-o_proj), `"mlp"` (MLP output). Capture is a single clean forward over the full prompt+generation.
+- **`layers`**: a list, or `None` for all layers. Keep it **narrow** — all layers × all tokens × many rollouts OOMs fast.
+- **`offload`**: `"cpu"` moves tensors off-GPU as captured (essential for sweeps; uses a batched pinned transfer under the hood — ~7× faster than naive `.to('cpu')`); `None` keeps them on-device.
+
+Each `ActivationRecord` carries `.participant`, `.message_idx`, `.layer`, `.site`, `.tensor` (`[seq, d_model]`), `.token_span` (prompt_len, seq_len), and `.phases` — a `{prompt/reasoning/answer: (start, end)}` map so you can slice reasoning-vs-answer activations for CoT models:
+
+```python
+rec = cache.query(participant="bob", layer=12)[0]
+a0, a1 = rec.phases["answer"]
+answer_acts = rec.tensor[a0:a1]        # activations over just the answer tokens
+```
+
+### Build a probe direction from captured activations
+
+```python
+import torch
+# e.g. mean residual at layer 12 over the answer span for two conditions → a difference-of-means direction
+pos = cache.at(participant="bob", layer=12)[rec.phases["answer"][0]:].mean(0)
+# (collect a `neg` from another branch/condition similarly)
+direction = (pos - neg)
+direction = direction / direction.norm()
+```
+
+## Steering — add or ablate a direction
+
+`SteeringSpec` registers forward hooks that either **add** `coef * direction` to the residual at `layers`, or **ablate** (project out) that direction.
+
+```python
+from interlens import SteeringSpec
+
+steer = SteeringSpec(direction=direction, layers=(8, 12), coef=6.0, mode="add")
+msg = conv.sample("bob", "How do you feel about the proposal?", steering=steer)  # ephemeral, steered
+
+ablate = SteeringSpec(direction=direction, layers=(12,), mode="ablate")          # remove the component
+conv.step(conv.participant("bob"), steering=ablate)                                  # committed, ablated turn
+```
+
+`direction` is a `[d_model]` tensor on any device (moved to match). A summary (mode, layers, coef, direction norm) is recorded in `msg.metadata["steering"]` so a steered turn is reproducible. Steering **disables KV reuse** automatically (the intervention wasn't in the cached KV).
+
+## Activation patching — cross-branch causal tracing
+
+`Patch` overwrites a decoder layer's residual at specific token `positions` with activations captured elsewhere (e.g. from another branch). This is the causal-tracing primitive: capture at turn N in one branch, inject at the aligned positions of another branch's forward.
+
+```python
+from interlens import Patch
+
+# 1) capture bob's layer-12 residual in the clean branch
+clean = conv.branch()
+with clean.capture(sites=["residual"], layers=[12]) as cache:
+    clean.step(clean.participant("bob"))
+donor = cache.at(participant="bob", layer=12)          # [seq, d_model]
+
+# 2) inject those activations at chosen positions in a corrupted branch's next forward
+positions = (3, 4, 5)
+patch = Patch(activations=donor[list(positions)], layer=12, positions=positions)
+corrupt = conv.branch()
+corrupt.transcript[-1] = ...                            # (corrupt the setup somehow)
+patched_msg = corrupt.sample("bob", patch=patch)       # bob generates with layer-12 residual patched
+```
+
+Aligning positions across branches is the caller's responsibility; `Patch` just performs the overwrite (only on the prefill forward, not per-token decode). Patching also disables KV reuse.
+
+## Token logprobs / surprisal / entropy
+
+```python
+msg = conv.sample("alice", "State your final answer in one word.", return_logprobs=True)
+md = msg.metadata
+md["logprobs"]    # per generated token: log p(token)
+md["surprisal"]   # -logprob (nats)
+md["entropy"]     # full next-token distribution entropy at each step (model uncertainty)
+```
+
+These are scalar-per-token lists (safe to store in metadata). Works with `step` too.
+
+Next: [advanced pipelines that combine these](09_advanced_interp_pipelines.md), or [scaling to rollouts](08_rollouts_and_scale.md).
+
+---
+
+<!-- [interp-refactor] session f80ef917 -->
+# 08 · Rollouts & scale
+
+Run one conversation recipe many times — across many GPUs, checkpointed and resumable — with per-conversation failure isolation (one OOM/bad row can't take down the batch). There is **one object**: a `Conversation` is the recipe, the live dialogue, and the rollout driver. No templates, specs, or configs.
+
+## `conv.rollout` — many runs of one recipe
+
+```python
+from interlens import Conversation, AutoModelParticipant
+
+conv = (Conversation(
+            participants=[
+                AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="a", temperature=0.9),
+                AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="b", temperature=0.9)],
+            shared_context="Debate: tabs vs spaces.")   # scenario framing is a constructor field
+        .turns(6))                                       # rollout/data fields use dot-modifier sugar
+
+report = conv.rollout(
+    n=64,
+    devices=None,               # None → all visible GPUs (see available_devices()); or e.g. ["cuda:0","cuda:1"]
+    out_dir="runs/tabs_spaces", # checkpoints each conversation → resumable
+    seed=0,                     # per-rollout seeds are seed, seed+1, …
+    # batched=True is the DEFAULT: local models co-step in one batched generate (max throughput). Pass
+    # batched=False only for the DETERMINISTIC/interp escape hatch (see below).
+)
+
+for job_id, res in report.results.items():
+    if res.error is None:
+        print(job_id, "→", res.transcript[-1].content[:80])
+print("failed:", report.failed, "skipped(resumed):", report.skipped)
+```
+
+> **Rollout copies, it does not mutate.** `rollout` makes an independent copy-on-write clone of the conversation per sample/row and runs *those*; the original `conv` stays the unrun recipe. Finished conversations live on the report — `report.results[job_id].conversation` (with `.transcript`, `.analysis`, `.tokens_generated`). That is where to `sample()` or inspect afterwards, **not** on the original (calling `conv.sample()` on an unrun recipe raises).
+
+Modifiers are copy-on-write too: `conv.turns(6)` returns a *new* conversation, so `conv.turns(12).rollout()` re-runs at a new length without touching `conv`. Use `.set(field=value)` for fields without a dot-modifier.
+
+## Data-driven rollout — one conversation per dataset row
+
+A benchmark is *N different scenarios*, not N copies. Template a field with `dataset_field` and attach the data — `rollout` expands to one conversation per row, resolving the field for each:
+
+```python
+from interlens import Conversation, AutoModelParticipant, dataset_field
+from datasets import load_dataset
+
+solver = AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-1.5B-Instruct", name="solver",
+                                              system_prompt="Solve it; end with 'Final answer: <n>'.")
+report = (Conversation(participants=[solver],
+                       shared_context=("Solve this problem.\n\n", dataset_field("question")))   # per-row
+          .turns(1)
+          .data(load_dataset("openai/gsm8k", "main", split="test").select(range(200)))
+          .analyzer(lambda conv: {"answer": conv.transcript[-1].content})
+          .rollout(out_dir="runs/gsm8k"))   # n defaults to len(data); job ids row_00000…
+```
+
+`shared_context`, `shared_system_prompt`, and each participant's `system_prompt` may be templated. A template value is a `str` (as-is), `dataset_field("col")`, a `callable(row) -> str`, a tuple of those joined (`("Q: ", dataset_field("q"))`), or a PEP 750 t-string on Python 3.14+. Resolution happens once at expansion (row *i* ⟷ job *i*), so resume stays correct.
+
+**The data is streamed, never materialized** — rows are pulled one at a time, so a map-style `Dataset` stays Arrow-backed on disk and a `load_dataset(..., streaming=True)` `IterableDataset` (a corpus too big for memory) works unchanged; `n` defaults to `len(data)` when known, else all rows.
+
+**Per-row side data reaches the analyzer via `conv.row`** — the dataset row that produced a conversation is available (as a dict) on `conv.row`, so an analyzer can grade against a label/gold WITHOUT templating it into the model's view (where it would leak). The runnable [`examples/gsm8k_benchmark_rollout.py`](../../examples/gsm8k_benchmark_rollout.py) is the full end-to-end pattern — it adds a `gold` column with a lazy `.map` and grades `conv.row["gold"]` in the analyzer.
+
+## `interlens.run` — many lineups in one pool
+
+When you have *different* lineups (a ladder of model pairs × conditions), hand them all to `run` so GPUs stay packed across lineups (no idle tail between sequential rollouts), under one `out_dir`/resume namespace:
+
+```python
+from interlens import run
+
+report = run(
+    [conv_a.name("pair_7b"), conv_b.name("solo_7b"), conv_c.data(gpqa).name("gpqa")],
+    devices=None, out_dir="runs/ladder", resume=True,
+)   # job ids are namespaced by each conversation's name(): pair_7b, solo_7b, gpqa/row_00000, …
+```
+
+Each conversation expands to its own jobs (one per `data()` row, else a single job); all jobs share one pool. Mixing lineups is safe: batched co-stepping groups by **schedule signature** (turns + per-position model identity), so each distinct lineup forms its own batch group and a one-off lineup runs as a singleton. `conv.rollout(...)` is the single-lineup sugar for this.
+
+- **Parallel by default on two axes**: one worker *process per device*, AND *batched co-stepping* within each device. No flag needed.
+- **Single device** → runs in this process (the path where an `analyzer` may be a plain callable/closure).
+- **Multiple devices** → one process per GPU (`torch.multiprocessing`, since fork+CUDA is broken). Conversations pickle cheaply — lazy participants ship no weights, each worker loads on its own GPU. A closure analyzer won't survive pickling, so **register analyzers by name** for the multi-GPU path (below).
+
+`RunReport`: `.results` (`{job_id: RunResult}`), `.failed`, `.skipped`, plus `.transcripts()`/`.analyses()`/`.conversations()`. `RunResult`: `.conversation`, `.transcript`, `.analysis`, `.error`, `.device`, `.tokens_generated`.
+
+## `analyzer` — measure each run while models are resident
+
+An analyzer runs **inside the worker** right after the conversation finishes, while the models are still on-GPU — so it can `sample`, `branch`, or read activations on the live conversation. Only its **serializable return value** is kept (in `RunResult.analysis`). Attach it with `.analyzer(...)`:
+
+```python
+def summarize(conv):
+    return {"n_turns": len(conv.transcript),
+            "a_stance": conv.sample("a", "One word: your final stance?").content.strip()}
+
+report = conv.analyzer(summarize).rollout(n=32, out_dir="runs/x")   # in-process: a callable is fine
+```
+
+### Multi-GPU: register analyzers by name
+
+Spawned workers inherit no parent state, so an analyzer that must run in the pool has to be **registered by name at import time** (a closure over parent locals can't cross the process boundary):
+
+```python
+from interlens import register_analyzer
+
+def stance_probe(conv):
+    return {"a": conv.sample("a", "One word stance?").content.strip()}
+
+register_analyzer("stance_probe", stance_probe)          # at module import
+report = conv.analyzer("stance_probe").rollout(n=64, devices=None, out_dir="runs/x")
+```
+
+For heavy per-worker setup (e.g. loading a probe/classifier once per GPU), use `register_worker_init`.
+
+## Matched compute — `TokenBudget`
+
+To compare a solo model against a pair *fairly*, give the solo run the same token budget as the pair. `TokenBudget` is a `StopCondition` that stops each conversation once ITS OWN generated tokens hit `per_conversation`, and can spread the budget across turns with `per_turn`:
+
+```python
+from interlens import TokenBudget
+
+pair = conv                                   # 2 models, turns=6
+solo = conv.set(participants=[solver]).turns(None).run_until(TokenBudget(per_conversation=pair_spend, per_turn=512))
+solo_report = solo.rollout(n=64)
+
+# or ambiently over any run/rollout in the block — the budget is PER conversation, not a shared pool:
+with TokenBudget(per_conversation=2048):
+    conv.rollout(n=200)                       # every one of the 200 conversations gets its own 2048-token budget
+```
+
+Counting is free (summed from each turn's recorded `metadata['n_tokens']`, never re-tokenized) and per-conversation (read from the conversation's own transcript). Verify realized spend off the report: `report.results[jid].tokens_generated`.
+
+## Large API rollouts (batch mode)
+
+For hosted models (`APIParticipant`), set `batch=True` to route each round's turns through the provider's **asynchronous batch API** — ~50% cost and much higher throughput, at the price of batch-window latency:
+
+```python
+from interlens import Conversation, APIParticipant
+
+report = (Conversation(participants=[
+              APIParticipant(name="pro", provider="openai",    model_id="gpt-5",           batch=True, system_prompt="Argue YES."),
+              APIParticipant(name="con", provider="anthropic", model_id="claude-sonnet-5", batch=True, system_prompt="Argue NO.")],
+              shared_context="Is a hot dog a sandwich?")
+          .turns(4)
+          .rollout(n=200))   # each round → one Anthropic/OpenAI batch per speaker
+```
+
+- **Batch APIs exist only for `provider="anthropic"` and `provider="openai"`.** Requesting `batch=True` on `provider="openrouter"` **raises** (OpenRouter has no batch endpoint) — it never silently degrades to serial calls.
+- With `batch=False` (default) API turns run as ordinary concurrent single requests, bounded by the shared client's max-in-flight semaphore.
+
+See [participants & models](03_participants_and_models.md) for provider setup + API keys.
+
+## Execution modes & reproducibility
+
+- **Batched co-stepping is the default** (`batched=True`): local `ModelParticipant`s (every family) co-step, trading exact per-row reproducibility for throughput — batch composition + a single global RNG perturb rows, so only *distributional* reproducibility holds. Batched turns are marked in `metadata["batched"]`; the shared-prefill fast path (turn 1 of an `n`-sample rollout off one scenario) in `metadata["shared_prefill"]`.
+- `batched=False` is the **`ExecutionMode.DETERMINISTIC`** escape hatch: each rollout runs independently and is **token-identical** on the same hardware (pin per-participant `seed=` and `kv_reuse=False`). It is the only path that supports per-turn interp (capture/steering/probes) — batched generation cannot.
+
+Next: [advanced interp pipelines](09_advanced_interp_pipelines.md).
+
+---
+
+<!-- [interp-refactor] session f80ef917 -->
+# 09 · Advanced interp pipelines
+
+Compositions that combine capture, branching, steering, patching, and `analyze` into real experiments. These lean on the fact that **`branch()` is free** (shared weights) and every interp tool rides the same generation path.
+
+## 1 · Difference-of-means direction → causal steering test
+
+Find a direction that separates two conditions, then verify it's *causal* by steering with it.
+
+```python
+import torch
+from interlens import Conversation, SteeringSpec
+
+conv = Conversation.from_models(("Qwen/Qwen2.5-3B-Instruct", "Qwen/Qwen2.5-3B-Instruct"), names=("a", "b"))
+conv.transcript.append("a", "Tell me your honest opinion of pineapple pizza.")
+
+LAYER = 14
+def mean_answer_act(prompt):
+    b = conv.branch()
+    with b.capture(sites=["residual"], layers=[LAYER]) as cache:
+        b.sample("b", prompt)                      # ephemeral; nothing committed
+    rec = cache.query(participant="b", layer=LAYER)[0]
+    lo, hi = rec.phases["answer"]
+    return rec.tensor[lo:hi].mean(0)
+
+pos = mean_answer_act("Respond with maximum enthusiasm.")
+neg = mean_answer_act("Respond with cold indifference.")
+direction = (pos - neg); direction /= direction.norm()
+
+# Causal check: does adding the direction shift behavior?
+for coef in (0.0, 4.0, 8.0):
+    steer = SteeringSpec(direction=direction, layers=(LAYER,), coef=coef, mode="add")
+    print(coef, "->", conv.sample("b", "Your opinion?", steering=steer).content[:100])
+```
+
+## 2 · Activation patching across clean/corrupt branches (causal tracing)
+
+Localize *where* a piece of context matters by transplanting clean activations into a corrupted run, layer by layer.
+
+```python
+from interlens import Patch
+
+base = conv.branch()
+base.transcript.append("a", "The secret code is FALCON. What is the secret code?")
+
+# clean: capture residuals everywhere we might patch
+with base.capture(sites=["residual"], layers=list(range(0, 28, 4))) as clean_cache:
+    base.step(base.participant("b"))
+
+# corrupt: overwrite the code, then patch one layer's residual back from the clean run
+def patched_answer(layer, positions):
+    donor = clean_cache.at(participant="b", layer=layer)
+    patch = Patch(activations=donor[list(positions)], layer=layer, positions=positions)
+    c = conv.branch()
+    c.transcript.append("a", "The secret code is SPARROW. What is the secret code?")
+    return c.sample("b", patch=patch).content
+
+for L in range(0, 28, 4):
+    print(L, "->", patched_answer(L, positions=(6, 7, 8)))   # which layer restores "FALCON"?
+```
+
+## 3 · Probe-in-the-loop `analyze` at scale
+
+Collect an activation-based measurement over many rollouts. The probe read happens **inside the worker** while models are resident; only the scalar crosses back.
+
+```python
+from interlens import Conversation, AutoModelParticipant, register_analyzer
+import torch
+
+PROBE = torch.load("stance_probe_layer14.pt")   # a [d_model] direction you fit earlier
+
+def project_stance(conv):
+    with conv.capture(sites=["residual"], layers=[14]) as cache:
+        conv.sample("a", "State your position plainly.")
+    rec = cache.query(participant="a", layer=14)[0]
+    lo, hi = rec.phases["answer"]
+    v = rec.tensor[lo:hi].mean(0).float()
+    return {"stance_proj": float(v @ PROBE.to(v.device) / PROBE.norm())}
+
+register_analyzer("project_stance", project_stance)
+
+conv = Conversation(
+    participants=[AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="a"),
+                  AutoModelParticipant.from_pretrained("Qwen/Qwen2.5-3B-Instruct", name="b")],
+    shared_context="Debate: should we colonize Mars?",
+).turns(6).analyzer("project_stance")
+report = conv.rollout(n=128, out_dir="runs/mars")
+projs = [r.analysis["stance_proj"] for r in report.results.values() if r.error is None]
+print("mean stance projection:", sum(projs) / len(projs))
+```
+
+## 4 · Steering sweep with reproducible turns
+
+Because `sample` is ephemeral and `branch` is free, a full coefficient × layer sweep is a couple of loops — pin `seed` so each cell is comparable.
+
+```python
+conv.participant("b").seed = 0                          # fix RNG so only the intervention varies
+results = {}
+for layer in (8, 12, 16, 20):
+    for coef in (2.0, 4.0, 8.0):
+        steer = SteeringSpec(direction=direction, layers=(layer,), coef=coef, mode="add")
+        results[(layer, coef)] = conv.sample("b", "Your opinion?", steering=steer).content
+```
+
+---
+
+**Gotchas worth remembering**
+
+- Interp on an `APIParticipant` **raises** — use a local `ModelParticipant`.
+- Steering/patch **disable KV reuse** automatically (the cached KV predates the intervention).
+- Keep `capture` **narrow** (few layers, `offload="cpu"`) — all-layers × all-tokens × many-rollouts OOMs.
+- `branch()` shares participant *objects*; mutating a participant's `.temperature`/`.seed` on a branch affects the shared object — set them per use or re-set before each run.
+
+Back to the [index](README.md).
+
+---
+
+# 10 · Arena: scoreable multi-agent evaluations
+
+`interlens.arena` turns the conversation harness into an **evaluation harness**: a `Scenario` defines a game — solver-verified instance generation, per-seat private framing, a turn protocol with structured JSON actions, early termination, exact scoring — and the engine plays it through any `Participant`, persisting every episode to one JSON schema. Five scenario families ship: a multi-issue **negotiation** with secret score sheets, a wrong-shard **info relay** (an epistemic team task with a confidently-wrong agent), a repeated **security dilemma** (build/deescalate/attack with an absorbing war spiral and noisy intelligence), a **coding collaboration** with private mechanically-checkable constraints (sandboxed pytest scoring), and a **distributed long-context** family (one long-context benchmark task partitioned across 4 seats). All come from the collaboration-arena research program, and stored episodes from those experiments re-score exactly under this package.
+
+## Run an episode
+
+```python
+import asyncio
+from interlens import APIParticipant, UsageMeter
+from interlens.arena import EpisodePool, EpisodeStore
+from interlens.arena.scenarios import Negotiation
+
+scenario = Negotiation()
+instance = scenario.generate_instance(level=0, seed=1)   # exact ceiling, floor + hidden optimum
+meter = UsageMeter(budget=25.0)                          # run-level $ ledger with a hard cap
+player = APIParticipant(name="player", model_id="claude-sonnet-5",
+                        meter=meter, turn_token_floor=2048)
+
+pool = EpisodePool(EpisodeStore("episodes/"), meter=meter)
+episode = asyncio.run(pool.run_episode(scenario, instance, arm="team", participant=player))
+print(episode.outcome)        # {"primary": ..., "success": ..., "finalized_by": ..., ...}
+print(episode.usage())        # tokens in/out (total + per seat), dollar cost
+print(meter.summary())        # run-level spend, per model
+```
+
+Every seat is played by `player` (one model per episode — the design the arena experiments measured). The `EpisodeStore` writes the full record atomically after every turn wave; `store.summary()` aggregates episodes into a printable usage/success table.
+
+## Arms, budgets, and matched compute
+
+- `arm="team"` plays the full multi-seat protocol; `arm="solo"` gives ONE seat all private information (the "one mind with all the facts" baseline). Scenario variants like `team-greedy` / `team-adversarial` change one seat's private stance.
+- Budgets are **stop conditions**, not ad-hoc counters: pass `budget=TokenBudget(per_conversation=6000)` (or a `CostBudget`, or a list) to `run_episode`. The engine counts each committed turn's recorded usage, shrinks per-turn caps (`turn_cap`) so the budget lands exactly, and — when the budget fires — sets `state["budget_exhausted"]`, which both scenarios answer with a forced finalization. That is the **matched-compute** recipe: give a solo baseline the team arm's median token spend, then force it to answer.
+- Run-level spend is **reservation-gated**: jobs carrying `estimated_cost=` claim it against the meter *before* launching, so N concurrent episodes can never collectively overrun the cap (`run_pool` also stops launching once the meter is exhausted; in-flight episodes finish).
+
+```python
+jobs = [dict(scenario=scenario, instance=inst, arm="team", participant=player, estimated_cost=4.0)
+        for inst in instances]
+episodes = asyncio.run(pool.run_pool(jobs))
+```
+
+For **local models**, `BatchedEpisodePool` co-steps many episodes as one batched `generate_batch` per tick (with adaptive batch splitting on GPU OOM) — the multi-GPU rollout path.
+
+## Situational sweeps
+
+Both scenarios take a `cfg` dict (`make_state(..., cfg=...)`, or `cfg=` on `run_episode`) that varies the *situation* around the fixed game — rounds, stakes framing, personas, party count (negotiation, via `generate_instance_n`), hardness/framing (relay). The episode record carries the resolved cell config, so sweeps join cleanly.
+
+## Two hard-won gotchas, now guarded
+
+1. **Thinking × turn caps.** Models with adaptive/always-on reasoning spend hidden thinking tokens *out of* `max_tokens`. A small per-turn cap (500) silently produced **58% empty turns** in a real run — thinking consumed the whole budget, and the "negotiation" proceeded among mutes. Two controls on `APIParticipant`: `thinking="disabled"` (or an explicit int budget — Anthropic models) is the reliable fix, and `turn_token_floor=2048` raises any externally-imposed cap back to a generable size for models whose thinking can't be disabled. On very long contexts adaptive thinking can outgrow ANY fixed floor — a live 3-round negotiation with claude-sonnet-5 produced empty final-proposal turns even at a 4096 cap until thinking was disabled.
+2. **Seat-selective refusals.** Hosted models occasionally refuse *from one seat's framing* and not others', silently biasing team results. Refusals are classified per turn (`metadata["refusal"]`, from the provider's native stop reason) and counted per model on the `UsageMeter` — check `meter.summary()` before believing a team-vs-solo delta.
+
+## Preflight gates for local rollouts
+
+```python
+from interlens.arena import check_template_fidelity, check_reasoning_leak, scenario_smoke_views
+
+views = scenario_smoke_views(scenario)
+assert check_template_fidelity(tokenizer, views, enable_thinking=True)["ok"]   # token-id equality
+# ... play one smoke episode, then:
+assert check_reasoning_leak(episode)["ok"]   # no <think> content leaked into other seats' views
+```
+
+## The second scenario wave
+
+### Security dilemma (`SecurityDilemma`, no solo arm)
+
+Two seats play 12 rounds of message-then-simultaneous-action (`build` / `deescalate` / `attack`). Once BOTH attack in the same round, war spirals: every remaining round is forced mutual attack. Intelligence is noisy — with a level-dependent probability, a seat's *report* of the opponent's action is flipped; true actions always drive payoffs, and each seat sees only its own report and payoffs, so misreports are seeded, private, and replayable. The difficulty ladder raises the first-strike bonus and the noise. `primary` = joint payoff / 96 (mutual deescalation for 12 rounds); `success` = no spiral.
+
+### Coding collaboration (`CodingCollab`)
+
+Three seats jointly write ONE Python module against a public spec + pytest suite; each seat holds private style constraints (AST-checkable: no loops, full type hints, line caps, ...) it must get honored WITHOUT revealing verbatim. The latest complete ```` ```python ```` fence anywhere is the working draft; per-turn `{"constraints_ok": true|false}` declarations drive early consensus. Scoring is exact and sandboxed: `primary` = (tests passing) × (constraints held), with the suite run in an isolated subprocess (`sys.executable -I`, fresh tmpdir, 30 s timeout). The generator verifies every dealt constraint set against a bundled reference solution, so `primary == 1.0` is always achievable.
+
+### Distributed long-context (`DistributedLongContext` + task adapters)
+
+One long-context task is partitioned into 4 contiguous shards (asserted: their concatenation reproduces the original context exactly); each seat privately holds one shard, and the finalizer (seat 0, last each round) submits the answer. Three arms: `team` (round-robin broadcast), `team-msg` (directed messaging — each non-finalizer turn is only a fenced `{"messages": [...]}` routing object; a seat sees only mail addressed to it — the routing is part of the state machine, so episodes replay), and `solo` (the full concatenated context in one seat).
+
+Task adapters (`interlens.arena.scenarios.dlc`) port four benchmarks: **S-NIAH** (RULER-style needle in a haystack, exact match), **OOLONG-Pairs** (pairwise aggregation, F1 over the emitted pair set), **LongBench-v2 CodeQA** (repo-understanding multiple choice), and **BrowseComp-Plus** (multi-hop QA; two-phase — the scenario records the answer un-judged, and the official grader template ships for a post-hoc LLM-judge pass). Benchmark data does **not** ship in the repo: `interlens.arena.scenarios.dlc.build` fetches from each benchmark's own source at a pinned revision (`pip install interlens[benchmarks]`) and writes a `load_instances`-compatible bank; instances embed megabytes of context, so they are built offline, once.
+
+**Outcome classes.** Long-context episodes fail in ways a bare score conflates, so two classes are first-class outcome fields, applied by the engine and recomputed identically in replay (`Scenario.classify_outcome`):
+
+- `truncated_at_budget` — some committed turn stopped at its `max_tokens` cap. The episode ran out of room; exclude it from success/failure analysis rather than scoring the accident.
+- `capitulated` (OOLONG-Pairs) — NOT truncated, but the answer enumerated <50% of the gold pairs: the model *declined* the enumeration. The classification carries evidence — how many relevant user IDs the team had actually surfaced in discussion vs how many pairs it emitted.
+- otherwise `answered` / `no_answer`.
+
+## Adaptive difficulty ratchet
+
+A ceiling-saturated cell measures nothing. `DifficultyRatchet` drives any scenario with a difficulty ladder to its *found level* — the first level whose probe mean drops below 75% of ceiling — then measures there and at the neighbor level, then runs paired solo baselines on the SAME instances under a `TokenBudget` equal to the median team spend (matched compute):
+
+```python
+from interlens.arena import DifficultyRatchet, EpisodePool, EpisodeStore
+
+ratchet = DifficultyRatchet(scenario, player, EpisodePool(EpisodeStore("episodes/"), meter=meter),
+                            instances_dir="instances/", state_path="ratchet.json",
+                            speculative=True)   # probe the first 3 levels concurrently
+state = asyncio.run(ratchet.run())              # {"found": ..., "probe_means": ..., ...}
+```
+
+State persists after every batch: a restarted ratchet resumes where it stopped and never duplicates a completed episode (instances are deterministic per level and skipped by id, so team/solo pairings stay intact). `speculative=True` probes the first wave of levels concurrently — faster wall-clock at the cost of probing levels a sequential climb might have skipped; the found decision is the same pure function (`found_level`) either way.
+
+## Rollout sets: more episodes, into the same place, safely
+
+`EpisodePool` runs episodes; `RolloutSet` is the bookkeeping *around* a set of them, so "run twenty more seeds" is one call instead of a new directory and a merge script. A set is a directory holding an `EpisodeStore`, the instances played, and a manifest recording what produced them (model, scenario, config fingerprint, every accepted key, each invocation, artifact links).
+
+```python
+from interlens.arena import rollout
+from interlens.arena.negotiation.sheets import GameSpec
+from interlens.arena.scenarios.scorable import ScorableNegotiation
+from interlens.arena.table import rational_table
+
+def seats(instance, arm, seed):          # a factory: policy seats hold per-episode mutable state
+    game = GameSpec.from_json(instance.payload)
+    return rational_table(game, ["boulware", "conceder", "tough"], deadline=game.rounds)
+
+cfg = {"model": "policy:zoo", "scaffold": "canonical", "info": "full"}
+rs = rollout(scenario=ScorableNegotiation(), instances=instances, participant=seats,
+             out="runs/pilot", seeds=[0, 1], arms=["moves_chat"], config=cfg)
+print(rs.summary_text())
+```
+
+```
+RolloutSet runs/pilot
+  model=policy:zoo scenario=scorable_negotiation cfg=8f2c1a09b4de
+  episodes: 6 (6 distinct keys) statuses={'done': 6}
+  arms: {'moves_chat': 6}
+  success: 4/6 = 0.667
+  mean primary: 0.7143 over 6 scored episodes
+  usage: 0 in / 0 out tokens, $0.00
+  fabricated turns: 0 (in 0 episodes)
+  placeholder turns: 0/94 = 0.0% (engine 0.0%, burned cap 0.0%) | at cap 0.0% | no-op 19.5%
+```
+
+Re-run with `seeds=[0, 1, 2, 3]` and only the two new seeds cost anything: resume is unconditional and keyed on `(instance_id, seed, arm)`, read from the episodes on disk rather than the manifest, so a crash between the two writes still resumes correctly. Reuse the set's own bank with `rs.load_instances()` — instance ids are uuid-based, so regenerating "the same" instances mints new ids and matches nothing.
+
+**Appending never silently mixes protocols.** `config` is the set's protocol identity, hashed into a fingerprint; an append whose fingerprint differs raises `RolloutConfigMismatch` *before* any episode runs, naming the differing keys. `allow_mismatch=True` proceeds but is an audit trail, not a silencer: each accepted episode is stamped in its `cell_cfg` and the divergence is recorded in the manifest.
+
+Put in `config` anything that changes what an episode *means* (model, scaffold, information condition, arms, bank identity) and nothing that merely changes how it was scheduled (concurrency, output path), or a wider resume will refuse itself.
+
+`summary()` is deliberately a **health check**, not a results table — counts, statuses, success rate, mean `outcome["primary"]`, spend, and two contamination gates. Metrics defined by your protocol belong in your own analyzers.
+
+### Two gates, because each is blind to the other's failure
+
+A set can be 100% `done`, 100% `parse_ok`, 0% empty content, `fabrication 0.000` — and still be a quarter silent. Two different failures wear the same `EMPTY_TURN_PLACEHOLDER` string:
+
+| cause | signature | remedy |
+|---|---|---|
+| the **engine** fabricated the turn (generation failed outright) | `gen_failed` | fix the generation failure; a larger cap cannot help |
+| the **model** burned its whole per-turn budget inside an unterminated `<think>` and emitted no action | `empty_gen` | raise the per-turn cap, or disable thinking |
+
+The second is the one nothing else catches. The engine did its job, so `fabrication` correctly reads 0.000; the placeholder it substitutes is non-empty and parses into a well-formed no-op, so `parse_ok` reads 1.000 too. Measured at **24.4% of turns** on a thinking-on Qwen3-32B cell at a 2,048-token cap against 0.0% with thinking off — and on that cell `parse_ok` was *anti*-correlated with quality (1.000 on the silent arm vs 0.958 on the healthy one, because placeholders parse flawlessly and real prose sometimes does not).
+
+So `summary()` reports a **placeholder budget** beside the fabrication audit, split by cause and broken down by round:
+
+```
+  fabricated turns: 0 (in 0 episodes)
+  placeholder turns: 3/6 = 50.0% (engine 0.0%, burned cap 50.0%) | at cap 50.0% | no-op 50.0%
+  !! PLACEHOLDER BUDGET EXCEEDED: 50.0% of turns said nothing (budget 2.0%), in 1 episodes.
+     worst round 3 at 100.0%; by round: {1: '0.0%', 2: '50.0%', 3: '100.0%'}
+     parse_ok and the fabrication gate CANNOT see this. If 'burned cap' dominates, the model spent its
+     budget inside <think>: raise the per-turn cap or disable thinking — and note that changing the cap
+     changes the protocol, so the new cells do not pair with the old ones.
+```
+
+The by-round breakdown is load-bearing: budget exhaustion is **late-episode by construction**, since context grows with the transcript (5.8% at round 1 rising to ~35% by rounds 2–4). A short smoke run, or a peek at an episode's opening turns, reads ~0% and under-detects it — so a late round over budget is called out even when the pooled rate is clean.
+
+Exceeding the budget flags the set and stamps `manifest["turn_health"]`; it never raises, because the episodes are real evidence and the right response is to record the rate. Tune it with `summary(placeholder_budget=...)`; the per-turn primitive is `interlens.arena.turn_signatures(turn)`, which returns the signature set for one stored turn.
+
+## Replay and re-scoring
+
+Scenarios are pure state machines, so a stored episode replays exactly:
+
+```python
+from interlens.arena import replay_episode, rescore
+outcome = replay_episode(scenario, instance, stored_episode_json)   # recompute with the current scorer
+result = rescore(scenario, instance, stored_episode_json)           # compare vs the recorded outcome
+```
+
+## Formal actions and per-turn oracles
+
+For scenarios that need *binding moves* rather than free text, `interlens.arena` ships a typed formal-action layer and a per-turn oracle layer.
+
+**Formal actions** (`interlens.arena.actions`): the package-deal move vocabulary — `Propose(deal)`, `Accept(offer_id)`, `Reject(offer_id)`, `Walk()` — plus an `OfferRegistry` (monotonic ids, standing-offer tracking, accept/reject votes) and one consolidated `parse_action`. `parse_action` distinguishes a **syntax** failure (no well-formed action could be read) from an **economic-legality** failure (well-formed but references a dead offer / an infeasible deal), so a scenario can retry once with specific feedback and log the two classes separately:
+
+```python
+from interlens.arena import parse_action, OfferRegistry, Propose, Accept, SYNTAX, LEGALITY
+
+registry = OfferRegistry()
+oid = registry.register(deal=(0, 2, 1, 0, 1), proposer="Avery", round=1)   # -> "O1" (Avery auto-accepts)
+
+result = parse_action(text, deal_decoder=my_issue_object_to_deal, standing=registry.standing_ids())
+if result.ok:
+    registry.apply(result.action, agent="Blake", round=2)   # Accept("O1") records Blake's vote
+else:
+    directive = result.retry_directive()   # {"retry": <specific message>, "error_kind": "syntax"|"legality"}
+```
+
+`deal_decoder` maps a model's `{"Site": "...", ...}` object to a `Deal = tuple[int, ...]` (option index per issue), returning `None` for an infeasible deal — keeping the action layer free of any specific game's issue set.
+
+**Oracles** (`interlens.arena.oracles`): an `Oracle` scores every action available to a seat and names the best; the arena records the seat's *regret* — `value(best) − value(chosen)`, the centipawn-loss analog. Two annotation paths write typed `OracleRecord`s into the episode's oracle log (`Episode.round_checkpoints`):
+
+- **inline** pure-Python oracles run post-`apply` with no extra generation — override `Scenario.annotate_turn` and return `interlens.arena.oracles.annotate(oracles, game, history, agent, legal, chosen_action=..., round=..., seat=..., turn_idx=...)`;
+- **forked** provisional elicitations re-ask the *model* to finalize now on a private view — the existing `Scenario.provisional_due` path, unchanged.
+
+```python
+from interlens.arena import Oracle, OracleVerdict
+
+class SolutionOracle(Oracle):
+    name = "solution"
+    def evaluate(self, game, history, agent, legal):
+        values = {a: surplus_if(game, a, agent) for a in legal}
+        best = max(values, key=values.get)
+        return OracleVerdict(action_values=values, best=best, flags=[...])
+```
+
+Each inline record carries `divergence` (per-turn regret), `chosen_value`/`best_value`, the full `verdict`, and any hard-violation `flags`; provisional records keep the `{round, seat, provisional_action, score, content}` shape, so older datasets still parse.
+
+## Communication styles
+
+**Async messaging is the package default** (`Scenario.default_communication = "messaging"`, used by the Inspect tasks when no mode is given): no shared transcript; autonomous agents exchange point-to-point mail via `send_message`/`read_message` (fenced-JSON actions for any participant type, or native tools via `policy.tools_for(name)`), with ping-driven scheduling (priority + a fairness tick). Sends/reads/deliveries are first-class transcript events. See `examples/arena_relay_messaging.py` for the relay task run in this mode.
+
+Two other styles remain available as explicit configs and compose with the same scoring and persistence (see `interlens.communication`):
+
+- **Round-robin protocol** (`communication="round_robin"`, or `EpisodePool.run_episode` directly): each scenario's published turn protocol over a shared transcript. **This is the comparability option**: the shipped v0 transcript dataset was produced under this protocol (recorded per episode in `gen_config`), so use it when comparing new runs against those cells — do not assume messaging-mode and protocol-mode scores are equivalent. The security dilemma pins this mode (`default_communication = "round_robin"`): a simultaneous-move payoff game has no sound free-messaging reduction.
+- **Direct piping** (`DirectPipingPolicy`): one participant's output is the next one's input along a fixed chain — the natural two-agent dialogue framing, generalized. See `examples/arena_direct_piping.py`.
+
+## Inspect integration (optional)
+
+With the extra installed (`pip install interlens[inspect]`), both scenarios run under [Inspect](https://inspect.aisi.org.uk/):
+
+```bash
+inspect eval interlens.arena.inspect/info_relay --model anthropic/claude-sonnet-5 -T level=2   # messaging (default)
+inspect eval interlens.arena.inspect/negotiation --model openai/gpt-5 -T n_parties=8 -T arm=solo
+inspect eval interlens.arena.inspect/info_relay -T communication=round_robin --model anthropic/claude-sonnet-5   # published protocol, comparable with the v0 dataset
+inspect eval interlens.arena.inspect/security_dilemma --model anthropic/claude-sonnet-5 -T level=2   # always round-robin
+inspect eval interlens.arena.inspect/coding_collab --model openai/gpt-5 -T level=3
+inspect eval interlens.arena.inspect/distributed_longcontext -T instances=banks/dlc_sniah_L0.json --model anthropic/claude-sonnet-5
+```
+
+Messaging-mode (default) notes for the new families: `coding_collab` scores the latest complete ```` ```python ```` fence in the agents' mail as the submission (the same working-draft rule as the protocol); `distributed_longcontext` maps messaging to the scenario's NATIVE directed-messaging arm (`team-msg`), so those episodes stay replayable; `security_dilemma` rejects messaging mode — a simultaneous-move payoff game has no sound free-messaging reduction — and pins `round_robin` via its `default_communication`.
+
+Instance banks become samples (instance JSON + per-seat framings in sample metadata), the arena engine runs inside a fully-async solver (Inspect's `--max-samples` runs many episodes concurrently), the exact scenario scorers register as Inspect scorers (`success` accuracy + mean `primary`), and each seat turn is mirrored into the sample's message list so `inspect view` renders the multi-agent flow with seat attribution, structured actions as transcript events, and the outcome in the score view. Inspect's native `token_limit` carries episode budgets; the adapter adds per-sample dollar cost (`metadata["cost_usd"]`) computed from the same pricing as `UsageMeter`. Without the extra, `import interlens.arena.inspect` fails with a clear install hint — the base package never requires inspect-ai.
+
+Next: back to the [index](README.md).
+
+---
+
+<!-- [rational_agents scaffold: metrics-analysis] 2026-07-23 — session id e1b1e5ed (drafted for interlens-core, who owns the docs cleanup) -->
+
+# 11 · Scorable negotiation & rational oracles
+
+`interlens.arena.negotiation` is a **multi-party, multi-issue scorable negotiation** stack built for measuring how far an agent (LLM or rule-based) is from *game-theoretically optimal* play — not just whether it closed a deal. It ships a solver-verified game generator, exact normative benchmarks (Pareto frontier, Nash / Kalai–Smorodinsky / egalitarian / utilitarian / max-Nash-welfare points), a swappable **rational-oracle** layer that scores every move, the `ScorableNegotiation` scenario (structured binding offers separated from cheap talk), and a pool of pure-Python rational agents. Every generated instance carries its exact analysis, so per-turn regret and outcome-distance metrics are *exact*, not sampled.
+
+This page is the negotiation-specific companion to [10 · Arena](10_arena.md): the game lives in `arena/negotiation/`, the oracle types in `arena/oracles.py`, the scenario in `arena/scenarios/scorable.py`, and the rational agents in `PolicyParticipant`.
+
+## The game: issues, score sheets, `GameSpec`
+
+A deal picks one option per issue and is a `Deal = tuple[int, ...]` of option indices. Each party holds a private additive `ScoreSheet` (a value per option, plus a threshold `τ` — its BATNA); the analysis object is always the **surplus** `x_i(d) = u_i(d) − τ_i`.
+
+```python
+from interlens.arena.negotiation.space import Issue, DealSpace
+from interlens.arena.negotiation.sheets import ScoreSheet, GameSpec
+
+space = DealSpace((Issue("Site", ("North", "South")),
+                   Issue("Fund", ("None", "1M", "5M"))))
+alice = ScoreSheet("Alice", ((10, 0), (0, 3, 6)), threshold=5.0)
+bob   = ScoreSheet("Bob",   ((0, 10), (6, 3, 0)), threshold=5.0)
+
+alice.utility((1, 2))          # 0 + 6  = 6.0   (South, 5M)
+alice.surplus((1, 2))          # 6 - 5  = 1.0
+
+spec = GameSpec(space=space, sheets=(alice, bob),
+                rounds=4, info="full", chat=True,        # protocol arms (DESIGN §3)
+                proposer=0, veto=1, min_accept=None,     # agreement rule (None = unanimity)
+                discount=1.0, breakdown_risk=0.0)        # impatience knobs the oracles read
+spec.to_json()                 # round-trips via GameSpec.from_json — drops into Instance.payload
+```
+
+`GameSpec.surplus_matrix()` is the dense `|D| × n` surplus array every solution concept consumes; `feasible_mask()` is the boolean mask of deals that pass the agreement rule (proposer + veto clear, and ≥ `min_accept` parties clear their threshold).
+
+## Swapping the game: presets
+
+The situation is a **swappable axis**, like the oracle stack — "two agents play the ultimatum game" is one call. `arena/negotiation/games.py` is a registry mapping a name to a literature-grounded **preset**: a factory returning `(GameSpec, analysis, protocol_cfg)`, the game plus its exact analysis plus the scenario knobs that turn the one `ScorableNegotiation` engine into that game. Presets are *parameterizations, not new engines* — the same deal space, oracle stack, annotation, and atlas run unchanged on any of them.
+
+```python
+from interlens.arena.negotiation import games
+
+games.PRESETS                                          # {'scorable', 'ultimatum', 'divide_dollar', 'bilateral_multiissue'}
+game, analysis, protocol_cfg = games.make_preset("ultimatum", pie=10, n_options=11)
+game.n_parties, analysis["deal_space_size"]            # 2, 11  (one split per option)
+protocol_cfg                                           # {'single_shot': True, 'fixed_proposer': True}
+
+# the arena bridge: a solver-verified Instance + the cfg to play it under (reuses generate.build_instance)
+instance, protocol_cfg = games.build_preset_instance("divide_dollar", n_parties=3, rule="majority")
+```
+
+| Preset | Game | Rational anchor |
+|---|---|---|
+| `scorable` (default) | the multi-party, multi-issue repaired game (§2 generator; a thin alias, defaults unchanged) | the §4 oracle stack |
+| `ultimatum` | take-it-or-leave-it N=2 pie split (J=1, τ=0, `rounds=1`, single-shot responder-only vote) | SPE: proposer keeps the pie, responder accepts any positive share (Güth et al. 1982 human-rejection contrast; Rubinstein 1982 §5) |
+| `divide_dollar` | N-party discrete-shares split, rotating proposer, multi-round, unanimity/majority | Baron–Ferejohn 1989 / Okada 1996 (`v_i = 1/n` — the equilibrium oracle's own anchor) |
+| `bilateral_multiissue` | DoND-style N=2, J-issue, private values (the generator at `n_parties=2`) | Lewis et al. 2017 lineage |
+
+`protocol_cfg` is passed as the scenario `cfg` (or merged into it) so the shared state machine runs the preset's protocol variant. `single_shot` skips the round-robin and goes straight to the propose→vote forced final; `fixed_proposer` pins the opener seat (no rotation) — both default off, so the standard multi-round game is unchanged. Majority vs unanimity is just `GameSpec.min_accept`. The experiment runner exposes all four as `run.py --game {scorable,ultimatum,divide_dollar,bilateral_multiissue}` (+ `--game-arg KEY=VALUE` preset knobs).
+
+## Exact solutions & descriptors
+
+`solutions.analyze(space, sheets)` returns the full, JSON-serializable analysis every generated instance ships with — the normative benchmarks and the score-sheet descriptors that tell you whether the game is actually contestable.
+
+```python
+from interlens.arena.negotiation import solutions
+
+an = solutions.analyze(space, (alice, bob))
+an["deal_space_size"]                 # 6
+an["ir_count"], an["pareto_count"]    # |IR set|, |Pareto frontier|
+an["ir_pareto_fraction"]              # |IR ∩ Pareto| / |IR| — how near-zero-sum the acceptable set is
+an["dominated_acceptable_fraction"]   # 1 - that: the score-sheet-repair target (leave dominated deals in play)
+an["sparsity"], an["pairwise_iou"]    # TMLR descriptors: zero-option sparsity, pairwise score overlap
+an["ideal_surplus"]                   # per-party best feasible surplus b_i (the distance normalizer)
+an["solutions"]["nash"]               # {"deal", "named", "surpluses", "utilities", "ties", "scale_invariant", ...}
+```
+
+The five solution concepts are `nash`, `kalai_smorodinsky`, `egalitarian`, `utilitarian`, `max_nash_welfare`; `all_solutions(space, sheets)` returns them as `SolutionPoint`s (each carries `.deal`, `.surpluses`, `.index`, `.ties`, `.scale_invariant`). Use **nash / kalai_smorodinsky** as the scale-invariant anchors — egalitarian and utilitarian are flagged `scale_invariant=False` (meaningful only on normalized surpluses).
+
+**Per-move divergence** is a distance in scale-invariant normalized-surplus space:
+
+```python
+U, tau = spec.utility_matrix(), spec.thresholds
+idx = space.index_of((1, 2))
+solutions.distance_to_frontier(U, tau, idx)                 # 0.0 iff the deal is Pareto-efficient
+ks = solutions.all_solutions(space, (alice, bob))["kalai_smorodinsky"]
+solutions.distance_to_solution(U, tau, idx, ks.index)       # 0.0 iff the deal equals the KS point
+```
+
+## Rational oracles
+
+An `Oracle` scores every action a seat could take at a decision point and names the best one; the seat's **regret** is `value(best) − value(chosen)` in the game's value units — the centipawn-loss analog for negotiation.
+
+```python
+from interlens.arena import Oracle, OracleVerdict, OracleRecord, Propose, Accept
+
+verdict = OracleVerdict(
+    action_values={Accept("O1"): 6.0, Propose((1, 2)): 8.0},   # keyed by the typed action
+    best=Propose((1, 2)),
+    beliefs=None,                                                # a belief oracle fills this with its posterior
+    flags=[])                                                    # named hard-violation markers, e.g. "ir_violation"
+verdict.best_value()             # 8.0
+verdict.divergence(Accept("O1")) # 8.0 - 6.0 = 2.0  (regret of the chosen action, ≥ 0)
+verdict.extra                    # free-form per-verdict diagnostics: best-response surplus_loss, reservation, v*, …
+```
+
+The concrete negotiation oracles live in `arena/negotiation/` (`beliefs.py` exact Bayes over an enumerated type grid, `acceptance.py` optimal-stopping accept/reject, `bestresponse.py` exact expectimax, `equilibrium.py` a Banks–Duggan stationary equilibrium) and subclass this generic ABC. An **inline annotation** scores a seat's actual move against the oracle's best on the same state and is persisted as an `OracleRecord`:
+
+```python
+rec = OracleRecord.annotation(verdict, round=2, seat="Alice", oracle="bestresponse",
+                              chosen_action=Accept("O1"), turn_idx=5)
+rec.divergence               # 2.0  (best_value - chosen_value) — the per-turn regret
+rec.to_json()                # lands in Episode.round_checkpoints (identified by a "verdict" key)
+```
+
+## Playing it: `ScorableNegotiation`
+
+`ScorableNegotiation` (arena/scenarios/scorable.py) plays the game through any participant with **harness-enforced channel separation**: each turn is a private scratchpad, an optional public `message` (cheap talk), and one binding formal move — `Propose` a complete deal (the registry stamps it `P1`, `P2`, …), `Accept` / `Reject` a live offer by id, or `Walk`. Offers are addressed by id so "I accept" is never ambiguous with two proposals on the table.
+
+```python
+import asyncio
+from interlens import APIParticipant, UsageMeter
+from interlens.arena import EpisodePool, EpisodeStore
+from interlens.arena.scenarios import ScorableNegotiation
+
+scenario = ScorableNegotiation()
+instance = scenario.generate_instance(level=0, seed=1)   # payload carries the GameSpec, solution = the analyze() dict
+meter = UsageMeter(budget=25.0)
+player = APIParticipant(name="player", model_id="claude-sonnet-5", meter=meter, turn_token_floor=2048)
+
+pool = EpisodePool(EpisodeStore("episodes/"), meter=meter)
+episode = asyncio.run(pool.run_episode(scenario, instance, arm="moves_chat", participant=player))
+episode.outcome        # {"success", "deal": bool, "deal_named": {...}, "usw"/"esw"/"nsw"/"gini",
+                       #  "per_party_surplus", "ir_violations", "ceiling_surplus", "offers", ...}
+```
+
+Arms: `moves_chat` (binding moves + cheap talk), `moves_only` (the ±communication treatment), `team`, and `solo` (the communication-free control that must not match the multi-agent rate). Situational knobs go through `cfg` (rounds, personas, history window, `show_own_scores`) exactly as in [10 · Arena](10_arena.md). Turns persist as `TurnRecord`s with `parsed_action` (`atype` / `deal_named` / `offer`); per-turn oracle annotations persist as `OracleRecord.to_json()` dicts in `Episode.round_checkpoints`.
+
+## Rational agents: `PolicyParticipant` + the strategy zoo
+
+A `PolicyParticipant` mounts a pure-Python `policy(state) → Action` as a first-class participant, so a rational agent plays the *same* protocol as an LLM (and can sit across the table from one). The strategy zoo in `arena/negotiation/strategies.py` provides the executable opponents: time-dependent Faratin curves (`TimeDependentPolicy.boulware(...)` concedes near the deadline, `.conceder(...)` concedes early), `MiCROPolicy`, `NaiveTitForTatPolicy`, `ToughPolicy`, and a `BayesianRationalPolicy`, plus AC-next/AC-combi acceptance conditions.
+
+```python
+from interlens.arena.negotiation.policy_participant import PolicyParticipant
+from interlens.arena.negotiation.strategies import TimeDependentPolicy
+
+alice_agent = PolicyParticipant(
+    name="Alice", policy=TimeDependentPolicy.boulware(), seat=0,
+    sheet=alice, space=space, deadline=spec.rounds, discount=spec.discount)
+# hand alice_agent (and a policy or LLM for bob) to EpisodePool.run_episode as the seat participants
+```
+
+A rational-vs-rational rollout should land near the frontier in `info="full"` and show calibrated inefficiency in `info="private"` (Myerson–Satterthwaite) — the sanity check before putting LLMs in the seats.
+
+## Measuring divergence
+
+The `experiments/rational_agents/` measurement layer reads stored `Episode` + `Instance` and computes the **divergence atlas**: outcome quality (Pareto / NBS / KS distance via the `solutions` functions above, welfare, Gini), per-turn oracle regret (from the `round_checkpoints` `OracleRecord` rows) with the Park et al. no-regret trend tests, concession-curve τ/CRI, and a 12-row failure taxonomy tiered from fully-mechanical (IR violation) to LLM-judge (tactic-style). `annotate.py` writes the per-turn annotations; `analysis/report.py` aggregates a run into per-model per-arm tables + plots. See that experiment's README for the pipeline.
+
+## Transcripts & Inspect
+
+Every turn's exact rendered prompt is persisted: the engine records each `SeatRequest.view` into `TurnRecord.view` by default (`EpisodePool(record_views=False)` to disable), so a transcript is faithful even if prompt code later drifts. `arena/export.py` turns a stored run into human-readable transcripts — `export.export_run(episodes_dir, instances_dir, out_dir)` (or `python -m interlens.arena.export --episodes … --instances … --out …`) writes a markdown + self-contained HTML page per episode (game setup, per-turn scratchpad/message/action/oracle-regret, outcome + welfare) plus a run index; it renders old episodes (no `view`) too.
+
+And the scenario is registered as an Inspect task via the preset registry, so `inspect eval` / `inspect view` work out of the box:
+
+```bash
+inspect eval interlens.arena.inspect/scorable --model anthropic/claude-sonnet-5 -T game=ultimatum -T arm=moves_only
+```
+
+---
+
+# 12 · Control Tower: use an Interlens local model as an untrusted policy
+
+Interlens and [Control Tower](https://github.com/linuxarena/control-tower) meet at the policy boundary. Interlens
+owns local Hugging Face generation and interpretability; Control Tower owns LinuxArena environments, blue-team
+protocols, tool execution, monitoring, auditing, sandboxing, and trajectory storage.
+
+The adapter returns tool calls to Control Tower **without executing them inside Interlens**. This is the important
+security boundary: a trusted-monitoring protocol sees the same proposed action it would see from any other
+untrusted model.
+
+## Install
+
+Control Tower requires Python 3.13. Install both packages and Interlens's Inspect integration:
+
+```bash
+uv add control-tower "interlens[inspect]"
+```
+
+## Define the participant
+
+Put a zero-argument factory in your project, for example `my_project/policies.py`:
+
+```python
+from interlens import AutoModelParticipant
+
+
+def local_qwen():
+    """Build one fresh participant for one Control Tower sample."""
+    return AutoModelParticipant.from_pretrained(
+        "Qwen/Qwen2.5-Coder-7B-Instruct",
+        name="untrusted",
+        device="cuda",
+        load_kwargs={
+            "dtype": "bfloat16",
+            "attn": "flash_attention_2",
+            "quant": None,
+            "revision": None,
+        },
+        temperature=0.2,
+        top_p=0.95,
+        max_new_tokens=2048,
+        thinking=False,
+        kv_reuse="auto",
+    )
+```
+
+A factory is used instead of a global participant so every Control Tower sample gets fresh KV-cache and generation
+state. Interlens's process-wide model cache still shares the loaded weights. The adapter serializes concurrent calls
+that share one cached model because Hugging Face generation is not thread-safe on a single model object; Control
+Tower can still overlap environment work and calls backed by different models.
+
+## Run a Control Tower protocol
+
+Pass the adapter as an external untrusted policy and the factory as its argument:
+
+```bash
+uv run ct run eval \
+  --untrusted-policy interlens.integrations.control_tower:interlens_untrusted_policy \
+  --untrusted-policy-arg participant_factory=my_project.policies:local_qwen \
+  --protocol trusted-monitoring \
+  --protocol-arg sus_threshold=7 \
+  --task-file simple
+```
+
+For each untrusted-model request:
+
+1. Inspect messages and available LinuxArena tools are translated to an Interlens model view.
+2. The participant performs one local generation with its native chat template.
+3. Parsed tool calls become ordinary Inspect `ToolCall`s.
+4. Control Tower decides whether to monitor, audit, defer, replace, or execute them.
+5. Tool results return through Inspect on the following model call.
+
+`tool_choice="auto"` and `"none"` are supported. Required or forced tool choices fail loudly because Hugging Face
+chat templates can render tool schemas but cannot reliably enforce a call.
+
+## Programmatic use and interpretability
+
+Use `participant_generate` directly when constructing a custom Control Tower policy. Steering, capture, patching,
+and log probabilities can be attached once to the adapter:
+
+```python
+from interlens.integrations.control_tower import participant_generate
+
+generate = participant_generate(
+    local_qwen(),
+    steering=my_steering_spec,
+    capture=my_capture_request,
+    patch=None,
+    return_logprobs=False,
+)
+```
+
+The returned function has Control Tower's `UntrustedPolicyGenerateFn` signature:
+
+```python
+output = await generate(messages, tools, tool_choice, generate_config)
+```
+
+## Attack and collaborative policies
+
+The same boundary also exposes an attack-policy wrapper and a private planner-reviewer-executor team. The attack
+wrapper reads Control Tower's sample-local side-task goal and uses it only as the Interlens policy's private system
+prompt; blue protocols retain their neutral monitor-visible history:
+
+```bash
+uv run ct run eval \
+  --untrusted-policy interlens.integrations.control_tower:interlens_attack_policy \
+  --untrusted-policy-arg participant_factory=my_project.policies:local_qwen \
+  --protocol trusted-monitoring \
+  --protocol-arg sus_threshold=7 \
+  --task-file medium
+```
+
+For collaborative inference, one local participant sequentially plays planner, reviewer, and executor on every
+outer action. Planner and reviewer see a text capability summary but receive no callable tool schemas; only the
+executor can propose an external action:
+
+```bash
+uv run ct run eval \
+  --untrusted-policy interlens.integrations.control_tower:interlens_team_policy \
+  --untrusted-policy-arg participant_factory=my_project.policies:local_qwen \
+  --untrusted-policy-arg mode=honest \
+  --untrusted-policy-arg planner_max_tokens=512 \
+  --untrusted-policy-arg reviewer_max_tokens=512 \
+  --protocol untrusted-agent \
+  --protocol-arg max_steps=80 \
+  --task-file one_per_env
+```
+
+Set `mode=attack` only on a task file containing side tasks. Private planning/review text is recorded under
+`ModelOutput.metadata["interlens"]["collaboration"]`; all three calls contribute to the reported input tokens,
+output tokens, and cost. The executor's message and tool calls remain ordinary Inspect objects, so monitoring,
+deferral, editing, sandbox execution, and scoring continue to be Control Tower's responsibility.
+
+This adapter is intentionally for local `ModelParticipant`-style generators. Hosted Interlens API participants
+already overlap with Inspect's provider layer and do not expose local activation interventions.
+
+---
+
+<!-- [interp-refactor] session f80ef917 — examples index for interlens -->
+# Examples
+
+Worked examples for the multi-model conversation + interpretability harness, ordered simple → advanced. Every snippet assumes you import the package as a library:
+
+```python
+from interlens import Conversation, AutoModelParticipant, ModelParticipant  # etc.
+```
+
+For the per-symbol API reference (one page per class and function, with signatures and source links), see [`docs/reference/`](../reference/index.md).
+
+Install the package first (`pip install interlens`, or `pip install -e .` from the library root for development), then run any snippet as a normal script — e.g. `python your_script.py`. GPU examples need CUDA; a small model (`Qwen/Qwen2.5-0.5B-Instruct`) runs on CPU/MPS for smoke tests.
+
+## What this library does
+
+Orchestrates turn-taking between two (or more) **participants** — local HF models or hosted-API models — over a shared, perspective-neutral **transcript**, with first-class **interpretability** (activation capture, steering, activation patching, token logprobs) hooked into the *same* generation path as real turns. It scales from one interactive conversation to thousands of checkpointed, multi-GPU **rollouts**.
+
+## One object: recipe = live dialogue = rollout driver
+
+A `Conversation` (with lazy `Participant`s) is at once the serializable **recipe**, the **live dialogue** you drive in-process, and the **rollout driver** you expand over data/N samples. There are no separate template/spec/config types — build it up functionally (`.turns(6).data(ds).analyzer(grade)`), run it, or `.rollout()` it ([01](01_quickstart.md), [02](02_conversations.md), [08](08_rollouts_and_scale.md)). Persist it with `save`/`load` (recipe + transcript on disk, resumable — [04](04_context_and_serialization.md)).
+
+## Index
+
+| # | File | Covers |
+|---|------|--------|
+| 01 | [Quickstart](01_quickstart.md) | Two models talk in ~5 lines; read the transcript |
+| 02 | [Conversations](02_conversations.md) | Manual builds, private/shared framing, moderator, turn-taking, stop conditions, `branch`, ephemeral `sample`, reasoning visibility |
+| 03 | [Participants & models](03_participants_and_models.md) | Model resolution (config.model_type, auto-derived flags), `ModelParticipant` knobs, `kv_reuse`, `APIParticipant`, mixed local+API |
+| 04 | [Context & serialization](04_context_and_serialization.md) | Context policies, the conversation-as-recipe, `save`/`load`, resume |
+| 05 | [Tools](05_tools.md) | Define a `Tool`, register it, the tool-calling loop |
+| 06 | [Hooks](06_hooks.md) | `MessageHook` approve / deny / edit (the LLM-judge seam) |
+| 07 | [Interpretability](07_interp.md) | Capture, steering, ablation, patching, logprobs |
+| 08 | [Rollouts & scale](08_rollouts_and_scale.md) | `conv.rollout`, data-driven rollouts (`dataset_field`), `interlens.run` (multi-lineup), `TokenBudget` (matched compute), multi-GPU, batched co-stepping, `analyzer`, checkpoint/resume |
+| 09 | [Advanced interp pipelines](09_advanced_interp_pipelines.md) | Causal tracing (capture→patch across branches), steering sweeps, probe-in-the-loop `analyze` |
+| 10 | [Arena](10_arena.md) | Scoreable multi-agent evaluations: scenarios with exact solvers/scorers, episode drivers, budgets + spend metering, communication styles, the Inspect integration |
+| 11 | [Scorable negotiation & oracles](11_negotiation.md) | Formal bargaining games, rational policy baselines, equilibrium/best-response/acceptance oracles, regret and divergence analysis |
+| 12 | [Control Tower](12_control_tower.md) | Use an Interlens local model as a Control Tower untrusted policy while preserving its monitorable tool boundary |
+
+Related: the pipeline **performance** profiler lives at [`tests/profile_pipeline.py`](https://github.com/Sid-MB/interlens/blob/main/tests/profile_pipeline.py); the family self-registry lives on [`ModelParticipant`](https://github.com/Sid-MB/interlens/blob/main/src/interlens/participant/participants/model_participant.py) (`MODEL_TYPES` + `for_model_type`), and model loading / chat-flag derivation in [`load.py`](https://github.com/Sid-MB/interlens/blob/main/src/interlens/loading/load.py).

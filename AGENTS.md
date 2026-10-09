@@ -1,6 +1,6 @@
 
 ## Documentation
-See web documentation (auto rebuilt for the `main` branch) at <https://interlens.sidmb.com/llms-full.txt>.
+See web documentation (auto rebuilt for the `main` branch) at <https://sidmb.com/docs/interlens/llms-full.txt>.
 
 ## Contributing
 

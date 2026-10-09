@@ -15,7 +15,7 @@ print(conv.transcript)
 
 See [`docs/examples`](docs/examples) for sample code, and the [API reference](docs/reference/index.md) for every public class and function.
 
-*[Documentation for LLMs](https://interlens.sidmb.com/llms-full.txt)!
+*[Documentation for LLMs](https://sidmb.com/docs/interlens/llms-full.txt) (index: [llms.txt](https://sidmb.com/docs/interlens/llms.txt))!
 
 ## Install
 

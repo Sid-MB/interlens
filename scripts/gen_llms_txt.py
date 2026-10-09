@@ -75,9 +75,14 @@ def title_of(markdown: str, fallback: str) -> str:
 
 
 def url_of(page: str) -> str:
-	"""The page's published URL under directory-style routing (``index.md`` → its directory root)."""
-	route = re.sub(r"(^|/)index\.md$", r"\1", page)
-	return SITE_URL + re.sub(r"\.md$", "/", route)
+	"""The page's published URL on sidmb.com, mirroring how sidmb's sync routes the synced ``docs/`` folder.
+
+	sidmb (Next.js) serves directory-style routes WITHOUT a trailing slash, and its sync maps both
+	``index.md`` and ``README.md`` to their directory's route — so ``index.md`` → ``SITE_URL`` itself,
+	``examples/README.md`` → ``…/examples``, and ``examples/01_x.md`` → ``…/examples/01_x``. No URL ends in
+	``/`` (``SITE_URL`` keeps one only so relative routes can be appended)."""
+	route = re.sub(r"(^|/)(index|README)\.md$", "", page)
+	return (SITE_URL + re.sub(r"\.md$", "", route)).rstrip("/")
 
 
 def generate() -> int:

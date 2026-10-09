@@ -29,17 +29,19 @@
 #                             pages only — the ~700 symbol pages would drown the sidebar). Re-run it and
 #                             commit the diff whenever the public API changes.
 # The script also invokes `scripts/gen_llms_txt.py`, which emits `llms.txt` (index) and `llms-full.txt`
-# (concatenated bodies) into `docs/` — Zensical copies them verbatim to the site root — replacing the
-# mkdocs-llmstxt plugin, which Zensical doesn't run.
+# (concatenated bodies) into `docs/` — committed, so sidmb's sync picks them up and serves them verbatim at
+# https://sidmb.com/docs/interlens/llms.txt and /llms-full.txt (a local Zensical build also copies them to its
+# site root) — replacing the mkdocs-llmstxt plugin, which Zensical doesn't run.
 #
 # Build: uv run --with griffe --no-project python scripts/gen_ref_pages.py && zensical build --clean
 # Serve: uv run --with griffe --no-project python scripts/gen_ref_pages.py && zensical serve
 site_name: interlens
 site_description: A framework for scaffolding and interpreting multi-agent conversations (activation capture, steering, patching).
 # site_url is the single source of truth for the published URL — gen_llms_txt.py reads it from here, and
-# Zensical derives canonical links + sitemap entries from it. The site lives at the domain root, so the
-# build output goes straight into `site/` (which vercel.ts serves as-is).
-site_url: https://interlens.sidmb.com/
+# Zensical derives canonical links + sitemap entries from it. The published docs live under
+# https://sidmb.com/docs/interlens (built by the sidmb repo from this folder), not at a domain root; a local
+# `zensical build` still writes to `site/`, it just isn't deployed anywhere any more.
+site_url: https://sidmb.com/docs/interlens/
 site_dir: site
 repo_url: https://github.com/Sid-MB/interlens
 repo_name: Sid-MB/interlens

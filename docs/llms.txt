@@ -1,0 +1,23 @@
+# interlens
+
+> interlens is a harness for multi-agent (model-to-model) conversations with first-class interpretability — activation capture, steering, activation patching, and token logprobs — all hooked into the same generation path as real turns, scaling from one dialogue to thousands of checkpointed multi-GPU rollouts.
+
+## Overview
+
+- [Interlens: Framework for Multi-Agent Interaction and Interpretability](https://sidmb.com/docs/interlens)
+
+## Examples (simple to advanced)
+
+- [01 · Quickstart](https://sidmb.com/docs/interlens/examples/01_quickstart)
+- [02 · Conversations in depth](https://sidmb.com/docs/interlens/examples/02_conversations)
+- [03 · Participants & models](https://sidmb.com/docs/interlens/examples/03_participants_and_models)
+- [04 · Context management & serialization](https://sidmb.com/docs/interlens/examples/04_context_and_serialization)
+- [05 · Tools](https://sidmb.com/docs/interlens/examples/05_tools)
+- [06 · Message hooks](https://sidmb.com/docs/interlens/examples/06_hooks)
+- [07 · Interpretability](https://sidmb.com/docs/interlens/examples/07_interp)
+- [08 · Rollouts & scale](https://sidmb.com/docs/interlens/examples/08_rollouts_and_scale)
+- [09 · Advanced interp pipelines](https://sidmb.com/docs/interlens/examples/09_advanced_interp_pipelines)
+- [10 · Arena: scoreable multi-agent evaluations](https://sidmb.com/docs/interlens/examples/10_arena)
+- [11 · Scorable negotiation & rational oracles](https://sidmb.com/docs/interlens/examples/11_negotiation)
+- [12 · Control Tower: use an Interlens local model as an untrusted policy](https://sidmb.com/docs/interlens/examples/12_control_tower)
+- [Examples](https://sidmb.com/docs/interlens/examples)
