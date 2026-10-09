@@ -37,6 +37,8 @@ concurrency:
 jobs:
   quick-tests:
     runs-on: ubuntu-latest
+    # The suite finishes in ~3 minutes. Anything longer is a hang (e.g. a leaked thread keeping the interpreter from exiting), so fail fast instead of burning the 6-hour default.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

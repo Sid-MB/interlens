@@ -291,8 +291,27 @@ class LiveHandler(BaseHTTPRequestHandler):
         logger.debug("%s - %s", self.address_string(), fmt % args)
 
 
+class LiveServer(ThreadingHTTPServer):
+    """The live-play ``ThreadingHTTPServer``, carrying its ``SessionManager`` and episode directory.
+
+    ``server_close()`` stops the active session before closing the socket. A human seat waits for its move inside
+    asyncio's default executor (``asyncio.to_thread``), and ``concurrent.futures`` joins those workers at
+    interpreter shutdown, so a session left running would keep the process from ever exiting.
+    """
+
+    manager: SessionManager
+    run_dir: Path
+
+    def server_close(self) -> None:
+        """Stop any running session (unblocking human seats so their worker threads exit), then close the socket."""
+        # ``TCPServer.__init__`` itself calls ``server_close()`` when the bind fails, before ``manager`` is attached.
+        if hasattr(self, "manager"):
+            self.manager.reset()
+        super().server_close()
+
+
 def make_live_server(provider: ScenarioProvider, host: str = DEFAULT_HOST, port: int = 0,
-                     run_dir=None) -> ThreadingHTTPServer:
+                     run_dir=None) -> LiveServer:
     """Bind (but do not run) the live-play server over ``provider``.
 
     ``port=0`` asks the OS for a free ephemeral port; read the one chosen back off ``server.server_address[1]``.
@@ -301,20 +320,20 @@ def make_live_server(provider: ScenarioProvider, host: str = DEFAULT_HOST, port:
     is only a view of it).
 
     Returns the bound server so the caller decides how to run it: ``serve_forever()`` on this thread, or another
-    one in a test. Call ``server_close()`` when done.
+    one in a test. Call ``server_close()`` when done; it also stops any session still running.
     """
     root = Path(run_dir) if run_dir is not None else Path(tempfile.mkdtemp(prefix="interlens-live-"))
     root.mkdir(parents=True, exist_ok=True)
-    server = ThreadingHTTPServer((host, port), LiveHandler)
-    server.manager = SessionManager(provider, root)                            # type: ignore[attr-defined]
-    server.run_dir = root                                                      # type: ignore[attr-defined]
+    server = LiveServer((host, port), LiveHandler)
+    server.manager = SessionManager(provider, root)
+    server.run_dir = root
     return server
 
 
 def run_live_server(provider: ScenarioProvider, host: str = DEFAULT_HOST, port: int = 0, run_dir=None) -> None:
     """Serve live play until interrupted — bind, print the banner (including the ``ssh -L`` line, reusing
     ``viz.serve.serve_banner``'s form), then block in ``serve_forever``. ``Ctrl-C`` shuts down and returns
-    normally so the CLI exits 0, and stops any session still running first."""
+    normally so the CLI exits 0, and ``server_close()`` stops any session still running."""
     server = make_live_server(provider, host=host, port=port, run_dir=run_dir)
     bound = server.server_address[1]
     # The visualizer's banner, re-tagged: it already works out this host's real name and the exact ``ssh -L``
@@ -327,5 +346,4 @@ def run_live_server(provider: ScenarioProvider, host: str = DEFAULT_HOST, port: 
     except KeyboardInterrupt:
         print("\n[live] stopped", flush=True)
     finally:
-        server.manager.reset()
         server.server_close()
