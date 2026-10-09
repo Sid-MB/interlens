@@ -74,6 +74,7 @@ plugins:
   - search
 
 markdown_extensions:
+  - attr_list   # the generated API reference sets explicit `{#id}` heading anchors (scripts/refgen/pages.py); without this they render as literal text and every `#attributes` link breaks the strict build
   - admonition
   - pymdownx.details
   - pymdownx.superfences
