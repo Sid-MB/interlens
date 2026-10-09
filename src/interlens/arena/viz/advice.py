@@ -69,6 +69,11 @@ ADVICE_SIDECAR = "advice_trace.json"
 #: file records only a RELATIVE ``shard_dir``, so a published trace stays portable between machines.
 ROOT_KEY = "_root"
 
+# The round ledger's per-seat verdict badges. Module constants rather than literals inside the f-string, since a quote
+# escaped inside an f-string expression is a SyntaxError before Python 3.12 (PEP 701).
+OVERRODE_BADGE = '<span class="badge advice-override">overrode</span>'
+TOOK_BADGE = '<span class="badge advice-followed">took the advice</span>'
+
 
 def advice_trace(run_root: str | Path | None) -> dict | None:
     """The optional advice sidecar for a run, or ``None`` when it is absent or unreadable.
@@ -267,7 +272,7 @@ def round_ledger_card(payload: dict) -> str:
         rows = "".join(
             f"<tr class='{'overrode' if row.get('followed') is False else 'took'}'>"
             f"<td><a href='#turn-{_e(row['turn_idx'])}'>{_e(row.get('seat'))}</a></td>"
-            f"<td>{'<span class=\"badge advice-override\">overrode</span>' if row.get('followed') is False else '<span class=\"badge advice-followed\">took the advice</span>'}</td>"
+            f"<td>{OVERRODE_BADGE if row.get('followed') is False else TOOK_BADGE}</td>"
             f"<td>{_e((row.get('uptake') or {}).get('emitted_kind'))}</td>"
             f"<td>{_own_delta((row.get('uptake') or {}).get('advice_overridden_toward'))}</td>"
             f"<td>{_package_words(((row.get('candidates') or [{}])[0]).get('package'))}</td></tr>"
